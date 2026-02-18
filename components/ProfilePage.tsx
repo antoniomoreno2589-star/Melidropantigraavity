@@ -132,7 +132,7 @@ export const ProfilePage = () => {
             const exchangeToken = async () => {
                 console.log("Exchanging code for token...");
                 try {
-                    const redirectUri = 'https://armigeral-doltishly-laurinda.ngrok-free.dev/perfil';
+                    const redirectUri = `${window.location.origin}/perfil`;
                     const bodyParams: any = {
                         grant_type: 'authorization_code',
                         client_id: storedAppId,
@@ -283,7 +283,7 @@ export const ProfilePage = () => {
 
                 console.log("PKCE generated and saved", { codeVerifier, codeChallenge });
 
-                const redirectUri = encodeURIComponent('https://armigeral-doltishly-laurinda.ngrok-free.dev/perfil');
+                const redirectUri = encodeURIComponent(`${window.location.origin}/perfil`);
 
                 // Clear state slightly before redirect to avoid browser "remembering" fields in this state
                 setMeliAppId('');
@@ -597,11 +597,10 @@ export const ProfilePage = () => {
                                                 <b>Nota:</b> Asegúrate de tener configurada esta Redirect URI en tu panel de desarrollador:
                                                 <br />
                                                 <code className="bg-white dark:bg-black/20 p-1 rounded font-mono select-all mt-1 block border border-dashed border-yellow-300">
-                                                    https://armigeral-doltishly-laurinda.ngrok-free.dev/perfil
+                                                    {window.location.origin}/perfil
                                                 </code>
                                                 <p className="mt-2 opacity-80">
-                                                    * Esta es tu URL pública de ngrok. Cópiala y pégala en Mercado Libre.
-                                                    Asegúrate de entrar a tu app usando <b>https://armigeral-doltishly-laurinda.ngrok-free.dev/perfil</b>.
+                                                    * Esta es la URL actual de tu aplicación. Copiala y pégala tal cual en Mercado Libre.
                                                 </p>
                                             </div>
                                             <div>
