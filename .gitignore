@@ -25,3 +25,5 @@ ngrok.zip
 *.njsproj
 *.sln
 *.sw?
+
+.vercel
