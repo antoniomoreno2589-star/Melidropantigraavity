@@ -85,50 +85,36 @@ class MeliService {
         const token = await this.getValidToken();
         if (!token) throw new Error("No valid MercadoLibre token found");
 
-        const proxyUrl = 'https://gbdrxwfywxvyoxroqcut.supabase.co/functions/v1/meli-proxy';
-        const supabaseAnonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdiZHJ4d2Z5d3h2eW94cm9xY3V0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjkxMzU1MTQsImV4cCI6MjA4NDcxMTUxNH0.8bGbL6bKSfGShizUiijZIJqRdyO_72hecEujK3vYvr4';
+        const url = `${this.baseUrl}${endpoint}`;
 
-        const payload = {
-            url: `${this.baseUrl}${endpoint}`,
+        console.log(`meliService: Fetching direct from Meli API: ${url}`);
+
+        const response = await fetch(url, {
             method: options.method || 'GET',
             headers: {
                 'Authorization': `Bearer ${token}`,
                 'Content-Type': 'application/json',
+                // @ts-ignore
                 ...(options.headers || {})
-            }
-        };
-
-        if (options.body) {
-            // @ts-ignore
-            payload.body = options.body;
-        }
-
-        console.log(`meliService: Proxying request through Edge Function to ${endpoint}`);
-
-        const response = await fetch(proxyUrl, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${supabaseAnonKey}`
             },
-            body: JSON.stringify(payload)
+            body: options.body
         });
 
         if (response.status === 401) {
-            console.log("meliService: Proxy returned 401. Attempting token refresh...");
+            console.log("meliService: API returned 401. Attempting token refresh...");
             const newToken = await this.refreshToken();
             if (newToken) {
-                // @ts-ignore
-                payload.headers.Authorization = `Bearer ${newToken}`;
-                const retryResponse = await fetch(proxyUrl, {
-                    method: 'POST',
+                // Retry with new token
+                return fetch(url, {
+                    method: options.method || 'GET',
                     headers: {
+                        'Authorization': `Bearer ${newToken}`,
                         'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${supabaseAnonKey}`
+                        // @ts-ignore
+                        ...(options.headers || {})
                     },
-                    body: JSON.stringify(payload)
+                    body: options.body
                 });
-                return retryResponse;
             }
         }
 
