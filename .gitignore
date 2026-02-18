@@ -12,6 +12,8 @@ dist
 dist-ssr
 *.local
 .env
+ngrok.exe
+ngrok.zip
 
 # Editor directories and files
 .vscode/*
