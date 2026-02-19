@@ -85,48 +85,40 @@ class MeliService {
         const token = await this.getValidToken();
         if (!token) throw new Error("No valid MercadoLibre token found");
 
-        // Usamos un proxy de CORS para evitar que el navegador bloquee la petición
-        const corsProxy = 'https://corsproxy.io/?';
-        const url = `${corsProxy}${encodeURIComponent(this.baseUrl + endpoint)}`;
+        const targetUrl = `${this.baseUrl}${endpoint}`;
 
-        console.log(`meliService: Fetching through CORS Proxy: ${url}`);
-
-        const response = await fetch(url, {
-            method: options.method || 'GET',
+        const response = await fetch('/api/meli-proxy', {
+            method: 'POST',
             headers: {
-                'Authorization': `Bearer ${token}`,
-                'Content-Type': 'application/json',
-                // @ts-ignore
-                ...(options.headers || {})
+                'Content-Type': 'application/json'
             },
-            body: options.body
+            body: JSON.stringify({
+                url: targetUrl,
+                method: options.method || 'GET',
+                headers: {
+                    'Authorization': `Bearer ${token}`,
+                    ...(options.headers || {})
+                },
+                body: options.body
+            })
         });
 
         if (response.status === 401) {
-            console.log("meliService: API returned 401. Attempting token refresh...");
             const newToken = await this.refreshToken();
             if (newToken) {
-                const newUrl = `${corsProxy}${encodeURIComponent(this.baseUrl + endpoint)}`;
-                return fetch(newUrl, {
-                    method: options.method || 'GET',
-                    headers: {
-                        'Authorization': `Bearer ${newToken}`,
-                        'Content-Type': 'application/json',
-                        // @ts-ignore
-                        ...(options.headers || {})
-                    },
-                    body: options.body
+                return fetch('/api/meli-proxy', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        url: targetUrl,
+                        method: options.method || 'GET',
+                        headers: {
+                            'Authorization': `Bearer ${newToken}`,
+                            ...(options.headers || {})
+                        },
+                        body: options.body
+                    })
                 });
-            }
-        }
-
-        if (!response.ok) {
-            try {
-                const errorClone = response.clone();
-                const errorText = await errorClone.text();
-                console.error(`meliService: Meli API Error (${response.status}) for ${endpoint}:`, errorText);
-            } catch (e) {
-                console.error(`meliService: Meli API Error (${response.status}) for ${endpoint}`);
             }
         }
 
