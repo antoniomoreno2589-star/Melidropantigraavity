@@ -451,24 +451,33 @@ class MeliService {
             return this.statsCache;
         }
         try {
-            const [user, balance, orders, unreadCount, unreadMessages, itemsBreakdown, answeredQuestions] = await Promise.all([
-                this.getUserData().catch(() => null),
-                this.getBalance().catch(() => null),
-                this.getOrders(50).catch(() => []),
-                this.getQuestionsCount().catch(() => 0),
-                this.getUnreadMessagesCount().catch(() => 0),
-                this.getItemsBreakdown().catch(() => null),
-                this.getAnsweredQuestions().catch(() => [])
-            ]);
+            console.log("MeliService: Iniciando descarga secuencial para evitar bloqueos...");
 
-            // Filtro de ventas hoy (comparación de fecha simplificada)
-            const ordersToday = (orders || []).filter((o: any) => {
-                if (!o.date_created) return false;
-                // Extraer YYYY-MM-DD de '2024-02-14T...'
-                const orderDate = o.date_created.split('T')[0];
-                const localToday = new Date().toISOString().split('T')[0];
-                return orderDate === localToday;
-            });
+            // Peticiones una por una para no saturar el proxy
+            const user = await this.getUserData().catch(() => null);
+            await new Promise(r => setTimeout(r, 200));
+
+            const balance = await this.getBalance().catch(() => null);
+            await new Promise(r => setTimeout(r, 200));
+
+            const orders = await this.getOrders(50).catch(() => []);
+            await new Promise(r => setTimeout(r, 200));
+
+            const unreadCount = await this.getQuestionsCount().catch(() => 0);
+            await new Promise(r => setTimeout(r, 200));
+
+            const unreadMessages = await this.getUnreadMessagesCount().catch(() => 0);
+            await new Promise(r => setTimeout(r, 200));
+
+            const itemsBreakdown = await this.getItemsBreakdown().catch(() => null);
+            await new Promise(r => setTimeout(r, 200));
+
+            const answeredQuestions = await this.getAnsweredQuestions().catch(() => []);
+
+            // Filtro de ventas hoy corregido
+            const now = new Date();
+            const todayStr = now.toISOString().split('T')[0];
+            const ordersToday = (orders || []).filter((o: any) => o.date_created && o.date_created.startsWith(todayStr));
 
             const salesToday = ordersToday.length;
             const incomeToday = ordersToday.reduce((acc: number, o: any) => acc + (o.total_amount || 0), 0);
@@ -479,9 +488,9 @@ class MeliService {
                     ...user,
                     nickname: user?.nickname || 'Vendedor',
                     email: user?.email,
-                    reputation: user?.seller_reputation?.level_id || 'green',
+                    reputation: user?.seller_reputation?.level_id || 'unknown',
                     power_seller_status: user?.seller_reputation?.power_seller_status,
-                    transactions: user?.seller_reputation?.transactions?.total || 0,
+                    transactions: user?.seller_reputation?.transactions?.total || 1,
                     completed: user?.seller_reputation?.transactions?.completed || 0
                 },
                 balance: {
@@ -500,9 +509,11 @@ class MeliService {
                 }
             };
             this.lastStatsFetch = Date.now();
-
             return this.statsCache;
-        } catch (error) { throw error; }
+        } catch (error) {
+            console.error("MeliService: Error en DashboardMetrics:", error);
+            throw error;
+        }
     }
 
     async answerQuestion(questionId: string | number, text: string) {

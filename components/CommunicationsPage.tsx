@@ -68,12 +68,17 @@ export const CommunicationsPage = () => {
             setIsLoading(true);
             try {
                 // Fetch Questions, Messages and Claims to find that "pending message"
-                const [meliQuestions, meliMessages, meliClaims, meliOrders] = await Promise.all([
-                    meliService.getQuestions(),
-                    meliService.getMessages(),
-                    meliService.getClaims(),
-                    meliService.getOrders(20) // Fetch top 20 recent orders
-                ]);
+                // Sequential fetches to avoid proxy saturation
+                const meliOrders = await meliService.getOrders(20).catch(() => []);
+                await new Promise(r => setTimeout(r, 200));
+
+                const meliQuestions = await meliService.getQuestions('UNANSWERED').catch(() => []);
+                await new Promise(r => setTimeout(r, 200));
+
+                const meliMessages = await meliService.getMessages(20).catch(() => []);
+                await new Promise(r => setTimeout(r, 200));
+
+                const meliClaims = await meliService.getClaims(10).catch(() => []);
 
                 console.log("CommunicationsPage: Data received", {
                     questions: meliQuestions,
