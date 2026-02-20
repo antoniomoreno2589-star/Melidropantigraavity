@@ -82,7 +82,11 @@ const App = () => {
             console.log("App.tsx: Ventas hoy detectadas:", metrics.stats?.salesToday);
             setMeliMetrics(metrics);
             if (metrics.user) {
-              // Actualizar datos del usuario...
+              setUser(prev => prev ? ({
+                ...prev,
+                name: metrics.user.nickname || prev.name,
+                level: metrics.user.power_seller_status || 'Vendedor'
+              }) : null);
             }
           })
           .catch(err => {
