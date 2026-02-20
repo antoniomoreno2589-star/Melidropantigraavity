@@ -376,7 +376,6 @@ class MeliService {
         if (!creds) return [];
 
         const endpoints = [
-            `/marketplace/messages/packs/search?seller_id=${creds.id}&role=seller`,
             `/messages/packs/search?seller_id=${creds.id}&role=seller`,
             `/conversations/search?seller_id=${creds.id}&limit=${limit}`
         ];
@@ -461,13 +460,11 @@ class MeliService {
                 this.getAnsweredQuestions().catch(() => [])
             ]);
 
-            const now = new Date();
-            const todayStr = now.toISOString().split('T')[0];
+            // Filtro usando fecha local (México) en lugar de UTC
+            const todayStr = new Date().toLocaleDateString('en-CA'); // Formato YYYY-MM-DD local
 
-            // Filtro más flexible para hoy: comparamos la fecha ignorando la zona horaria estricta
             const ordersToday = (orders || []).filter((o: any) => {
                 if (!o.date_created) return false;
-                // Tomamos solo la parte YYYY-MM-DD
                 const orderDate = o.date_created.split('T')[0];
                 return orderDate === todayStr;
             });
