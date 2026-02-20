@@ -149,7 +149,7 @@ export const ProfilePage = () => {
                     const body = new URLSearchParams(bodyParams);
 
                     // Usamos el proxy para el intercambio del token
-                    const response = await fetch('/api/meli-proxy', {
+                    const response = await fetch('/api/proxy', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
@@ -182,7 +182,7 @@ export const ProfilePage = () => {
                     };
 
                     try {
-                        const userResponse = await fetch('/api/meli-proxy', {
+                        const userResponse = await fetch('/api/proxy', {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({

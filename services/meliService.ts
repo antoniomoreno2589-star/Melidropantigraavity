@@ -87,7 +87,7 @@ class MeliService {
 
         const targetUrl = `${this.baseUrl}${endpoint}`;
 
-        const response = await fetch('/api/meli-proxy', {
+        const response = await fetch('/api/proxy', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -107,7 +107,7 @@ class MeliService {
         if (response.status === 401) {
             const newToken = await this.refreshToken();
             if (newToken) {
-                return fetch('/api/meli-proxy', {
+                return fetch('/api/proxy', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
