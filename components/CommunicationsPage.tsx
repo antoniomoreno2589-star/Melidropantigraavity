@@ -134,13 +134,9 @@ export const CommunicationsPage = () => {
 
                 // Merge orders that don't have conversations yet
                 const existingPackIds = new Set(formattedMessages.map(m => m.packId?.toString()));
-                const orderChats: ChatSession[] = (meliOrders || []).filter((o: any) => {
-                    const packIdStr = o.pack_id?.toString();
-                    const orderIdStr = o.id?.toString();
-                    return !existingPackIds.has(packIdStr) && !existingPackIds.has(orderIdStr);
-                }).map((o: any) => {
-                    // Extract product info from order items
+                const orderChats: ChatSession[] = (meliOrders || []).map((o: any) => {
                     const firstItem = o.order_items?.[0]?.item || {};
+                    const buyer = o.buyer || {};
                     const productTitle = firstItem.title || 'Producto sin título';
                     const productSku = firstItem.seller_sku || firstItem.seller_custom_field || 'N/A';
                     const productPrice = o.total_amount || 0;

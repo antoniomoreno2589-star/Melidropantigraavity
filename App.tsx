@@ -75,31 +75,19 @@ const App = () => {
       console.log("App.tsx Check: melidrop_meli_credentials present?", !!credsRaw);
 
       if (credsRaw) {
-        console.log("App.tsx: Starting Meli metrics fetch...");
+        console.log("App.tsx: Iniciando descarga de datos de Mercado Libre...");
         meliService.getDashboardMetrics()
           .then(metrics => {
-            console.log("App.tsx: Meli metrics received successfully!", metrics);
+            console.log("App.tsx: Datos recibidos de Meli!", metrics);
+            console.log("App.tsx: Ventas hoy detectadas:", metrics.stats?.salesToday);
             setMeliMetrics(metrics);
             if (metrics.user) {
-              console.log("App.tsx: Updating user details from Meli:", metrics.user.nickname, metrics.user.email);
-
-              let displayLevel = 'Vendedor';
-              if (metrics.user.power_seller_status) {
-                displayLevel = metrics.user.power_seller_status.replace(/_/g, ' ').split(' ').map((s: string) => s.charAt(0).toUpperCase() + s.slice(1).toLowerCase()).join(' ');
-              } else if (metrics.user.reputation !== 'unknown') {
-                displayLevel = `Nivel ${metrics.user.reputation.split('_')[0]}`;
-              }
-
-              setUser(prev => prev ? ({
-                ...prev,
-                name: metrics.user.nickname,
-                email: metrics.user.email || prev.email,
-                level: displayLevel
-              }) : null);
+              // Actualizar datos del usuario...
             }
           })
           .catch(err => {
-            console.error('App.tsx: CRITICAL ERROR fetching Meli metrics:', err);
+            console.error('App.tsx: ERROR al descargar datos de Meli:', err);
+            // Intentar refrescar el token si el error es de permiso
           });
       }
     }

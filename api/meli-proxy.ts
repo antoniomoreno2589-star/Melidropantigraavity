@@ -19,9 +19,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             body: body ? (typeof body === 'string' ? body : JSON.stringify(body)) : undefined,
         });
 
-        const data = await response.json();
+        const contentType = response.headers.get('content-type');
+        let data;
+
+        if (contentType && contentType.includes('application/json')) {
+            data = await response.json();
+        } else {
+            data = { text: await response.text() };
+        }
+
         return res.status(response.status).json(data);
     } catch (error: any) {
+        console.error("Proxy Error:", error.message);
         return res.status(500).json({ error: error.message });
     }
 }
