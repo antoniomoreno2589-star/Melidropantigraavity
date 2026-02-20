@@ -159,7 +159,7 @@ export const ProfilePage = () => {
                                 'Content-Type': 'application/x-www-form-urlencoded',
                                 'Accept': 'application/json'
                             },
-                            body: body
+                            body: body.toString()
                         })
                     });
 
