@@ -134,7 +134,11 @@ export const CommunicationsPage = () => {
 
                 // Merge orders that don't have conversations yet
                 const existingPackIds = new Set(formattedMessages.map(m => m.packId?.toString()));
-                const orderChats: ChatSession[] = (meliOrders || []).filter((o: any) => !existingPackIds.has(o.pack_id?.toString()) && !existingPackIds.has(o.id.toString())).map((o: any) => {
+                const orderChats: ChatSession[] = (meliOrders || []).filter((o: any) => {
+                    const packIdStr = o.pack_id?.toString();
+                    const orderIdStr = o.id?.toString();
+                    return !existingPackIds.has(packIdStr) && !existingPackIds.has(orderIdStr);
+                }).map((o: any) => {
                     // Extract product info from order items
                     const firstItem = o.order_items?.[0]?.item || {};
                     const productTitle = firstItem.title || 'Producto sin título';
