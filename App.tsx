@@ -72,32 +72,28 @@ const App = () => {
       const credsRaw = localStorage.getItem('melidrop_meli_credentials');
       console.log("App.tsx Check: melidrop_meli_credentials present?", !!credsRaw);
 
-      if (credsRaw) {
+      if (credsRaw && !meliMetrics) {
         const creds = JSON.parse(credsRaw);
+        // Prioridad inmediata al nombre de vendedor
         if (creds.nickname) {
           setUser(prev => prev ? ({ ...prev, name: creds.nickname }) : null);
         }
 
-        console.log("App.tsx: Iniciando descarga de datos para vendedor:", creds.nickname);
         meliService.getDashboardMetrics()
           .then(metrics => {
-            console.log("App.tsx: Datos reales recibidos para:", metrics.user?.nickname);
             setMeliMetrics(metrics);
-            if (metrics.user) {
+            if (metrics.user?.nickname) {
               setUser(prev => prev ? ({
                 ...prev,
-                name: metrics.user.nickname || prev.name,
+                name: metrics.user.nickname,
                 level: metrics.user.power_seller_status || 'Vendedor'
               }) : null);
             }
           })
-          .catch(err => {
-            console.error('App.tsx: ERROR al descargar datos de Meli:', err);
-            // Intentar refrescar el token si el error es de permiso
-          });
+          .catch(err => console.error('Error cargando Meli:', err));
       }
     }
-  }, [session]);
+  }, [session, meliMetrics]);
 
   const handleLogout = async () => {
     await supabase.auth.signOut();

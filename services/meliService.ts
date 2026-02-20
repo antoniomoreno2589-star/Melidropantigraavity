@@ -453,18 +453,19 @@ class MeliService {
         try {
             console.log("MeliService: Iniciando descarga secuencial para evitar bloqueos...");
 
-            // Peticiones una por una para no saturar el proxy
+            // Peticiones con más tiempo de espera para evitar el error 403
             const user = await this.getUserData().catch(() => null);
-            await new Promise(r => setTimeout(r, 200));
+            await new Promise(r => setTimeout(r, 1000));
 
             const balance = await this.getBalance().catch(() => null);
-            await new Promise(r => setTimeout(r, 200));
+            await new Promise(r => setTimeout(r, 1000));
 
-            const orders = await this.getOrders(50).catch(() => []);
-            await new Promise(r => setTimeout(r, 200));
+            // Usamos 'seller' y no 'seller_id'
+            const orders = await this.getOrders(20).catch(() => []);
+            await new Promise(r => setTimeout(r, 1000));
 
             const unreadCount = await this.getQuestionsCount().catch(() => 0);
-            await new Promise(r => setTimeout(r, 200));
+            await new Promise(r => setTimeout(r, 1000));
 
             const unreadMessages = await this.getUnreadMessagesCount().catch(() => 0);
             await new Promise(r => setTimeout(r, 200));
