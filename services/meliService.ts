@@ -89,9 +89,7 @@ class MeliService {
 
         const response = await fetch('/api/meli-proxy', {
             method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
+            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 url: targetUrl,
                 method: options.method || 'GET',
@@ -102,6 +100,9 @@ class MeliService {
                 body: options.body
             })
         });
+
+        // Breve espera para no saturar el proxy
+        await new Promise(r => setTimeout(r, 100));
 
         if (response.status === 401) {
             const newToken = await this.refreshToken();
