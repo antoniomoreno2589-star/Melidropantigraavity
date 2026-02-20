@@ -463,7 +463,15 @@ class MeliService {
 
             const now = new Date();
             const todayStr = now.toISOString().split('T')[0];
-            const ordersToday = orders ? orders.filter((o: any) => o.date_created.startsWith(todayStr)) : [];
+
+            // Filtro más flexible para hoy: comparamos la fecha ignorando la zona horaria estricta
+            const ordersToday = (orders || []).filter((o: any) => {
+                if (!o.date_created) return false;
+                // Tomamos solo la parte YYYY-MM-DD
+                const orderDate = o.date_created.split('T')[0];
+                return orderDate === todayStr;
+            });
+
             const salesToday = ordersToday.length;
             const incomeToday = ordersToday.reduce((acc: number, o: any) => acc + (o.total_amount || 0), 0);
             const responseTime = this.calculateAverageResponseTime(answeredQuestions);
