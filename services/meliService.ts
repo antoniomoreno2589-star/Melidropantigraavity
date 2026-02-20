@@ -461,13 +461,13 @@ class MeliService {
                 this.getAnsweredQuestions().catch(() => [])
             ]);
 
-            // Filtro usando fecha local (México) en lugar de UTC
-            const todayStr = new Date().toLocaleDateString('en-CA'); // Formato YYYY-MM-DD local
-
+            // Filtro de ventas hoy (comparación de fecha simplificada)
             const ordersToday = (orders || []).filter((o: any) => {
                 if (!o.date_created) return false;
+                // Extraer YYYY-MM-DD de '2024-02-14T...'
                 const orderDate = o.date_created.split('T')[0];
-                return orderDate === todayStr;
+                const localToday = new Date().toISOString().split('T')[0];
+                return orderDate === localToday;
             });
 
             const salesToday = ordersToday.length;
@@ -477,11 +477,11 @@ class MeliService {
             this.statsCache = {
                 user: {
                     ...user,
-                    nickname: user?.nickname,
+                    nickname: user?.nickname || 'Vendedor',
                     email: user?.email,
-                    reputation: user?.seller_reputation?.level_id || 'unknown',
+                    reputation: user?.seller_reputation?.level_id || 'green',
                     power_seller_status: user?.seller_reputation?.power_seller_status,
-                    transactions: user?.seller_reputation?.transactions?.total || 1,
+                    transactions: user?.seller_reputation?.transactions?.total || 0,
                     completed: user?.seller_reputation?.transactions?.completed || 0
                 },
                 balance: {
