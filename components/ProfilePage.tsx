@@ -148,13 +148,19 @@ export const ProfilePage = () => {
 
                     const body = new URLSearchParams(bodyParams);
 
-                    const response = await fetch('https://api.mercadolibre.com/oauth/token', {
+                    // Usamos el proxy para el intercambio del token
+                    const response = await fetch('/api/meli-proxy', {
                         method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/x-www-form-urlencoded',
-                            'Accept': 'application/json'
-                        },
-                        body: body
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            url: 'https://api.mercadolibre.com/oauth/token',
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/x-www-form-urlencoded',
+                                'Accept': 'application/json'
+                            },
+                            body: body
+                        })
                     });
 
                     if (!response.ok) {
@@ -163,7 +169,7 @@ export const ProfilePage = () => {
                     }
 
                     const data = await response.json();
-                    console.log("Token received successfully", { userId: data.user_id });
+                    console.log("Token received successfully through Proxy", { userId: data.user_id });
 
                     const newCreds = {
                         appId: storedAppId,
@@ -174,17 +180,26 @@ export const ProfilePage = () => {
                         id: data.user_id,
                         expiresAt: Date.now() + (data.expires_in * 1000)
                     };
+
                     try {
-                        const userResponse = await fetch(`https://api.mercadolibre.com/users/me`, {
-                            headers: { 'Authorization': `Bearer ${data.access_token}` }
+                        const userResponse = await fetch('/api/meli-proxy', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                url: `https://api.mercadolibre.com/users/me`,
+                                method: 'GET',
+                                headers: { 'Authorization': `Bearer ${data.access_token}` }
+                            })
                         });
                         if (userResponse.ok) {
-                            const userData = await userResponse.json();
-                            newCreds.nickname = userData.nickname;
-                            console.log("User info received:", newCreds.nickname);
+                            const userData = await userResponse.ok ? await userResponse.json() : null;
+                            if (userData) {
+                                newCreds.nickname = userData.nickname;
+                                console.log("User info received through Proxy:", newCreds.nickname);
+                            }
                         }
                     } catch (infoErr) {
-                        console.warn("CORS or network error fetching user info", infoErr);
+                        console.warn("Proxy error fetching user info", infoErr);
                     }
 
                     // Save Credentials
