@@ -260,15 +260,17 @@ class MeliService {
         return syncedCount;
     }
 
-    async getOrders(limit = 10) {
+    async getOrders(limit = 20) {
         const creds = this.getCredentials();
-        if (!creds) return null;
+        if (!creds) return [];
         try {
+            // Buscamos órdenes recientes como vendedor
             const response = await this.fetchWithAuth(`/orders/search?seller=${creds.id}&limit=${limit}&sort=date_created_desc`);
+            if (!response.ok) return [];
             const data = await response.json();
             return data.results || [];
         } catch (e) {
-            console.error('Error fetching orders:', e);
+            console.error('meliService: Error fetching orders:', e);
             return [];
         }
     }
@@ -369,24 +371,39 @@ class MeliService {
         return this.getQuestions('ANSWERED');
     }
 
-    async getMessages(limit = 10) {
+    async getMessages(limit = 20) {
         const creds = this.getCredentials();
         if (!creds) return [];
+
         const endpoints = [
             `/marketplace/messages/packs/search?seller_id=${creds.id}&role=seller`,
             `/messages/packs/search?seller_id=${creds.id}&role=seller`,
-            `/conversations/search?seller_id=${creds.id}&limit=${limit}`,
-            `/marketplace/messages/search?seller_id=${creds.id}&limit=${limit}`
+            `/conversations/search?seller_id=${creds.id}&limit=${limit}`
         ];
+
+        let allMessages: any[] = [];
         for (const url of endpoints) {
             try {
                 const response = await this.fetchWithAuth(url);
+                if (!response.ok) continue;
                 const data = await response.json();
                 const results = data.results || data.messages || data.conversations || [];
-                if (results.length > 0) return results;
+                if (results.length > 0) {
+                    allMessages = [...allMessages, ...results];
+                }
             } catch (e) { continue; }
         }
-        return [];
+
+        // Eliminar duplicados por pack_id o id
+        const unique = new Map();
+        allMessages.forEach(m => {
+            const id = m.pack_id || m.id;
+            if (id && !unique.has(id.toString())) {
+                unique.set(id.toString(), m);
+            }
+        });
+
+        return Array.from(unique.values());
     }
 
     async getItem(itemId: string) {
