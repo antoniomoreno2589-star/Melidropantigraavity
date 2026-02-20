@@ -130,13 +130,13 @@ export const api = {
                 title: p.title,
                 sku: p.sku,
                 asin: p.asin,
-                meli_id: p.meliId,
-                price_mxn: p.priceMXN,
-                cost_usd: p.costUSD || 0,
-                stock_provider: p.stockProvider || 0,
-                stock_meli: p.stockMeli || 0,
+                meli_id: (p as any).meli_id,
+                price_mxn: (p as any).price_mxn,
+                cost_usd: (p as any).cost_usd || 0,
+                stock_provider: (p as any).stock_provider || 0,
+                stock_meli: (p as any).stock_meli || 0,
                 status: p.status,
-                image_url: p.imageUrl,
+                image_url: (p as any).image_url,
                 last_updated: new Date().toISOString()
             }));
 

@@ -219,12 +219,13 @@ class MeliService {
             const chunkIds = itemIds.slice(i, i + chunkSize);
             const items = await this.getItemsDetails(chunkIds);
 
-            const productsToUpsert: Partial<Product>[] = items.map(item => {
-                const statusMap: Record<string, Product['status']> = {
-                    'active': 'active', 'paused': 'paused', 'under_review': 'under_review',
-                    'not_yet_active': 'under_review', 'payment_required': 'under_review',
-                    'closed': 'closed', 'inactive': 'inactive'
+            const productsToUpsert: any[] = items.map(item => {
+                const statusMap: Record<string, string> = {
+                    'active': 'active',
+                    'paused': 'paused',
+                    // Cualquier otro estado lo mandamos como 'draft' para que la DB lo acepte
                 };
+
                 let skuAttr = item.attributes?.find((attr: any) => attr.id === 'SELLER_SKU');
                 if (!skuAttr && item.variations) {
                     for (const v of item.variations) {
@@ -233,11 +234,17 @@ class MeliService {
                     }
                 }
                 const sku = skuAttr?.value_name || item.seller_custom_field || item.id;
+
                 return {
-                    title: item.title, sku, meliId: item.id, priceMXN: item.price,
-                    costUSD: 0, stockMeli: item.available_quantity, stockProvider: 0,
-                    status: statusMap[item.status] || 'active',
-                    imageUrl: item.thumbnail ? item.thumbnail.replace("-I.jpg", "-V.jpg") : undefined
+                    title: item.title,
+                    sku: sku,
+                    meli_id: item.id,
+                    price_mxn: item.price,
+                    cost_usd: 0,
+                    stock_meli: item.available_quantity,
+                    stock_provider: 0,
+                    status: statusMap[item.status] || 'draft',
+                    image_url: item.thumbnail ? item.thumbnail.replace("-I.jpg", "-V.jpg") : undefined
                 };
             });
 
@@ -245,7 +252,10 @@ class MeliService {
                 await api.products.bulkUpsert(productsToUpsert);
                 syncedCount += productsToUpsert.length;
                 if (onProgress) onProgress('syncing', syncedCount, total);
-            } catch (e) { }
+            } catch (e) {
+                console.error("MeliService: Error in bulkUpsert:", e);
+                // No detenemos el proceso, pero al menos lo vemos en consola
+            }
         }
         return syncedCount;
     }
