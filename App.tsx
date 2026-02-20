@@ -28,8 +28,6 @@ const App = () => {
   const [user, setUser] = useState<User | null>(null);
   const [meliMetrics, setMeliMetrics] = useState<any>(null);
 
-  console.log("App Rendering. Session:", session ? "YES" : "NO", "User:", user?.email);
-
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
@@ -75,11 +73,15 @@ const App = () => {
       console.log("App.tsx Check: melidrop_meli_credentials present?", !!credsRaw);
 
       if (credsRaw) {
-        console.log("App.tsx: Iniciando descarga de datos de Mercado Libre...");
+        const creds = JSON.parse(credsRaw);
+        if (creds.nickname) {
+          setUser(prev => prev ? ({ ...prev, name: creds.nickname }) : null);
+        }
+
+        console.log("App.tsx: Iniciando descarga de datos para vendedor:", creds.nickname);
         meliService.getDashboardMetrics()
           .then(metrics => {
-            console.log("App.tsx: Datos recibidos de Meli!", metrics);
-            console.log("App.tsx: Ventas hoy detectadas:", metrics.stats?.salesToday);
+            console.log("App.tsx: Datos reales recibidos para:", metrics.user?.nickname);
             setMeliMetrics(metrics);
             if (metrics.user) {
               setUser(prev => prev ? ({
