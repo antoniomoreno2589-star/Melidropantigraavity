@@ -105,6 +105,7 @@ class MeliService {
         await new Promise(r => setTimeout(r, 100));
 
         if (response.status === 401) {
+            console.warn("MeliService: Token expired (401), refreshing...");
             const newToken = await this.refreshToken();
             if (newToken) {
                 return fetch('/api/proxy', {
@@ -121,6 +122,8 @@ class MeliService {
                     })
                 });
             }
+        } else if (response.status === 403) {
+            console.error(`MeliService: Forbidden 403 on ${endpoint}. Check scopes or rate limits.`);
         }
 
         return response;
@@ -265,9 +268,16 @@ class MeliService {
         const creds = this.getCredentials();
         if (!creds) return [];
         try {
-            // Buscamos órdenes recientes como vendedor
-            const response = await this.fetchWithAuth(`/orders/search?seller=${creds.id}&limit=${limit}&sort=date_created_desc`);
-            if (!response.ok) return [];
+            // Buscamos órdenes recientes como vendedor (usando sort=date_desc según API v2)
+            console.log(`meliService: Fetching orders for seller ${creds.id}`);
+            const response = await this.fetchWithAuth(`/orders/search?seller=${creds.id}&limit=${limit}&sort=date_desc`);
+
+            if (!response.ok) {
+                const errText = await response.text();
+                console.error(`meliService: Error fetching orders (${response.status}):`, errText);
+                return [];
+            }
+
             const data = await response.json();
             return data.results || [];
         } catch (e) {
@@ -377,21 +387,34 @@ class MeliService {
         if (!creds) return [];
 
         const endpoints = [
+            // `/messages/packs/search` is legacy and often restricted. Use robust handling.
             `/messages/packs/search?seller_id=${creds.id}&role=seller`,
-            `/conversations/search?seller_id=${creds.id}&limit=${limit}`
+            //Conversations might not be public or require specific scopes
+            // `/conversations/search?seller_id=${creds.id}&limit=${limit}`
         ];
 
         let allMessages: any[] = [];
         for (const url of endpoints) {
             try {
+                console.log(`MeliService: Fetching messages from ${url}`);
                 const response = await this.fetchWithAuth(url);
-                if (!response.ok) continue;
+
+                if (!response.ok) {
+                    console.warn(`MeliService: Failed to fetch messages from ${url} (${response.status})`);
+                    continue;
+                }
+
                 const data = await response.json();
-                const results = data.results || data.messages || data.conversations || [];
+                const results = data.results || data.messages || [];
                 if (results.length > 0) {
                     allMessages = [...allMessages, ...results];
                 }
-            } catch (e) { continue; }
+            } catch (e) {
+                console.error("MeliService: Error in message loop:", e);
+                continue;
+            }
+            // Delay between message fetches to be safe
+            await new Promise(r => setTimeout(r, 500));
         }
 
         // Eliminar duplicados por pack_id o id
