@@ -122,8 +122,10 @@ class MeliService {
                     })
                 });
             }
-        } else if (response.status === 403) {
-            console.error(`MeliService: Forbidden 403 on ${endpoint}. Check scopes or rate limits.`);
+        }
+        if (response.status === 403) {
+            const errBody = await response.clone().text();
+            console.error(`MeliService: Forbidden 403 on ${endpoint}. Error: ${errBody}`);
         }
 
         return response;
@@ -430,6 +432,13 @@ class MeliService {
                     return q;
                 })
             );
+
+            if (questions.length === 0 && status === 'UNANSWERED') {
+                console.log("MeliService: No unanswered questions, tried fetching any recent questions as fallback...");
+                const fallbackResponse = await this.fetchWithAuth(`/questions/search?seller_id=${creds.id}&limit=5`);
+                const fallbackData = await fallbackResponse.json();
+                return fallbackData.questions || fallbackData.results || [];
+            }
 
             return questionsWithItems;
         } catch (e) {
