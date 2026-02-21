@@ -146,32 +146,58 @@ class MeliService {
             const response = await this.fetchWithAuth(`/users/${creds.id}/mercadopago_account/balance`);
 
             if (!response.ok) {
-                console.warn(`meliService: Balance API returned ${response.status} (${response.statusText}). URL: /users/${creds.id}/mercadopago_account/balance. Triggering fallback...`);
+                console.warn(`meliService: Balance API (/users/ID/...) returned ${response.status}. Trying variant 2 (/mercadopago_account/balance)...`);
+
+                // Variante 2: Sin el prefijo /users/ID
+                const response2 = await this.fetchWithAuth(`/mercadopago_account/balance`);
+                if (response2.ok) {
+                    console.log("meliService: Balance found using Variant 2");
+                    return await response2.json();
+                }
+
+                console.warn(`meliService: Balance Variant 2 also failed (${response2.status}). Triggering profile fallback...`);
+
                 // Fallback redundante: intentar sacar del perfil de usuario
                 const userData = await this.getUserData();
-                console.log("meliService: Fallback UserData balance info:", userData?.mercadopago_account);
-                if (userData?.mercadopago_account) {
+                const mpInfo = userData?.mercadopago_account || userData?.mercadopago_info || userData?.credit;
+
+                if (mpInfo) {
+                    console.log("meliService: Emergency fallback successful using profile data");
                     return {
-                        total_amount: userData.mercadopago_account.balance || 0,
-                        balance: userData.mercadopago_account.balance || 0,
-                        available_balance: userData.mercadopago_account.available_balance || 0,
+                        total_amount: mpInfo.balance || mpInfo.consumed || 0,
+                        balance: mpInfo.balance || mpInfo.consumed || 0,
+                        available_balance: mpInfo.available_balance || mpInfo.balance || 0,
                         unavailable_balance: 0
                     };
+                }
+
+                if (response.status === 403 || response2.status === 403) {
+                    console.error("MeliService: Error 403 detectado. ¡Es MUY PROBABLE que necesites volver a conectar tu cuenta en el Perfil para activar los nuevos permisos!");
                 }
                 return null;
             }
 
             const data = await response.json();
+            console.log("meliService: User data keys:", Object.keys(data));
+            // Log structure of potential balance fields
+            if (data.mercadopago_account || data.balance || data.credit) {
+                console.log("meliService: Found potential balance fields in profile:", {
+                    mp_account: !!data.mercadopago_account,
+                    balance: !!data.balance,
+                    credit: !!data.credit
+                });
+            }
             return data;
         } catch (e: any) {
             console.error("meliService: Exception in getBalance, trying emergency fallback:", e.message || e);
             try {
                 const userData = await this.getUserData();
-                if (userData?.mercadopago_account) {
+                const mpInfo = userData?.mercadopago_account || userData?.mercadopago_info || userData?.credit;
+                if (mpInfo) {
                     return {
-                        total_amount: userData.mercadopago_account.balance || 0,
-                        balance: userData.mercadopago_account.balance || 0,
-                        available_balance: userData.mercadopago_account.available_balance || 0,
+                        total_amount: mpInfo.balance || mpInfo.consumed || 0,
+                        balance: mpInfo.balance || mpInfo.consumed || 0,
+                        available_balance: mpInfo.available_balance || mpInfo.balance || 0,
                         unavailable_balance: 0
                     };
                 }
@@ -421,10 +447,10 @@ class MeliService {
         if (!creds) return [];
 
         const endpoints = [
-            // `/messages/packs/search` is legacy and often restricted. Use robust handling.
+            `/messages/search?seller_id=${creds.id}&role=seller`,
+            `/conversations/search?seller_id=${creds.id}&limit=${limit}`,
+            `/marketplace/messages/search?seller_id=${creds.id}&role=seller`,
             `/messages/packs/search?seller_id=${creds.id}&role=seller`,
-            //Conversations might not be public or require specific scopes
-            // `/conversations/search?seller_id=${creds.id}&limit=${limit}`
         ];
 
         let allMessages: any[] = [];
@@ -435,19 +461,23 @@ class MeliService {
 
                 if (!response.ok) {
                     console.warn(`MeliService: Failed to fetch messages from ${url} (${response.status})`);
+                    if (response.status === 403) {
+                        console.error(`MeliService: Mensajes bloqueados (403) en ${url}. Verifica que hayas re-conectado tu cuenta.`);
+                    }
                     continue;
                 }
 
                 const data = await response.json();
-                const results = data.results || data.messages || [];
+                const results = data.results || data.messages || data.conversations || [];
 
                 // Procesamos cada mensaje para detectar si es no leído
                 const processed = results.map((m: any) => ({
                     ...m,
-                    unread: m.unread === true || m.status === 'unread' || m.read === false
+                    unread: m.unread === true || m.status === 'unread' || m.read === false || (m.unread_count && m.unread_count > 0)
                 }));
 
                 if (processed.length > 0) {
+                    console.log(`MeliService: Metodo ${url} devolvió ${processed.length} mensajes.`);
                     allMessages = [...allMessages, ...processed];
                 }
             } catch (e) {

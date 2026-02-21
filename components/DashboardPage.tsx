@@ -88,7 +88,26 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ user, stats, meliD
           </div>
         </div>
 
-        {/* 2. BLOQUE DE KPIs (RESTORED FROM IMAGE) */}
+        {/* Banner de Aviso: Permisos Faltantes */}
+        {(!meliData?.balance?.total_amount && meliData?.balance !== undefined) && (
+          <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 p-4 rounded-2xl flex items-center justify-between gap-4">
+            <div className="flex items-center gap-3">
+              <span className="material-symbols-outlined text-amber-500">warning</span>
+              <div>
+                <p className="text-sm font-bold text-amber-900 dark:text-amber-100">Acceso limitado a Mercado Pago</p>
+                <p className="text-xs text-amber-700 dark:text-amber-300">Es posible que necesites actualizar los permisos de tu cuenta para ver el saldo y mensajes pendientes.</p>
+              </div>
+            </div>
+            <button
+              onClick={() => navigate('/profile')}
+              className="bg-amber-500 hover:bg-amber-600 text-white px-4 py-2 rounded-xl text-xs font-bold transition-all"
+            >
+              Ir a Perfil y Conectar
+            </button>
+          </div>
+        )}
+
+        {/* 2. BLOQUE DE KPIs */}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
           <div className="bg-white dark:bg-slate-800 p-5 rounded-2xl border border-slate-200 dark:border-slate-700 shadow-sm flex flex-col">
             <div className="flex items-center gap-2 mb-3">
