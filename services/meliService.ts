@@ -146,8 +146,8 @@ class MeliService {
             const response = await this.fetchWithAuth(`/users/${creds.id}/mercadopago_account/balance`);
             const data = await response.json();
             return data;
-        } catch (e) {
-            console.error("meliService: Error fetching Balance:", e);
+        } catch (e: any) {
+            console.error("meliService: Error fetching Balance:", e.message || e);
             return null;
         }
     }
@@ -471,38 +471,46 @@ class MeliService {
 
     async getDashboardMetrics() {
         if (this.statsCache && (Date.now() - this.lastStatsFetch < 60000)) {
+            console.log("MeliService: Devolviendo métricas desde caché.");
             return this.statsCache;
         }
         try {
             console.log("MeliService: Iniciando descarga secuencial para evitar bloqueos...");
 
             // Peticiones con más tiempo de espera para evitar el error 403
-            const user = await this.getUserData().catch(() => null);
+            const user = await this.getUserData().catch((e) => { console.error("MeliService: Error fetching user data:", e); return null; });
             await new Promise(r => setTimeout(r, 1000));
 
-            const balance = await this.getBalance().catch(() => null);
+            const balance = await this.getBalance().catch((e) => { console.error("MeliService: Error fetching balance:", e); return null; });
             await new Promise(r => setTimeout(r, 1000));
 
             // Usamos 'seller' y no 'seller_id'
-            const orders = await this.getOrders(20).catch(() => []);
+            const orders = await this.getOrders(20).catch((e) => { console.error("MeliService: Error fetching orders:", e); return []; });
             await new Promise(r => setTimeout(r, 1000));
 
-            const unreadCount = await this.getQuestionsCount().catch(() => 0);
+            const unreadCount = await this.getQuestionsCount().catch((e) => { console.error("MeliService: Error fetching unread questions count:", e); return 0; });
             await new Promise(r => setTimeout(r, 1000));
 
-            const unreadMessages = await this.getUnreadMessagesCount().catch(() => 0);
+            const unreadMessages = await this.getUnreadMessagesCount().catch((e) => { console.error("MeliService: Error fetching unread messages count:", e); return 0; });
             await new Promise(r => setTimeout(r, 200));
 
-            const itemsBreakdown = await this.getItemsBreakdown().catch(() => null);
+            const itemsBreakdown = await this.getItemsBreakdown().catch((e) => { console.error("MeliService: Error fetching items breakdown:", e); return null; });
             await new Promise(r => setTimeout(r, 200));
 
-            const answeredQuestions = await this.getAnsweredQuestions().catch(() => []);
+            const answeredQuestions = await this.getAnsweredQuestions().catch((e) => { console.error("MeliService: Error fetching answered questions:", e); return []; });
 
-            // Filtro de ventas hoy corregido
+            // Filtro de ventas hoy corregido para zona horaria local
             const now = new Date();
-            const todayStr = now.toISOString().split('T')[0];
-            const ordersToday = (orders || []).filter((o: any) => o.date_created && o.date_created.startsWith(todayStr));
+            const todayStr = now.toLocaleDateString('en-CA'); // Formato YYYY-MM-DD local
+            console.log("MeliService: Buscando ventas para 'hoy' local:", todayStr);
+            console.log("MeliService: Total órdenes recibidas:", orders.length);
 
+            const ordersToday = (orders || []).filter((o: any) => {
+                const date = o.date_created || o.date_closed;
+                return date && date.startsWith(todayStr);
+            });
+
+            console.log("MeliService: Ventas filtradas para hoy:", ordersToday.length);
             const salesToday = ordersToday.length;
             const incomeToday = ordersToday.reduce((acc: number, o: any) => acc + (o.total_amount || 0), 0);
             const responseTime = this.calculateAverageResponseTime(answeredQuestions);

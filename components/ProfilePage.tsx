@@ -304,7 +304,7 @@ export const ProfilePage = () => {
                 setMeliAppId('');
                 setMeliSecret('');
 
-                window.location.href = `https://auth.mercadolibre.com.${meliSite}/authorization?response_type=code&client_id=${meliAppId}&redirect_uri=${redirectUri}&code_challenge=${codeChallenge}&code_challenge_method=S256&scope=read:items write:items read:orders write:orders read:questions write:questions read:messages write:messages offline_access`;
+                window.location.href = `https://auth.mercadolibre.com.${meliSite}/authorization?response_type=code&client_id=${meliAppId}&redirect_uri=${redirectUri}&code_challenge=${codeChallenge}&code_challenge_method=S256&scope=read:items write:items read:orders write:orders read:questions write:questions read:messages write:messages read:accounts offline_access`;
             } catch (err) {
                 console.error("PKCE Generation failed", err);
                 setErrorMessage("Error al generar seguridad PKCE");
