@@ -147,7 +147,15 @@ class MeliService {
             const data = await response.json();
             return data;
         } catch (e: any) {
-            console.error("meliService: Error fetching Balance:", e.message || e);
+            console.warn("meliService: Error fetching Balance API, will try fallback from User Data:", e.message || e);
+            const userData = await this.getUserData();
+            if (userData?.mercadopago_account) {
+                return {
+                    balance: userData.mercadopago_account.balance,
+                    available_balance: userData.mercadopago_account.available_balance,
+                    unavailable_balance: 0
+                };
+            }
             return null;
         }
     }
@@ -406,8 +414,15 @@ class MeliService {
 
                 const data = await response.json();
                 const results = data.results || data.messages || [];
-                if (results.length > 0) {
-                    allMessages = [...allMessages, ...results];
+
+                // Procesamos cada mensaje para detectar si es no leído
+                const processed = results.map((m: any) => ({
+                    ...m,
+                    unread: m.unread === true || m.status === 'unread' || m.read === false
+                }));
+
+                if (processed.length > 0) {
+                    allMessages = [...allMessages, ...processed];
                 }
             } catch (e) {
                 console.error("MeliService: Error in message loop:", e);

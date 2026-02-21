@@ -106,7 +106,11 @@ export const CommunicationsPage = () => {
                             isUser: true
                         }] : [])
                     ]
-                })).sort((a, b) => b.dateCreated.getTime() - a.dateCreated.getTime()); // Sort by most recent first
+                })).sort((a, b) => {
+                    if (a.unread && !b.unread) return -1;
+                    if (!a.unread && b.unread) return 1;
+                    return b.dateCreated.getTime() - a.dateCreated.getTime();
+                }); // Sort by priority and date
 
                 const formattedMessages: ChatSession[] = (meliMessages || []).map((m: any) => {
                     // Handle pack structure vs conversation structure vs individual message structure
@@ -123,7 +127,7 @@ export const CommunicationsPage = () => {
                         productTitle: m.item?.title || null,
                         dateCreated: new Date(fromMsg.date || m.date_created || Date.now()),
                         time: fromMsg.date ? new Date(fromMsg.date).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Reciente',
-                        unread: (m.unread_count > 0) || (fromMsg.status === 'unread') || (!fromMsg.read && !isFromMe && fromMsg.id),
+                        unread: (m.unread === true) || (m.unread_count > 0) || (fromMsg.status === 'unread') || (!fromMsg.read && !isFromMe && fromMsg.id),
                         packId: m.pack_id || m.id, // Assuming generic search returns basic pack info
                         counterpartId: isFromMe ? (toUser.id || toUser.user_id) : (fromUser.id || fromUser.user_id),
                         messages: [
@@ -217,6 +221,9 @@ export const CommunicationsPage = () => {
                 // Combine and sort all messages by dateCreated
                 const combinedMessages = [...formattedMessages, ...formattedClaims, ...orderChats]
                     .sort((a, b) => {
+                        // Prioritize unread first, then by date recent
+                        if (a.unread && !b.unread) return -1;
+                        if (!a.unread && b.unread) return 1;
                         const dateA = a.dateCreated || new Date(0);
                         const dateB = b.dateCreated || new Date(0);
                         return dateB.getTime() - dateA.getTime(); // Most recent first
