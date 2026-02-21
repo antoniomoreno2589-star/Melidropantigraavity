@@ -225,7 +225,7 @@ export const CommunicationsPage = () => {
                 });
 
                 // Combine and sort all messages by dateCreated
-                const combinedMessages = [...formattedMessages, ...formattedClaims, ...orderChats]
+                const combinedMessages = [...formattedQuestions, ...formattedMessages, ...formattedClaims, ...orderChats]
                     .sort((a, b) => {
                         // Prioritize unread first, then by date recent
                         if (a.unread && !b.unread) return -1;

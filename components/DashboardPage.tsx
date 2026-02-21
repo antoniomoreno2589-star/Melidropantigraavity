@@ -98,12 +98,21 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ user, stats, meliD
                 <p className="text-xs text-amber-700 dark:text-amber-300">Es posible que necesites actualizar los permisos de tu cuenta para ver el saldo y mensajes pendientes.</p>
               </div>
             </div>
-            <button
-              onClick={() => navigate('/profile')}
-              className="bg-amber-500 hover:bg-amber-600 text-white px-4 py-2 rounded-xl text-xs font-bold transition-all"
-            >
-              Ir a Perfil y Conectar
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => window.location.reload()}
+                className="bg-white dark:bg-slate-700 text-amber-600 dark:text-amber-400 border border-amber-200 dark:border-amber-800 px-4 py-2 rounded-xl text-xs font-bold hover:bg-amber-100 dark:hover:bg-amber-800/50 transition-all flex items-center gap-2"
+              >
+                <span className="material-symbols-outlined text-[16px]">refresh</span>
+                Refrescar Datos
+              </button>
+              <button
+                onClick={() => navigate('/profile')}
+                className="bg-amber-500 hover:bg-amber-600 text-white px-4 py-2 rounded-xl text-xs font-bold transition-all shadow-sm shadow-amber-500/20"
+              >
+                Actualizar Permisos
+              </button>
+            </div>
           </div>
         )}
 

@@ -355,17 +355,17 @@ class MeliService {
     async getUnreadMessagesCount() {
         const creds = this.getCredentials();
         if (!creds) return 0;
-        const variants = [
-            `/messages/unread?role=seller`,
-            `/marketplace/messages/unread?role=seller`
-        ];
+        const variants = [`/messages/unread?role=seller`, `/messages/packs/unread?role=seller`];
         for (const url of variants) {
             try {
+                console.log(`MeliService: Trying unread count from ${url}`);
                 const response = await this.fetchWithAuth(url);
                 if (response.ok) {
                     const data = await response.json();
-                    if (data.unread_count !== undefined) return data.unread_count;
-                    if (data.total !== undefined) return data.total;
+                    if (data.unread_count !== undefined) {
+                        console.log(`MeliService: Unread count found (${data.unread_count}) using ${url}`);
+                        return data.unread_count;
+                    }
                 }
             } catch (e) { }
         }
@@ -458,7 +458,6 @@ class MeliService {
         const endpoints = [
             `/messages/search?seller_id=${creds.id}&role=seller`,
             `/conversations/search?seller_id=${creds.id}&limit=${limit}`,
-            `/marketplace/messages/search?seller_id=${creds.id}&role=seller`,
             `/messages/packs/search?seller_id=${creds.id}&role=seller`,
         ];
 
@@ -598,6 +597,13 @@ class MeliService {
             const salesToday = ordersToday.length;
             const incomeToday = ordersToday.reduce((acc: number, o: any) => acc + (o.total_amount || 0), 0);
             const responseTime = this.calculateAverageResponseTime(answeredQuestions);
+
+            console.log("MeliService: Final metrics data assembly:", {
+                balanceFound: !!balance,
+                balanceTotal: balance?.total_amount,
+                profileBalance: user?.mercadopago_account?.balance,
+                claimsCount: (user as any)?.claims_count || 0
+            });
 
             this.statsCache = {
                 user: {
