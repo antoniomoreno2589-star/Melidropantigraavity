@@ -144,18 +144,38 @@ class MeliService {
 
         try {
             const response = await this.fetchWithAuth(`/users/${creds.id}/mercadopago_account/balance`);
+
+            if (!response.ok) {
+                console.warn(`meliService: Balance API returned ${response.status} (${response.statusText}). URL: /users/${creds.id}/mercadopago_account/balance. Triggering fallback...`);
+                // Fallback redundante: intentar sacar del perfil de usuario
+                const userData = await this.getUserData();
+                console.log("meliService: Fallback UserData balance info:", userData?.mercadopago_account);
+                if (userData?.mercadopago_account) {
+                    return {
+                        total_amount: userData.mercadopago_account.balance || 0,
+                        balance: userData.mercadopago_account.balance || 0,
+                        available_balance: userData.mercadopago_account.available_balance || 0,
+                        unavailable_balance: 0
+                    };
+                }
+                return null;
+            }
+
             const data = await response.json();
             return data;
         } catch (e: any) {
-            console.warn("meliService: Error fetching Balance API, will try fallback from User Data:", e.message || e);
-            const userData = await this.getUserData();
-            if (userData?.mercadopago_account) {
-                return {
-                    balance: userData.mercadopago_account.balance,
-                    available_balance: userData.mercadopago_account.available_balance,
-                    unavailable_balance: 0
-                };
-            }
+            console.error("meliService: Exception in getBalance, trying emergency fallback:", e.message || e);
+            try {
+                const userData = await this.getUserData();
+                if (userData?.mercadopago_account) {
+                    return {
+                        total_amount: userData.mercadopago_account.balance || 0,
+                        balance: userData.mercadopago_account.balance || 0,
+                        available_balance: userData.mercadopago_account.available_balance || 0,
+                        unavailable_balance: 0
+                    };
+                }
+            } catch (inner) { }
             return null;
         }
     }
@@ -307,12 +327,18 @@ class MeliService {
     async getUnreadMessagesCount() {
         const creds = this.getCredentials();
         if (!creds) return 0;
-        const variants = [`/marketplace/messages/unread?role=seller`, `/messages/unread?role=seller`];
+        const variants = [
+            `/messages/unread?role=seller`,
+            `/marketplace/messages/unread?role=seller`
+        ];
         for (const url of variants) {
             try {
                 const response = await this.fetchWithAuth(url);
-                const data = await response.json();
-                if (response.ok && data.unread_count !== undefined) return data.unread_count;
+                if (response.ok) {
+                    const data = await response.json();
+                    if (data.unread_count !== undefined) return data.unread_count;
+                    if (data.total !== undefined) return data.total;
+                }
             } catch (e) { }
         }
         return 0;
@@ -514,18 +540,22 @@ class MeliService {
 
             const answeredQuestions = await this.getAnsweredQuestions().catch((e) => { console.error("MeliService: Error fetching answered questions:", e); return []; });
 
-            // Filtro de ventas hoy corregido para zona horaria local
+            // Filtro de ventas hoy corregido para zona horaria local (México)
             const now = new Date();
-            const todayStr = now.toLocaleDateString('en-CA'); // Formato YYYY-MM-DD local
-            console.log("MeliService: Buscando ventas para 'hoy' local:", todayStr);
-            console.log("MeliService: Total órdenes recibidas:", orders.length);
+            const todayISO = now.toISOString().split('T')[0];
+            const todayLocal = now.toLocaleDateString('en-CA'); // YYYY-MM-DD local
+
+            console.log("MeliService: Buscando ventas para 'hoy':", { todayISO, todayLocal });
 
             const ordersToday = (orders || []).filter((o: any) => {
                 const date = o.date_created || o.date_closed;
-                return date && date.startsWith(todayStr);
+                if (!date) return false;
+                // Verificamos si la fecha empieza con cualquiera de los formatos de hoy
+                const dateParts = date.split('T')[0];
+                return dateParts === todayISO || dateParts === todayLocal;
             });
 
-            console.log("MeliService: Ventas filtradas para hoy:", ordersToday.length);
+            console.log("MeliService: Ventas filtradas final:", ordersToday.length);
             const salesToday = ordersToday.length;
             const incomeToday = ordersToday.reduce((acc: number, o: any) => acc + (o.total_amount || 0), 0);
             const responseTime = this.calculateAverageResponseTime(answeredQuestions);

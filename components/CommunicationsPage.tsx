@@ -119,6 +119,12 @@ export const CommunicationsPage = () => {
                     const toUser = m.seller || fromMsg.to || {};
                     const isFromMe = (fromUser.id || fromUser.user_id)?.toString() === meliService.getCredentials()?.id.toString();
 
+                    const isUnread = (m.unread === true) || (m.unread_count > 0) || (fromMsg.status === 'unread') || (!fromMsg.read && !isFromMe && fromMsg.id);
+
+                    if (isUnread) {
+                        console.log(`CommunicationsPage: Detectado mensaje NO LEÍDO de ${fromUser.nickname || 'Usuario'}. PackID: ${m.pack_id || m.id}`);
+                    }
+
                     return {
                         id: m.id || fromMsg.id || Math.random(),
                         user: isFromMe ? (toUser.nickname || toUser.name || 'Comprador') : (fromUser.nickname || fromUser.name || 'Comprador'),
@@ -127,7 +133,7 @@ export const CommunicationsPage = () => {
                         productTitle: m.item?.title || null,
                         dateCreated: new Date(fromMsg.date || m.date_created || Date.now()),
                         time: fromMsg.date ? new Date(fromMsg.date).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Reciente',
-                        unread: (m.unread === true) || (m.unread_count > 0) || (fromMsg.status === 'unread') || (!fromMsg.read && !isFromMe && fromMsg.id),
+                        unread: isUnread,
                         packId: m.pack_id || m.id, // Assuming generic search returns basic pack info
                         counterpartId: isFromMe ? (toUser.id || toUser.user_id) : (fromUser.id || fromUser.user_id),
                         messages: [
