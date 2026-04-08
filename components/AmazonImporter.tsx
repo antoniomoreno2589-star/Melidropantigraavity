@@ -217,19 +217,36 @@ export const AmazonImporter: React.FC = () => {
     };
 
     // ─── Step 5: Dry Run & Publish ────────────────────────────────────
+    // ─── Pricing helpers ──────────────────────────────────────────────
+    const calculateMexicoPrice = (costUSD: number): number => {
+        const exchangeRate = parseFloat(localStorage.getItem('melidrop_exchange_rate') || '18.5');
+        const savedRulesRaw = localStorage.getItem('melidrop_usa_rules');
+        const rules: Array<{ min: number; max: number | null; margin: number }> = savedRulesRaw
+            ? JSON.parse(savedRulesRaw)
+            : [{ min: 0, max: 20, margin: 200 }, { min: 21, max: 50, margin: 100 }, { min: 51, max: null, margin: 50 }];
+
+        // Find matching rule tier
+        const rule = rules.find(r => costUSD >= r.min && (r.max === null || costUSD <= r.max))
+            || rules[rules.length - 1]; // fallback to last rule
+
+        const margin = rule?.margin ?? 50;
+        const costMXN = costUSD * exchangeRate;
+        const priceMXN = costMXN * (1 + margin / 100);
+        return Math.ceil(priceMXN);
+    };
+
     const buildItemPayload = (processed: ProcessedProduct) => {
         const product = loadedProducts.find(p => p.asin === processed.asin)!;
         const catId = selectedCategories[processed.asin]?.id;
         const title = editedTitles[processed.asin] || processed.optimizedTitle;
         const attrs = userAttributes[processed.asin] || {};
-        const exchangeRate = parseFloat(localStorage.getItem('melidrop_exchange_rate') || '18.5');
 
         const attributes = Object.entries(attrs)
             .filter(([, v]) => v)
             .map(([id, value_name]) => ({ id, value_name }));
 
-        const priceUSD = product.price || 0;
-        const priceMXN = Math.ceil(priceUSD * exchangeRate * 1.30); // 30% margin default
+        const costUSD = product.price || 0;
+        const priceMXN = calculateMexicoPrice(costUSD);
 
         return {
             title,
@@ -418,9 +435,23 @@ export const AmazonImporter: React.FC = () => {
                                         ) : p.error ? (
                                             <div className="flex items-center gap-2 text-red-500 text-sm w-full">
                                                 <span className="material-symbols-outlined">error</span>
-                                                <div>
-                                                    <p className="font-bold">{p.asin}</p>
-                                                    <p className="text-xs">{p.error}</p>
+                                                <div className="flex-1 min-w-0">
+                                                    <p className="font-bold text-slate-900 dark:text-white text-xs line-clamp-2">{p.title || <span className="text-amber-500 italic">Sin título (error de API)</span>}</p>
+                                                    <p className="text-[10px] text-slate-400 mt-1 font-mono">{p.asin}</p>
+                                                    {p.images.length > 0 && <p className="text-[10px] text-blue-500 mt-0.5">{p.images.length} foto(s)</p>}
+                                                    {p.price > 0 && (
+                                                        <div className="mt-1 flex flex-col gap-0.5">
+                                                            <p className="text-[10px] text-slate-400">Costo: <span className="font-bold text-slate-600 dark:text-slate-300">${p.price.toFixed(2)} {p.currency}</span></p>
+                                                            <p className="text-[10px] text-green-600 font-black">Venta ML: ${((): number => {
+                                                                const ex = parseFloat(localStorage.getItem('melidrop_exchange_rate') || '18.5');
+                                                                const raw = localStorage.getItem('melidrop_usa_rules');
+                                                                const rules: any[] = raw ? JSON.parse(raw) : [{ min: 0, max: null, margin: 100 }];
+                                                                const rule = rules.find((r: any) => p.price >= r.min && (r.max === null || p.price <= r.max)) || rules[rules.length - 1];
+                                                                return Math.ceil(p.price * ex * (1 + (rule?.margin ?? 100) / 100));
+                                                            })().toLocaleString()} MXN</p>
+                                                        </div>
+                                                    )}
+                                                    <span className="inline-block mt-1 bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400 text-[9px] font-bold px-2 py-0.5 rounded-full">✓ Cargado</span>
                                                 </div>
                                             </div>
                                         ) : (

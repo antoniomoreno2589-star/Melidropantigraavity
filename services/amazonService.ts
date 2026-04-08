@@ -98,30 +98,46 @@ class AmazonService {
 
             const result = await this.callProxy('getProduct', params);
 
-            // Transform Amazon data to our Product format
-            const catalogItem = result.catalog?.items?.[0];
+            // Catalog API v2022-04-01 GET /items/{asin} returns the item directly (not in a list)
+            const catalogItem = result.catalog;
             const summaries = catalogItem?.summaries?.[0];
             const attributes = catalogItem?.attributes;
-            const allImages = catalogItem?.images?.flatMap((imgGroup: any) =>
-                imgGroup.images?.map((img: any) => img.link).filter(Boolean) || []
-            ) || [];
-            const primaryImage = allImages[0] || null;
-            const pricing = result.pricing?.payload;
 
-            const bulletPoints = attributes?.bullet_point?.map((bp: any) => bp.value) || [];
+            // Collect all images from all groups
+            const allImages: string[] = [];
+            if (Array.isArray(catalogItem?.images)) {
+                for (const imgGroup of catalogItem.images) {
+                    if (Array.isArray(imgGroup?.images)) {
+                        for (const img of imgGroup.images) {
+                            if (img?.link) allImages.push(img.link);
+                        }
+                    }
+                }
+            }
+            // Deduplicate
+            const uniqueImages = [...new Set(allImages)];
+            const primaryImage = uniqueImages[0] || null;
+
+            const pricing = result.pricing?.payload;
+            const bulletPoints: string[] = attributes?.bullet_point?.map((bp: any) => bp.value) || [];
             const description = bulletPoints.join('\n');
+
+            const title = summaries?.itemName || attributes?.item_name?.[0]?.value || '';
+            const brand = attributes?.brand?.[0]?.value || summaries?.brand || '';
+
+            console.log(`amazonService.getProduct: asin=${asin}, title="${title}", images=${uniqueImages.length}`);
 
             return {
                 asin,
-                title: summaries?.itemName || attributes?.item_name?.[0]?.value || 'Unknown Product',
+                title,
                 description,
                 bulletPoints,
                 price: pricing?.Summary?.LowestPrices?.[0]?.ListingPrice?.Amount || 0,
                 currency: pricing?.Summary?.LowestPrices?.[0]?.ListingPrice?.CurrencyCode || 'USD',
                 imageUrl: primaryImage,
-                images: allImages.slice(0, 10),
-                brand: attributes?.brand?.[0]?.value || summaries?.brand || null,
-                category: summaries?.productType || null,
+                images: uniqueImages.slice(0, 10),
+                brand,
+                category: summaries?.productType || catalogItem?.productTypes?.[0]?.productType || '',
                 salesRank: catalogItem?.salesRanks?.[0]?.rank || null,
                 attributes: attributes || {}
             };
