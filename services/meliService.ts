@@ -1,4 +1,5 @@
 import { api } from './api';
+import { supabase } from './supabase';
 import { Product } from '../types';
 
 export interface MeliCredentials {
@@ -297,6 +298,9 @@ class MeliService {
         const creds = this.getCredentials();
         if (!creds) return [];
         try {
+            const { data: { user } } = await supabase.auth.getUser();
+            const supabaseUserId = user?.id;
+
             console.log(`meliService: Fetching orders for seller ${creds.id}`);
             const response = await this.fetchWithAuth(`/orders/search?seller=${creds.id}&limit=${limit}&sort=date_desc`);
 
@@ -307,6 +311,7 @@ class MeliService {
             if (results.length > 0) {
                 const ordersToSync = results.map((o: any) => ({
                     id: o.id.toString(),
+                    user_id: supabaseUserId,
                     product_title: o.order_items?.[0]?.item?.title || 'Producto',
                     buyer_name: o.buyer?.nickname || 'Comprador',
                     total: o.payments?.[0]?.net_received_amount || o.total_amount || 0,
