@@ -300,14 +300,31 @@ class MeliService {
             console.log(`meliService: Fetching orders for seller ${creds.id}`);
             const response = await this.fetchWithAuth(`/orders/search?seller=${creds.id}&limit=${limit}&sort=date_desc`);
 
-            if (!response.ok) {
-                const errText = await response.text();
-                console.error(`meliService: Error fetching orders (${response.status}):`, errText);
-                return [];
+            const data = await response.json();
+            const results = data.results || [];
+            
+            // Sync orders to Supabase for persistence and analytics
+            if (results.length > 0) {
+                const ordersToSync = results.map((o: any) => ({
+                    id: o.id.toString(),
+                    product_title: o.order_items?.[0]?.item?.title || 'Producto',
+                    buyer_name: o.buyer?.nickname || 'Comprador',
+                    total: o.payments?.[0]?.net_received_amount || o.total_amount || 0,
+                    status: o.status,
+                    date: o.date_created ? o.date_created.split('T')[0] : null,
+                    amazon_status: 'pending',
+                    amazon_asin: o.order_items?.[0]?.item?.seller_custom_field || '',
+                    amazon_marketplace: 'MX'
+                }));
+                
+                try {
+                    await api.orders.bulkUpsert(ordersToSync);
+                } catch (e) {
+                    console.warn("MeliService: Could not sync orders to Supabase:", e);
+                }
             }
 
-            const data = await response.json();
-            return data.results || [];
+            return results;
         } catch (e) {
             console.error('meliService: Error fetching orders:', e);
             return [];

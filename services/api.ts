@@ -183,6 +183,22 @@ export const api = {
                 .eq('id', order.id);
 
             if (error) throw error;
+        },
+
+        async bulkUpsert(orders: any[]): Promise<void> {
+            const { data: { user } } = await supabase.auth.getUser();
+            if (!user) throw new Error("User not authenticated");
+
+            const payloads = orders.map(o => ({
+                user_id: user.id,
+                ...o
+            }));
+
+            const { error } = await supabase
+                .from('orders')
+                .upsert(payloads, { onConflict: 'id' });
+
+            if (error) throw error;
         }
     },
 

@@ -140,11 +140,15 @@ export const CommunicationsPage = () => {
                                 id: fromMsg.id || 1,
                                 text: fromMsg.message_body?.text || fromMsg.text || 'Sin contenido',
                                 time: fromMsg.date ? new Date(fromMsg.date).toLocaleTimeString() : '',
-                                isUser: m.from?.id ? (m.from.id.toString() === meliService.getCredentials()?.id.toString()) : isFromMe
+                                isUser: (fromMsg.from?.id ? (fromMsg.from.id.toString() === meliService.getCredentials()?.id.toString()) : isFromMe)
                             }
                         ]
                     };
-                }).sort((a, b) => b.dateCreated.getTime() - a.dateCreated.getTime()); // Sort by most recent first
+                }).sort((a, b) => {
+                    if (a.unread && !b.unread) return -1;
+                    if (!a.unread && b.unread) return 1;
+                    return b.dateCreated.getTime() - a.dateCreated.getTime();
+                });
 
                 // Merge orders that don't have conversations yet
                 const existingPackIds = new Set(formattedMessages.map(m => m.packId?.toString()));
@@ -189,7 +193,7 @@ export const CommunicationsPage = () => {
                         total: productPrice,
                         dateCreated: new Date(o.date_created),
                         time: new Date(o.date_created).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-                        unread: false,
+                        unread: true,
                         packId: o.pack_id || o.id,
                         counterpartId: o.buyer?.id,
                         messages: [
@@ -200,7 +204,7 @@ export const CommunicationsPage = () => {
                                 isUser: false
                             }
                         ],
-                        status: 'NO_MESSAGES'
+                        status: 'UNANSWERED' // Set to UNANSWERED/Pending so it sorts to top
                     };
                 }).sort((a, b) => b.dateCreated.getTime() - a.dateCreated.getTime()); // Sort by most recent first
 
@@ -243,8 +247,12 @@ export const CommunicationsPage = () => {
                 });
 
                 const finalMessages = [...uniqueMessages, ...formattedClaims, ...orderChats].sort((a, b) => {
-                    if (a.unread && !b.unread) return -1;
-                    if (!a.unread && b.unread) return 1;
+                    const aPending = a.unread === true || a.status === 'UNANSWERED';
+                    const bPending = b.unread === true || b.status === 'UNANSWERED';
+
+                    if (aPending && !bPending) return -1;
+                    if (!aPending && bPending) return 1;
+                    
                     const dateA = a.dateCreated || new Date(0);
                     const dateB = b.dateCreated || new Date(0);
                     return dateB.getTime() - dateA.getTime();
@@ -274,13 +282,12 @@ export const CommunicationsPage = () => {
 
         // Priorizar no leídos primero
         const prioritized = [...list].sort((a, b) => {
-            const aUnread = a.unread === true || (a.status === 'UNANSWERED');
-            const bUnread = b.unread === true || (b.status === 'UNANSWERED');
+            const aUnread = a.unread === true || a.status === 'UNANSWERED';
+            const bUnread = b.unread === true || b.status === 'UNANSWERED';
 
             if (aUnread && !bUnread) return -1;
             if (!aUnread && bUnread) return 1;
 
-            // Si ambos son iguales en unread, ordenar por fecha descendente
             const dateA = (a.dateCreated ? a.dateCreated.getTime() : 0);
             const dateB = (b.dateCreated ? b.dateCreated.getTime() : 0);
             return dateB - dateA;
@@ -521,7 +528,10 @@ export const CommunicationsPage = () => {
                                                 </span>
                                                 <span className="text-[10px] text-slate-400">{item.time}</span>
                                             </div>
-                                            <p className="text-xs text-slate-500 mb-1 line-clamp-1 italic">
+                                            <p className="text-xs text-slate-500 mb-1 line-clamp-1 italic flex items-center gap-1.5">
+                                                {(item.unread || item.status === 'UNANSWERED') && (
+                                                    <span className="w-2.5 h-2.5 rounded-full bg-red-500 flex-shrink-0 shadow-sm animate-pulse"></span>
+                                                )}
                                                 {/* @ts-ignore */}
                                                 {item.productTitle || item.product || `Orden: ${item.order}`}
                                             </p>

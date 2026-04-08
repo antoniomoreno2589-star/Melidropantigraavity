@@ -94,16 +94,17 @@ async function makeAmazonRequest(
     return await response.json();
 }
 
-async function getProduct(credentials: AmazonCredentials, asin: string) {
+async function getProduct(credentials: AmazonCredentials, asin: string, params?: any) {
     const accessToken = await getAccessToken(credentials);
     const endpoint = ENDPOINTS[credentials.region as keyof typeof ENDPOINTS] || ENDPOINTS.na;
 
     // Get catalog item
-    const catalogPath = `/catalog/2022-04-01/items/${asin}?marketplaceIds=ATVPDKIKX0DER&includedData=attributes,images,productTypes,salesRanks,summaries`;
+    const marketplaceId = params?.marketplaceId || 'A1AM78C64UM0Y8'; // Default to Mexico
+    const catalogPath = `/catalog/2022-04-01/items/${asin}?marketplaceIds=${marketplaceId}&includedData=attributes,images,productTypes,salesRanks,summaries`;
     const catalogData = await makeAmazonRequest(endpoint, catalogPath, accessToken);
 
     // Get pricing
-    const pricingPath = `/products/pricing/v0/items/${asin}/offers?MarketplaceId=ATVPDKIKX0DER&ItemCondition=New`;
+    const pricingPath = `/products/pricing/v0/items/${asin}/offers?MarketplaceId=${marketplaceId}&ItemCondition=New`;
     let pricingData = null;
     try {
         pricingData = await makeAmazonRequest(endpoint, pricingPath, accessToken);
@@ -117,11 +118,12 @@ async function getProduct(credentials: AmazonCredentials, asin: string) {
     };
 }
 
-async function searchProducts(credentials: AmazonCredentials, query: string) {
+async function searchProducts(credentials: AmazonCredentials, query: string, params?: any) {
     const accessToken = await getAccessToken(credentials);
     const endpoint = ENDPOINTS[credentials.region as keyof typeof ENDPOINTS] || ENDPOINTS.na;
 
-    const searchPath = `/catalog/2022-04-01/items?marketplaceIds=ATVPDKIKX0DER&keywords=${encodeURIComponent(query)}&includedData=summaries,images`;
+    const marketplaceId = params?.marketplaceId || 'A1AM78C64UM0Y8';
+    const searchPath = `/catalog/2022-04-01/items?marketplaceIds=${marketplaceId}&keywords=${encodeURIComponent(query)}&includedData=summaries,images`;
     return await makeAmazonRequest(endpoint, searchPath, accessToken);
 }
 
@@ -176,12 +178,12 @@ serve(async (req) => {
         switch (action) {
             case 'getProduct':
                 if (!params?.asin) throw new Error('ASIN is required');
-                result = await getProduct(credentials, params.asin);
+                result = await getProduct(credentials, params.asin, params);
                 break;
 
             case 'searchProducts':
                 if (!params?.query) throw new Error('Search query is required');
-                result = await searchProducts(credentials, params.query);
+                result = await searchProducts(credentials, params.query, params);
                 break;
 
             case 'updatePrice':

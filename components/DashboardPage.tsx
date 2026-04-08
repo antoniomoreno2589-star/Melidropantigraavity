@@ -1,6 +1,8 @@
-import React, { useState } from 'react';
-import { DashboardStats } from '../types';
+import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { DashboardStats } from '../types';
+import { api } from '../services/api';
+import { supabase } from '../services/supabase';
 
 interface DashboardPageProps {
   user: any;
@@ -12,7 +14,63 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ user, stats, meliD
   const navigate = useNavigate();
   const [timeFilter, setTimeFilter] = useState('7d');
   const [metricFilter, setMetricFilter] = useState('money');
-  const [showCustomPicker, setShowCustomPicker] = useState(false);
+  const [history, setHistory] = useState<any[]>([]);
+  const [loadingHistory, setLoadingHistory] = useState(true);
+
+  React.useEffect(() => {
+    const fetchHistory = async () => {
+      setLoadingHistory(true);
+      try {
+        const days = timeFilter === '7d' ? 7 : timeFilter === '15d' ? 15 : 30;
+        const startDate = new Date();
+        startDate.setDate(startDate.getDate() - days);
+        const isoDate = startDate.toISOString().split('T')[0];
+
+        const { data: orders, error } = await supabase
+          .from('orders')
+          .select('date, total, amazon_purchase_price')
+          .gte('date', isoDate);
+
+        if (error) throw error;
+
+        // Group by date
+        const grouped = (orders || []).reduce((acc: any, curr: any) => {
+          const day = curr.date;
+          if (!acc[day]) acc[day] = { day, sales: 0, income: 0, cost: 0 };
+          acc[day].sales += 1;
+          acc[day].income += Number(curr.total || 0);
+          acc[day].cost += Number(curr.amazon_purchase_price || 0);
+          return acc;
+        }, {});
+
+        // Convert to array and sort
+        const historyArray = Object.values(grouped).sort((a: any, b: any) => a.day.localeCompare(b.day));
+        
+        // Fill missing days with zeros
+        const filledHistory = [];
+        for (let i = 0; i <= days; i++) {
+          const d = new Date();
+          d.setDate(d.getDate() - (days - i));
+          const dateStr = d.toISOString().split('T')[0];
+          const found = historyArray.find((h: any) => h.day === dateStr);
+          filledHistory.push(found || { day: dateStr, sales: 0, income: 0, cost: 0 });
+        }
+
+        setHistory(filledHistory);
+      } catch (e) {
+        console.error("Error loading dashboard history:", e);
+      } finally {
+        setLoadingHistory(false);
+      }
+    };
+    fetchHistory();
+  }, [timeFilter]);
+
+  const totalIncome = history.reduce((acc, h) => acc + h.income, 0);
+  const totalCost = history.reduce((acc, h) => acc + h.cost, 0);
+  const totalProfit = totalIncome - totalCost;
+  const roi = totalCost > 0 ? (totalProfit / totalCost) * 100 : 0;
+  const margin = totalIncome > 0 ? (totalProfit / totalIncome) * 100 : 0;
 
   return (
     <div className="flex-1 overflow-y-auto p-4 md:p-8 scroll-smooth bg-background-light dark:bg-background-dark">
@@ -192,12 +250,14 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ user, stats, meliD
                   <span className="material-symbols-outlined text-[20px]">account_balance_wallet</span>
                 </div>
               </div>
-              <p className="text-4xl font-black text-slate-900 dark:text-white">${(stats.incomeToday * 0.15).toLocaleString(undefined, { maximumFractionDigits: 0 })}</p>
+              <p className="text-4xl font-black text-slate-900 dark:text-white">
+                ${(totalProfit / (history.length || 1)).toLocaleString(undefined, { maximumFractionDigits: 0 })}
+              </p>
               <div className="flex items-center gap-2 mt-3">
                 <span className="bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400 text-[10px] font-bold px-2 py-0.5 rounded-full flex items-center gap-1">
-                  <span className="material-symbols-outlined text-[12px]">trending_up</span> +12%
+                  <span className="material-symbols-outlined text-[12px]">trending_up</span> Real
                 </span>
-                <span className="text-[10px] text-slate-400 font-medium">calculado al 15%</span>
+                <span className="text-[10px] text-slate-400 font-medium">promedio diario {timeFilter}</span>
               </div>
             </div>
             <div className="p-6">
@@ -207,10 +267,10 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ user, stats, meliD
                   <span className="material-symbols-outlined text-[20px]">analytics</span>
                 </div>
               </div>
-              <p className="text-4xl font-black text-slate-900 dark:text-white">28.4%</p>
+              <p className="text-4xl font-black text-slate-900 dark:text-white">{roi.toFixed(1)}%</p>
               <div className="flex items-center gap-2 mt-3">
-                <span className="bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400 text-[10px] font-bold px-2 py-0.5 rounded-full flex items-center gap-1">
-                  <span className="material-symbols-outlined text-[12px]">trending_up</span> Estimado
+                <span className="bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 text-[10px] font-bold px-2 py-0.5 rounded-full flex items-center gap-1">
+                  <span className="material-symbols-outlined text-[12px]">analytics</span> Real
                 </span>
               </div>
             </div>
@@ -221,9 +281,9 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ user, stats, meliD
                   <span className="material-symbols-outlined text-[20px]">pie_chart</span>
                 </div>
               </div>
-              <p className="text-4xl font-black text-slate-900 dark:text-white">34.2%</p>
+              <p className="text-4xl font-black text-slate-900 dark:text-white">{margin.toFixed(1)}%</p>
               <div className="flex items-center gap-2 mt-3">
-                <span className="text-[10px] text-slate-400 font-medium">Proyectado</span>
+                <span className="text-[10px] text-slate-400 font-medium font-bold">Uso de capital</span>
               </div>
             </div>
           </div>
@@ -353,23 +413,41 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ user, stats, meliD
             </div>
           </div>
 
-          <div className="flex-1 min-h-[200px] relative w-full flex items-end justify-between gap-3 px-2 pb-6 mb-2">
+          <div className="flex-1 min-h-[220px] relative w-full flex items-end justify-between gap-3 px-2 pb-8 mb-2">
             <div className="absolute inset-0 flex flex-col justify-between pointer-events-none opacity-50">
               {[1, 2, 3, 4].map(l => <div key={l} className="w-full h-px bg-slate-100 dark:bg-slate-800"></div>)}
             </div>
-            {[
-              { h: '30%', val: 120 }, { h: '45%', val: 145 }, { h: '35%', val: 132 }, { h: '80%', val: 210 },
-              { h: '65%', val: 180 }, { h: '95%', val: 255 }, { h: '75%', val: 225 },
-            ].map((bar, i) => (
-              <div key={i} className="relative w-full group flex flex-col items-center">
-                <div className={`w-full max-w-[40px] rounded-t-lg transition-all duration-300 group-hover:scale-x-110 shadow-sm ${metricFilter === 'money' ? 'bg-primary' : 'bg-orange-400'}`} style={{ height: bar.h }}>
-                  <div className="absolute -top-10 left-1/2 -translate-x-1/2 bg-slate-800 text-white text-[10px] py-1 px-2 rounded opacity-0 group-hover:opacity-100 transition-opacity z-20 font-bold shadow-xl border border-slate-700">
-                    {metricFilter === 'money' ? `$${bar.val * 100}` : bar.val}
-                  </div>
-                </div>
-                <div className="absolute bottom-[-24px] text-[10px] font-bold text-slate-400">Día {i + 1}</div>
+            
+            {loadingHistory ? (
+              <div className="absolute inset-0 flex items-center justify-center">
+                <div className="w-8 h-8 border-4 border-primary/30 border-t-primary rounded-full animate-spin"></div>
               </div>
-            ))}
+            ) : history.length === 0 ? (
+              <div className="absolute inset-0 flex items-center justify-center text-slate-400 text-sm font-bold uppercase tracking-widest italic">
+                Sin datos históricos en este periodo
+              </div>
+            ) : (() => {
+               const maxVal = Math.max(...history.map(h => metricFilter === 'money' ? h.income : h.sales), 1);
+               return history.map((bar, i) => {
+                 const height = `${Math.max(( (metricFilter === 'money' ? bar.income : bar.sales) / maxVal) * 100, 5)}%`;
+                 const date = new Date(bar.day + 'T00:00:00');
+                 const dayLabel = date.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric' });
+                 
+                 return (
+                  <div key={i} className="relative w-full group flex flex-col items-center">
+                    <div className={`w-full max-w-[42px] rounded-t-lg transition-all duration-500 group-hover:brightness-110 shadow-sm ${metricFilter === 'money' ? 'bg-primary' : 'bg-orange-400'}`} style={{ height }}>
+                      <div className="absolute -top-12 left-1/2 -translate-x-1/2 bg-slate-800 text-white text-[10px] py-1.5 px-3 rounded-lg opacity-0 group-hover:opacity-100 transition-all z-20 font-bold shadow-xl border border-slate-700 whitespace-nowrap scale-90 group-hover:scale-100">
+                        {metricFilter === 'money' ? `$${bar.income.toLocaleString()}` : `${bar.sales} ventas`}
+                        <div className="text-[8px] opacity-70 mt-0.5">Prof: ${ (bar.income - bar.cost).toLocaleString() }</div>
+                      </div>
+                    </div>
+                    <div className="absolute bottom-[-32px] text-[8px] font-black text-slate-400 uppercase tracking-tighter text-center">
+                      {dayLabel}
+                    </div>
+                  </div>
+                );
+               });
+            })()}
           </div>
         </div>
 
