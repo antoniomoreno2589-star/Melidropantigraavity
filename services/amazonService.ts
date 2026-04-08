@@ -87,31 +87,43 @@ class AmazonService {
         }
     }
 
-    async getProduct(asin: string): Promise<any> {
+    async getProduct(asin: string, marketplace?: string): Promise<any> {
         if (!this.isAuthenticated()) {
             throw new Error('Not authenticated with Amazon');
         }
 
         try {
-            const result = await this.callProxy('getProduct', { asin });
+            const params: any = { asin };
+            if (marketplace) params.marketplaceId = marketplace;
+
+            const result = await this.callProxy('getProduct', params);
 
             // Transform Amazon data to our Product format
             const catalogItem = result.catalog?.items?.[0];
             const summaries = catalogItem?.summaries?.[0];
             const attributes = catalogItem?.attributes;
-            const images = catalogItem?.images?.[0]?.images?.[0];
+            const allImages = catalogItem?.images?.flatMap((imgGroup: any) =>
+                imgGroup.images?.map((img: any) => img.link).filter(Boolean) || []
+            ) || [];
+            const primaryImage = allImages[0] || null;
             const pricing = result.pricing?.payload;
 
+            const bulletPoints = attributes?.bullet_point?.map((bp: any) => bp.value) || [];
+            const description = bulletPoints.join('\n');
+
             return {
-                asin: asin,
+                asin,
                 title: summaries?.itemName || attributes?.item_name?.[0]?.value || 'Unknown Product',
-                description: attributes?.bullet_point?.map((bp: any) => bp.value).join('\n') || '',
+                description,
+                bulletPoints,
                 price: pricing?.Summary?.LowestPrices?.[0]?.ListingPrice?.Amount || 0,
                 currency: pricing?.Summary?.LowestPrices?.[0]?.ListingPrice?.CurrencyCode || 'USD',
-                imageUrl: images?.link || null,
-                brand: attributes?.brand?.[0]?.value || null,
+                imageUrl: primaryImage,
+                images: allImages.slice(0, 10),
+                brand: attributes?.brand?.[0]?.value || summaries?.brand || null,
                 category: summaries?.productType || null,
-                salesRank: catalogItem?.salesRanks?.[0]?.rank || null
+                salesRank: catalogItem?.salesRanks?.[0]?.rank || null,
+                attributes: attributes || {}
             };
         } catch (error) {
             console.error('Error fetching Amazon product:', error);

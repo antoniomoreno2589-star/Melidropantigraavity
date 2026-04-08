@@ -661,6 +661,93 @@ class MeliService {
             }
         }
     }
+
+    // ─── IMPORTER METHODS ────────────────────────────────────────────
+
+    async publishItem(itemData: any, isDraft: boolean = false): Promise<any> {
+        const creds = this.getCredentials();
+        if (!creds) throw new Error("No credentials");
+        const body = isDraft ? { ...itemData, status: 'paused' } : itemData;
+        const response = await this.fetchWithAuth('/items', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.message || JSON.stringify(data));
+        return data;
+    }
+
+    async validateItem(itemData: any): Promise<{ valid: boolean; errors: any[] }> {
+        // MercadoLibre has a validation endpoint
+        try {
+            const response = await this.fetchWithAuth('/items/validate', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(itemData)
+            });
+            if (response.status === 200 || response.status === 204) {
+                return { valid: true, errors: [] };
+            }
+            const data = await response.json();
+            return { valid: false, errors: data.cause || data.error ? [data] : [] };
+        } catch (e) {
+            return { valid: false, errors: [{ message: 'Error de validación' }] };
+        }
+    }
+
+    async checkDuplicate(asin: string): Promise<{ isDuplicate: boolean; existingItem?: any }> {
+        const creds = this.getCredentials();
+        if (!creds) return { isDuplicate: false };
+        try {
+            // Search in user's items by custom field (ASIN stored as seller_custom_field)
+            const response = await this.fetchWithAuth(`/users/${creds.id}/items/search?seller_custom_field=${asin}&limit=1`);
+            if (!response.ok) return { isDuplicate: false };
+            const data = await response.json();
+            if (data.results && data.results.length > 0) {
+                return { isDuplicate: true, existingItem: { id: data.results[0] } };
+            }
+            return { isDuplicate: false };
+        } catch (e) {
+            return { isDuplicate: false };
+        }
+    }
+
+    async getCategoryAttributes(categoryId: string): Promise<any[]> {
+        try {
+            const response = await this.fetchWithAuth(`/categories/${categoryId}/attributes`);
+            if (!response.ok) return [];
+            return await response.json();
+        } catch (e) {
+            return [];
+        }
+    }
+
+    async predictCategory(searchTerm: string, siteId: string = 'MLM'): Promise<any[]> {
+        try {
+            const encoded = encodeURIComponent(searchTerm);
+            const response = await this.fetchWithAuth(`/sites/${siteId}/domain_discovery/search?q=${encoded}&limit=5`);
+            if (!response.ok) return [];
+            return await response.json();
+        } catch (e) {
+            return [];
+        }
+    }
+
+    async uploadImage(imageUrl: string): Promise<string | null> {
+        try {
+            const response = await this.fetchWithAuth('/pictures', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ source: imageUrl })
+            });
+            if (!response.ok) return null;
+            const data = await response.json();
+            return data.id || null;
+        } catch (e) {
+            return null;
+        }
+    }
 }
 
 export const meliService = new MeliService();
