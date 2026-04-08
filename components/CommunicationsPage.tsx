@@ -36,8 +36,7 @@ export const CommunicationsPage = () => {
     const [selectedChatId, setSelectedChatId] = useState<number>(initialTab === 'questions' ? 1 : 101);
     const [showContextModal, setShowContextModal] = useState(false);
     const [replyText, setReplyText] = useState('');
-    const [filterPending, setFilterPending] = useState(false);
-    const [filterUnread, setFilterUnread] = useState(false);
+    const [filterStatus, setFilterStatus] = useState<'all' | 'unread' | 'pending'>('all');
     const chatEndRef = useRef<HTMLDivElement>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -210,6 +209,7 @@ export const CommunicationsPage = () => {
                     id: c.id,
                     user: `RECLAMO: ${c.id}`,
                     product: `Orden: ${c.resource_id}`,
+                    dateCreated: new Date(c.date_created),
                     time: new Date(c.date_created).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
                     unread: c.status === 'opened' || c.status === 'reopened',
                     messages: [
@@ -224,30 +224,43 @@ export const CommunicationsPage = () => {
                     ordersCount: orderChats.length
                 });
 
-                // Combine and sort all messages by dateCreated
-                const combinedMessages = [...formattedQuestions, ...formattedMessages, ...formattedClaims, ...orderChats]
-                    .sort((a, b) => {
-                        // Prioritize unread first, then by date recent
-                        if (a.unread && !b.unread) return -1;
-                        if (!a.unread && b.unread) return 1;
-                        const dateA = a.dateCreated || new Date(0);
-                        const dateB = b.dateCreated || new Date(0);
-                        return dateB.getTime() - dateA.getTime(); // Most recent first
-                    });
+                const questionIds = new Set(formattedQuestions.map(q => q.id.toString()));
+                const claimOrderIds = new Set(formattedClaims.map(c => c.product?.replace('Orden: ', '').trim()));
 
-                console.log('Combined messages sorted:', combinedMessages.length);
+                // Filter out questions and claims from the messages list to avoid duplicates
+                const uniqueMessages = formattedMessages.filter(m => {
+                    const id = m.id?.toString();
+                    const packId = m.packId?.toString();
+                    
+                    // If it's a question, skip it
+                    if (id && questionIds.has(id)) return false;
+                    
+                    // If it matches a claim order ID and it doesn't have a packId yet, 
+                    // it might be better handled by the claim entry or order entry
+                    // But usually messages with packId are the real conversations
+                    
+                    return true;
+                });
+
+                const finalMessages = [...uniqueMessages, ...formattedClaims, ...orderChats].sort((a, b) => {
+                    if (a.unread && !b.unread) return -1;
+                    if (!a.unread && b.unread) return 1;
+                    const dateA = a.dateCreated || new Date(0);
+                    const dateB = b.dateCreated || new Date(0);
+                    return dateB.getTime() - dateA.getTime();
+                });
 
                 setQuestions(formattedQuestions);
-                setMessages(combinedMessages);
+                setMessages(finalMessages);
 
                 // Set initial selection
-                const currentList = activeTab === 'questions' ? formattedQuestions : combinedMessages;
+                const currentList = activeTab === 'questions' ? formattedQuestions : finalMessages;
                 if (currentList.length > 0) {
                     setSelectedChatId(currentList[0].id);
                 }
             } catch (err) {
                 console.error("CommunicationsPage: Error fetching communications:", err);
-                alert('Error al cargar mensajes: ' + (err as Error).message);
+                // No alert to avoid interrupting the flow if some API fails but others work
             } finally {
                 setIsLoading(false);
             }
@@ -258,28 +271,39 @@ export const CommunicationsPage = () => {
 
     const getFilteredList = () => {
         let list = activeTab === 'questions' ? questions : messages;
-        if (filterUnread) {
-            list = list.filter(c => c.unread);
+
+        // Priorizar no leídos primero
+        const prioritized = [...list].sort((a, b) => {
+            const aUnread = a.unread === true || (a.status === 'UNANSWERED');
+            const bUnread = b.unread === true || (b.status === 'UNANSWERED');
+
+            if (aUnread && !bUnread) return -1;
+            if (!aUnread && bUnread) return 1;
+
+            // Si ambos son iguales en unread, ordenar por fecha descendente
+            const dateA = (a.dateCreated ? a.dateCreated.getTime() : 0);
+            const dateB = (b.dateCreated ? b.dateCreated.getTime() : 0);
+            return dateB - dateA;
+        });
+
+        if (filterStatus === 'pending' || filterStatus === 'unread') {
+            return prioritized.filter(m =>
+                m.unread === true ||
+                m.status === 'UNANSWERED'
+            );
         }
-        if (filterPending) {
-            if (activeTab === 'questions') {
-                list = list.filter(c => c.status === 'UNANSWERED');
-            } else {
-                // For messages, "Pending" might mean unread or specifically flagged.
-                // Reaping user request: "pendientes de respuesta". 
-                // For messages, usually "unread" implies pending. 
-                // Any specific logic for "pending" messages beyond unread?
-                // Let's assume Pending = Unread for messages for now, or maybe "Last message was NOT from me".
-                list = list.filter(c => c.unread || (c.messages.length > 0 && !c.messages[c.messages.length - 1].isUser));
-            }
-        }
-        return list;
+
+        return prioritized;
     };
 
     const activeList = getFilteredList();
-    const setActiveList = activeTab === 'questions' ? setQuestions : setMessages;
+    const currentChat = activeList.find(c => String(c.id) === String(selectedChatId)) || activeList[0];
 
-    const currentChat = activeList.find(c => c.id === selectedChatId) || activeList[0];
+    useEffect(() => {
+        if (activeList.length > 0) {
+            console.log(`CommunicationsPage: ${activeList.length} items grouped in ${activeTab}. Selected: ${selectedChatId}`);
+        }
+    }, [activeList, activeTab, selectedChatId]);
 
     // Scroll to bottom on new message
     useEffect(() => {
@@ -324,18 +348,22 @@ export const CommunicationsPage = () => {
             isUser: true
         };
 
-        const updatedList = activeList.map(chat => {
-            if (chat.id === selectedChatId) {
+        const updateFn = (prev: ChatSession[]) => prev.map(chat => {
+            if (String(chat.id) === String(selectedChatId)) {
                 return {
                     ...chat,
-                    unread: false, // Mark read on reply
+                    unread: false,
                     messages: [...chat.messages, newMessage]
                 };
             }
             return chat;
         });
 
-        setActiveList(updatedList);
+        if (activeTab === 'questions') {
+            setQuestions(updateFn);
+        } else {
+            setMessages(updateFn);
+        }
     };
 
     const handleSend = async () => {
@@ -432,16 +460,22 @@ export const CommunicationsPage = () => {
                         </div>
 
                         {/* Filters */}
-                        <div className="flex gap-2 mb-4 px-1">
+                        <div className="flex gap-2 mb-4 px-1 overflow-x-auto pb-1 no-scrollbar">
                             <button
-                                onClick={() => setFilterUnread(!filterUnread)}
-                                className={`px-3 py-1 text-xs font-medium rounded-full border transition-colors ${filterUnread ? 'bg-blue-100 border-blue-200 text-blue-700 dark:bg-blue-900/30 dark:border-blue-800 dark:text-blue-300' : 'bg-transparent border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400'}`}
+                                onClick={() => setFilterStatus('all')}
+                                className={`px-3 py-1 text-xs font-medium rounded-full border whitespace-nowrap transition-colors ${filterStatus === 'all' ? 'bg-primary border-primary text-white shadow-sm' : 'bg-transparent border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400'}`}
+                            >
+                                Todos
+                            </button>
+                            <button
+                                onClick={() => setFilterStatus('unread')}
+                                className={`px-3 py-1 text-xs font-medium rounded-full border whitespace-nowrap transition-colors ${filterStatus === 'unread' ? 'bg-blue-100 border-blue-200 text-blue-700 dark:bg-blue-900/30 dark:border-blue-800 dark:text-blue-300' : 'bg-transparent border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400'}`}
                             >
                                 No leídos
                             </button>
                             <button
-                                onClick={() => setFilterPending(!filterPending)}
-                                className={`px-3 py-1 text-xs font-medium rounded-full border transition-colors ${filterPending ? 'bg-orange-100 border-orange-200 text-orange-700 dark:bg-orange-900/30 dark:border-orange-800 dark:text-orange-300' : 'bg-transparent border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400'}`}
+                                onClick={() => setFilterStatus('pending')}
+                                className={`px-3 py-1 text-xs font-medium rounded-full border whitespace-nowrap transition-colors ${filterStatus === 'pending' ? 'bg-orange-100 border-orange-200 text-orange-700 dark:bg-orange-900/30 dark:border-orange-800 dark:text-orange-300' : 'bg-transparent border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400'}`}
                             >
                                 Pendientes
                             </button>

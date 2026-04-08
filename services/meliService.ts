@@ -145,26 +145,27 @@ class MeliService {
         if (!creds) return null;
 
         try {
+            console.log("MeliService: Fetching balance for user", creds.id);
             const response = await this.fetchWithAuth(`/users/${creds.id}/mercadopago_account/balance`);
 
             if (!response.ok) {
-                console.warn(`meliService: Balance API (/users/ID/...) returned ${response.status}. Trying variant 2 (/mercadopago_account/balance)...`);
-
+                console.warn(`MeliService: Balance Primary API failed (${response.status}). Trying variant 2...`);
                 // Variante 2: Sin el prefijo /users/ID
                 const response2 = await this.fetchWithAuth(`/mercadopago_account/balance`);
                 if (response2.ok) {
-                    console.log("meliService: Balance found using Variant 2");
                     return await response2.json();
                 }
 
-                console.warn(`meliService: Balance Variant 2 also failed (${response2.status}). Triggering profile fallback...`);
+                if (response.status === 403 || response2.status === 403) {
+                    console.error("MeliService: Forbidden 403 on balance endpoints.");
+                    return { total_amount: null, error: 'forbidden' };
+                }
 
                 // Fallback redundante: intentar sacar del perfil de usuario
                 const userData = await this.getUserData();
-                const mpInfo = userData?.mercadopago_account || userData?.mercadopago_info || userData?.credit;
-
-                if (mpInfo) {
-                    console.log("meliService: Emergency fallback successful using profile data");
+                const mpInfo = userData?.mercadopago_account || userData?.mercadopago_info || userData?.credit || userData;
+                if (mpInfo && (mpInfo.balance !== undefined || mpInfo.consumed !== undefined)) {
+                    console.log("MeliService: Fallback balance found in user profile");
                     return {
                         total_amount: mpInfo.balance || mpInfo.consumed || 0,
                         balance: mpInfo.balance || mpInfo.consumed || 0,
@@ -172,39 +173,13 @@ class MeliService {
                         unavailable_balance: 0
                     };
                 }
-
-                if (response.status === 403 || response2.status === 403) {
-                    console.error("MeliService: Error 403 detectado. ¡Es MUY PROBABLE que necesites volver a conectar tu cuenta en el Perfil para activar los nuevos permisos!");
-                }
-                return null;
+                return { total_amount: null, error: 'unavailable' };
             }
 
-            const data = await response.json();
-            console.log("meliService: User data keys:", Object.keys(data));
-            // Log structure of potential balance fields
-            if (data.mercadopago_account || data.balance || data.credit) {
-                console.log("meliService: Found potential balance fields in profile:", {
-                    mp_account: !!data.mercadopago_account,
-                    balance: !!data.balance,
-                    credit: !!data.credit
-                });
-            }
-            return data;
+            return await response.json();
         } catch (e: any) {
-            console.error("meliService: Exception in getBalance, trying emergency fallback:", e.message || e);
-            try {
-                const userData = await this.getUserData();
-                const mpInfo = userData?.mercadopago_account || userData?.mercadopago_info || userData?.credit;
-                if (mpInfo) {
-                    return {
-                        total_amount: mpInfo.balance || mpInfo.consumed || 0,
-                        balance: mpInfo.balance || mpInfo.consumed || 0,
-                        available_balance: mpInfo.available_balance || mpInfo.balance || 0,
-                        unavailable_balance: 0
-                    };
-                }
-            } catch (inner) { }
-            return null;
+            console.error("MeliService: Exception in getBalance:", e.message || e);
+            return { total_amount: null, error: 'exception' };
         }
     }
 
@@ -283,7 +258,6 @@ class MeliService {
                 const statusMap: Record<string, string> = {
                     'active': 'active',
                     'paused': 'paused',
-                    // Cualquier otro estado lo mandamos como 'draft' para que la DB lo acepte
                 };
 
                 let skuAttr = item.attributes?.find((attr: any) => attr.id === 'SELLER_SKU');
@@ -314,7 +288,6 @@ class MeliService {
                 if (onProgress) onProgress('syncing', syncedCount, total);
             } catch (e) {
                 console.error("MeliService: Error in bulkUpsert:", e);
-                // No detenemos el proceso, pero al menos lo vemos en consola
             }
         }
         return syncedCount;
@@ -324,7 +297,6 @@ class MeliService {
         const creds = this.getCredentials();
         if (!creds) return [];
         try {
-            // Buscamos órdenes recientes como vendedor (usando sort=date_desc según API v2)
             console.log(`meliService: Fetching orders for seller ${creds.id}`);
             const response = await this.fetchWithAuth(`/orders/search?seller=${creds.id}&limit=${limit}&sort=date_desc`);
 
@@ -418,7 +390,6 @@ class MeliService {
             const data = await response.json();
             const questions = data.questions || data.results || [];
 
-            // Fetch item details for each question to get images
             const questionsWithItems = await Promise.all(
                 questions.map(async (q: any) => {
                     if (q.item_id) {
@@ -469,16 +440,12 @@ class MeliService {
 
                 if (!response.ok) {
                     console.warn(`MeliService: Failed to fetch messages from ${url} (${response.status})`);
-                    if (response.status === 403) {
-                        console.error(`MeliService: Mensajes bloqueados (403) en ${url}. Verifica que hayas re-conectado tu cuenta.`);
-                    }
                     continue;
                 }
 
                 const data = await response.json();
                 const results = data.results || data.messages || data.conversations || [];
 
-                // Procesamos cada mensaje para detectar si es no leído
                 const processed = results.map((m: any) => ({
                     ...m,
                     unread: m.unread === true || m.status === 'unread' || m.read === false || (m.unread_count && m.unread_count > 0)
@@ -492,11 +459,9 @@ class MeliService {
                 console.error("MeliService: Error in message loop:", e);
                 continue;
             }
-            // Delay between message fetches to be safe
             await new Promise(r => setTimeout(r, 500));
         }
 
-        // Eliminar duplicados por pack_id o id
         const unique = new Map();
         allMessages.forEach(m => {
             const id = m.pack_id || m.id;
@@ -556,14 +521,12 @@ class MeliService {
         try {
             console.log("MeliService: Iniciando descarga secuencial para evitar bloqueos...");
 
-            // Peticiones con más tiempo de espera para evitar el error 403
             const user = await this.getUserData().catch((e) => { console.error("MeliService: Error fetching user data:", e); return null; });
             await new Promise(r => setTimeout(r, 1000));
 
             const balance = await this.getBalance().catch((e) => { console.error("MeliService: Error fetching balance:", e); return null; });
             await new Promise(r => setTimeout(r, 1000));
 
-            // Usamos 'seller' y no 'seller_id'
             const orders = await this.getOrders(20).catch((e) => { console.error("MeliService: Error fetching orders:", e); return []; });
             await new Promise(r => setTimeout(r, 1000));
 
@@ -578,38 +541,25 @@ class MeliService {
 
             const answeredQuestions = await this.getAnsweredQuestions().catch((e) => { console.error("MeliService: Error fetching answered questions:", e); return []; });
 
-            // Filtro de ventas hoy corregido para zona horaria local (México)
             const now = new Date();
             const todayISO = now.toISOString().split('T')[0];
-            const todayLocal = now.toLocaleDateString('en-CA'); // YYYY-MM-DD local
-
-            console.log("MeliService: Buscando ventas para 'hoy':", { todayISO, todayLocal });
+            const todayLocal = now.toLocaleDateString('en-CA');
 
             const ordersToday = (orders || []).filter((o: any) => {
                 const date = o.date_created || o.date_closed;
                 if (!date) return false;
-                // Verificamos si la fecha empieza con cualquiera de los formatos de hoy
                 const dateParts = date.split('T')[0];
                 return dateParts === todayISO || dateParts === todayLocal;
             });
 
-            console.log("MeliService: Ventas filtradas final:", ordersToday.length);
             const salesToday = ordersToday.length;
             const incomeToday = ordersToday.reduce((acc: number, o: any) => acc + (o.total_amount || 0), 0);
             const responseTime = this.calculateAverageResponseTime(answeredQuestions);
-
-            console.log("MeliService: Final metrics data assembly:", {
-                balanceFound: !!balance,
-                balanceTotal: balance?.total_amount,
-                profileBalance: user?.mercadopago_account?.balance,
-                claimsCount: (user as any)?.claims_count || 0
-            });
 
             this.statsCache = {
                 user: {
                     ...user,
                     nickname: user?.nickname || 'Vendedor',
-                    email: user?.email,
                     reputation: user?.seller_reputation?.level_id || 'unknown',
                     power_seller_status: user?.seller_reputation?.power_seller_status,
                     transactions: user?.seller_reputation?.transactions?.total || 1,
@@ -618,7 +568,8 @@ class MeliService {
                 balance: {
                     total: balance?.total_amount ?? balance?.balance ?? user?.mercadopago_account?.balance ?? 0,
                     available: balance?.available_balance ?? balance?.available ?? user?.mercadopago_account?.available_balance ?? 0,
-                    unavailable: balance?.unavailable_balance ?? balance?.unavailable ?? 0
+                    unavailable: balance?.unavailable_balance ?? balance?.unavailable ?? 0,
+                    error: (balance as any)?.error || null
                 },
                 itemsCount: itemsBreakdown?.total || 0,
                 itemsBreakdown: itemsBreakdown || { total: 0, active: 0, paused: 0, premium: 0, classic: 0 },
@@ -662,7 +613,6 @@ class MeliService {
         const creds = this.getCredentials();
         if (!creds) throw new Error("No credentials");
 
-        // Try marketplace messaging first (most common for post-sale)
         const response = await this.fetchWithAuth(`/messages/packs/${packId}/sellers/${creds.id}?tag=post_sale`, {
             method: 'POST',
             body: JSON.stringify({
@@ -684,7 +634,6 @@ class MeliService {
     decrementUnansweredCount() {
         if (this.statsCache && this.statsCache.stats && this.statsCache.stats.questionsUnanswered > 0) {
             this.statsCache.stats.questionsUnanswered--;
-            // Also update questionsToday if logic implies it represents pending for today
             if (this.statsCache.stats.questionsToday > 0) {
                 this.statsCache.stats.questionsToday--;
             }

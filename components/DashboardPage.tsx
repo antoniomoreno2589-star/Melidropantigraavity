@@ -88,13 +88,15 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ user, stats, meliD
           </div>
         </div>
 
-        {/* Banner de Aviso: Permisos Faltantes */}
-        {(!meliData?.balance?.total_amount && meliData?.balance !== undefined) && (
-          <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 p-4 rounded-2xl flex items-center justify-between gap-4">
+        {/* Banner de aviso si el balance falla por permisos (forbidden) */}
+        {(stats.balance?.error === 'forbidden') && (
+          <div className="mb-6 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 p-4 rounded-2xl flex flex-col sm:flex-row items-center justify-between gap-4">
             <div className="flex items-center gap-3">
-              <span className="material-symbols-outlined text-amber-500">warning</span>
+              <div className="p-2 bg-amber-100 dark:bg-amber-800 text-amber-600 dark:text-amber-400 rounded-full">
+                <span className="material-symbols-outlined">warning</span>
+              </div>
               <div>
-                <p className="text-sm font-bold text-amber-900 dark:text-amber-100">Acceso limitado a Mercado Pago</p>
+                <h3 className="text-sm font-black text-amber-900 dark:text-amber-100">Acceso Restringido</h3>
                 <p className="text-xs text-amber-700 dark:text-amber-300">Es posible que necesites actualizar los permisos de tu cuenta para ver el saldo y mensajes pendientes.</p>
               </div>
             </div>
