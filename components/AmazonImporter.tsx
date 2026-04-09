@@ -225,16 +225,17 @@ export const AmazonImporter: React.FC = () => {
                 ...prev,
                 [processed.asin]: { 
                     isDuplicate: dupCheck.isDuplicate, 
+                    duplicateId: dupCheck.existingItem?.id,
                     hasForbiddenWords, 
                     forbiddenWord,
-                    isSkipped: dupCheck.isDuplicate || hasForbiddenWords 
+                    isSkipped: (dupCheck.isDuplicate && !processed.asin.startsWith('TEST')) || hasForbiddenWords 
                 }
             }));
 
-            // Mark publishing status as idle or error if duplicate
-            if (dupCheck.isDuplicate) {
+            // Mark publishing status
+            if (dupCheck.isDuplicate && !processed.asin.startsWith('TEST')) {
                 setPublishingStatus(prev => ({ ...prev, [processed.asin]: 'error' }));
-                setPublishResults(prev => ({ ...prev, [processed.asin]: { error: 'Ya publicado en tu cuenta' } }));
+                setPublishResults(prev => ({ ...prev, [processed.asin]: { error: `Ya publicado en tu cuenta (ID: ${dupCheck.existingItem?.id})` } }));
             }
 
             // Load & Map ML required attrs
@@ -255,10 +256,17 @@ export const AmazonImporter: React.FC = () => {
                         
                         const defaultAttrs: Record<string, string> = {};
                         aiMapped.forEach((ma: any) => {
-                            if (ma.value_name) defaultAttrs[ma.id] = ma.value_name;
+                            if (ma.value_name && ma.value_name.toLowerCase() !== 'genérico') {
+                                defaultAttrs[ma.id] = ma.value_name;
+                            }
                         });
                         
-                        setUserAttributes(prev => ({ ...prev, [processed.asin]: { ...defaultAttrs, ...(prev[processed.asin] || {}) } }));
+                        setUserAttributes(prev => {
+                            const current = prev[processed.asin] || {};
+                            // AI suggestions should fill empty fields
+                            const merged = { ...defaultAttrs, ...current };
+                            return { ...prev, [processed.asin]: merged };
+                        });
                     } catch (e) {
                         console.error('AI Attribution mapping failed:', e);
                     }
@@ -719,7 +727,7 @@ export const AmazonImporter: React.FC = () => {
                                         <div className="px-4 py-3 space-y-1.5 border-b border-slate-100 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/50">
                                             <div className={`flex items-center gap-2 text-xs font-bold ${val.isDuplicate ? 'text-red-500' : 'text-green-600'}`}>
                                                 <span className="material-symbols-outlined text-[16px]">{val.isDuplicate ? 'error' : 'check_circle'}</span>
-                                                {val.isDuplicate ? '⚠️ Ya tienes este ASIN publicado en MercadoLibre' : '✓ No es duplicado'}
+                                                {val.isDuplicate ? `⚠️ Detectado en MercadoLibre (ID: ${val.duplicateId})` : '✓ No es duplicado'}
                                             </div>
                                             <div className={`flex items-center gap-2 text-xs font-bold ${val.hasForbiddenWords ? 'text-red-500' : 'text-green-600'}`}>
                                                 <span className="material-symbols-outlined text-[16px]">{val.hasForbiddenWords ? 'error' : 'check_circle'}</span>
