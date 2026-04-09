@@ -144,7 +144,7 @@ export const AmazonImporter: React.FC = () => {
                     price: product.price,
                     currency: product.currency,
                     imageUrl: product.imageUrl,
-                    images: product.imageUrl ? [product.imageUrl] : [],
+                    images: product.images || (product.imageUrl ? [product.imageUrl] : []),
                     category: product.category || '',
                     attributes: product.attributes || {},
                     loading: false,
@@ -186,7 +186,15 @@ export const AmazonImporter: React.FC = () => {
             }
 
             results.push(processed);
-            setEditedTitles(prev => ({ ...prev, [product.asin]: processed.optimizedTitle }));
+            // Feature: Remove brand from optimized title as requested
+            let finalTitle = processed.optimizedTitle;
+            if (product.brand) {
+                const brandRegex = new RegExp(`${product.brand}`, 'gi');
+                finalTitle = finalTitle.replace(brandRegex, '').replace(/\s\s+/g, ' ').trim();
+                // Capitalize first letter if it became lowercase
+                finalTitle = finalTitle.charAt(0).toUpperCase() + finalTitle.slice(1);
+            }
+            setEditedTitles(prev => ({ ...prev, [product.asin]: finalTitle }));
         }
 
         setProcessedProducts(results);
@@ -784,6 +792,7 @@ export const AmazonImporter: React.FC = () => {
                                     const status = publishingStatus[processed.asin];
                                     const result = publishResults[processed.asin];
                                     const dry = dryRunResults[processed.asin];
+                                    const val = validationResults[processed.asin];
 
                                     return (
                                         <div key={processed.asin} className="border border-slate-200 dark:border-slate-700 rounded-xl p-4">
