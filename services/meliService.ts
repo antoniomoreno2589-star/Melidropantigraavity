@@ -800,6 +800,8 @@ class MeliService {
             console.error("Meli createTestUser error:", e);
             throw e;
         }
+    }
+
     async deleteItem(itemId: string): Promise<boolean> {
         try {
             // Step 1: Set status to closed
