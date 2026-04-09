@@ -728,7 +728,8 @@ class MeliService {
         if (!creds) return { isDuplicate: false };
         try {
             // Search in user's items by custom field (ASIN stored as seller_custom_field)
-            const response = await this.fetchWithAuth(`/users/${creds.id}/items/search?seller_custom_field=${asin}&limit=1`);
+            // Search only in active or paused items of this user
+            const response = await this.fetchWithAuth(`/users/${creds.id}/items/search?seller_custom_field=${asin}&status=active,paused&limit=1`);
             if (!response.ok) return { isDuplicate: false };
             const data = await response.json();
             if (data.results && data.results.length > 0) {
