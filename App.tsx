@@ -6,7 +6,6 @@ import { Layout } from './components/Layout';
 import { LoginPage } from './components/LoginPage';
 import { RegisterPage } from './components/RegisterPage';
 import { DashboardPage } from './components/DashboardPage';
-import { ProductImporter } from './components/ProductImporter';
 import { AmazonImporter } from './components/AmazonImporter';
 import { CatalogTable } from './components/CatalogTable';
 import { ProfilePage } from './components/ProfilePage';
@@ -196,8 +195,7 @@ const App = () => {
     <Layout user={user} onLogout={handleLogout} meliData={meliMetrics} stats={meliMetrics?.stats || getDashboardStats()}>
       <Routes>
         <Route path="/" element={<DashboardPage user={user} stats={meliMetrics?.stats || getDashboardStats()} meliData={meliMetrics} />} />
-        <Route path="/importar" element={<ProductImporter onImport={handleImportProducts} />} />
-        <Route path="/importar-amazon" element={<AmazonImporter />} />
+        <Route path="/importar" element={<AmazonImporter />} />
         <Route path="/productos-prueba" element={<TestProductsPage />} />
         <Route path="/publicaciones" element={<CatalogTable products={products} onUpdateProduct={handleUpdateProduct} onBulkUpdate={handleBulkUpdate} />} />
         <Route path="/ordenes" element={<OrdersPage />} />

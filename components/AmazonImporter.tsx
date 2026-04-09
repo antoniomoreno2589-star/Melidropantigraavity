@@ -816,26 +816,57 @@ export const AmazonImporter: React.FC = () => {
                             </div>
                         </div>
 
-                        {/* Results Summary */}
+                        {/* Results Summary (Improved based on design) */}
                         {Object.keys(publishingStatus).length > 0 && (
-                            <div className="bg-slate-100 dark:bg-slate-900/50 rounded-xl p-4 flex items-center justify-around mb-6 border border-slate-200 dark:border-slate-700">
-                                <div className="text-center">
-                                    <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Total</p>
-                                    <p className="text-xl font-black text-slate-900 dark:text-white">{processedProducts.length}</p>
-                                </div>
-                                <div className="w-px h-8 bg-slate-200 dark:bg-slate-700" />
-                                <div className="text-center">
-                                    <p className="text-[10px] font-black text-green-500 uppercase tracking-widest">Éxito</p>
-                                    <p className="text-xl font-black text-green-600">
-                                        {Object.values(publishingStatus).filter(s => s === 'success').length}
-                                    </p>
-                                </div>
-                                <div className="w-px h-8 bg-slate-200 dark:bg-slate-700" />
-                                <div className="text-center">
-                                    <p className="text-[10px] font-black text-red-500 uppercase tracking-widest">Errores</p>
-                                    <p className="text-xl font-black text-red-600">
-                                        {Object.values(publishingStatus).filter(s => s === 'error').length}
-                                    </p>
+                            <div className="space-y-6 animate-fade-in mt-8">
+                                <div className="bg-white dark:bg-slate-800 p-8 rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm">
+                                    <h3 className="text-base font-black text-slate-900 dark:text-white mb-8 tracking-tight uppercase">Consolidado:</h3>
+                                    
+                                    <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+                                        <div className="flex flex-col items-center text-center">
+                                            <div className="size-12 bg-green-100 dark:bg-green-900/20 text-green-600 rounded-xl mb-3 flex items-center justify-center">
+                                                <span className="material-symbols-outlined filled text-[24px]">check_box</span>
+                                            </div>
+                                            <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Publicados</span>
+                                            <span className="text-xl font-black text-slate-900 dark:text-white mt-1">
+                                                {Object.values(publishingStatus).filter(s => s === 'success').length}
+                                            </span>
+                                        </div>
+                                        <div className="flex flex-col items-center text-center">
+                                            <div className="size-12 bg-yellow-100 dark:bg-yellow-900/20 text-yellow-600 rounded-xl mb-3 flex items-center justify-center">
+                                                <span className="material-symbols-outlined text-[24px]">content_copy</span>
+                                            </div>
+                                            <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Producto Duplicado</span>
+                                            <span className="text-xl font-black text-slate-900 dark:text-white mt-1">
+                                                {Object.values(validationResults).filter(v => v.isDuplicate).length}
+                                            </span>
+                                        </div>
+                                        <div className="flex flex-col items-center text-center">
+                                            <div className="size-12 bg-red-100 dark:bg-red-900/20 text-red-600 rounded-xl mb-3 flex items-center justify-center">
+                                                <span className="material-symbols-outlined text-[24px]">remove_circle</span>
+                                            </div>
+                                            <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">En Lista Negra</span>
+                                            <span className="text-xl font-black text-slate-900 dark:text-white mt-1">
+                                                {Object.values(validationResults).filter(v => v.hasForbiddenWords).length}
+                                            </span>
+                                        </div>
+                                        <div className="flex flex-col items-center text-center">
+                                            <div className="size-12 bg-blue-100 dark:bg-blue-900/20 text-blue-600 rounded-xl mb-3 flex items-center justify-center">
+                                                <span className="material-symbols-outlined text-[24px]">tag</span>
+                                            </div>
+                                            <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Error por GTIN</span>
+                                            <span className="text-xl font-black text-slate-900 dark:text-white mt-1">0</span>
+                                        </div>
+                                        <div className="flex flex-col items-center text-center">
+                                            <div className="size-12 bg-pink-100 dark:bg-pink-900/20 text-pink-600 rounded-xl mb-3 flex items-center justify-center">
+                                                <span className="material-symbols-outlined text-[24px]">help</span>
+                                            </div>
+                                            <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Otros Errores</span>
+                                            <span className="text-xl font-black text-slate-900 dark:text-white mt-1">
+                                                {Object.values(publishingStatus).filter(s => s === 'error').length}
+                                            </span>
+                                        </div>
+                                    </div>
                                 </div>
                             </div>
                         )}
