@@ -195,8 +195,11 @@ export const AmazonImporter: React.FC = () => {
 
     // ─── Step 4: Load Attributes & Validate ──────────────────────────
     const handleLoadAttributes = async () => {
-        const forbiddenWords: string[] = JSON.parse(localStorage.getItem('melidrop_global_filters') || '"Nike\nAdidas\nReacondicionado"')
-            .split('\n').map((w: string) => w.trim().toLowerCase()).filter(Boolean);
+        const rawFilters = localStorage.getItem('melidrop_global_filters') || "Nike\nAdidas\nReacondicionado";
+        const forbiddenWords: string[] = rawFilters
+            .split('\n')
+            .map((w: string) => w.trim().toLowerCase())
+            .filter(Boolean);
 
         for (const processed of processedProducts) {
             const catId = selectedCategories[processed.asin]?.id;
@@ -645,7 +648,14 @@ export const AmazonImporter: React.FC = () => {
                         <div className="flex gap-3" style={{ display: isProcessing ? 'none' : 'flex' }}>
                             <button onClick={() => setStep(2)} className="flex-1 py-3 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 font-bold rounded-xl hover:bg-slate-50 dark:hover:bg-slate-800 transition-all">Atrás</button>
                             <button
-                                onClick={async () => { await handleLoadAttributes(); setStep(4); }}
+                                onClick={async () => { 
+                                    try {
+                                        await handleLoadAttributes(); 
+                                    } catch (e) {
+                                        console.error("Error loading attributes:", e);
+                                    }
+                                    setStep(4); 
+                                }}
                                 disabled={processedProducts.length === 0}
                                 className="flex-1 py-3 bg-primary hover:bg-primary/90 text-white font-black rounded-xl transition-all disabled:opacity-50 flex items-center justify-center gap-2"
                             >
