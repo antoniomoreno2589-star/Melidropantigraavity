@@ -1,6 +1,8 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { Product } from '../types';
 import { api } from '../services/api';
+import { meliService } from '../services/meliService';
+import { supabase } from '../services/supabase';
 
 interface TestProduct extends Product {
     isPublishedToReal: boolean;
@@ -20,20 +22,51 @@ export const TestProductsPage = () => {
 
     const [testProducts, setTestProducts] = useState<TestProduct[]>([]);
     const [isLoading, setIsLoading] = useState(true);
+    const [testUser, setTestUser] = useState<any>(null);
+    const [isCreatingUser, setIsCreatingUser] = useState(false);
 
     useEffect(() => {
         const fetchData = async () => {
             try {
                 const data = await api.testProducts.list();
                 setTestProducts(data);
+                
+                // Fetch test user from Supabase
+                const { data: userData } = await supabase.from('user_connections').select('meli_test_user').maybeSingle();
+                if (userData?.meli_test_user) {
+                    setTestUser(userData.meli_test_user);
+                }
             } catch (err) {
-                console.error("Error fetching test products:", err);
+                console.error("Error fetching data:", err);
             } finally {
                 setIsLoading(false);
             }
         };
         fetchData();
     }, []);
+
+    const handleCreateTestUser = async () => {
+        setIsCreatingUser(true);
+        try {
+            const user = await meliService.createTestUser('MLM');
+            setTestUser(user);
+            
+            // Save to Supabase
+            const { data: { user: authUser } } = await supabase.auth.getUser();
+            if (authUser) {
+                await supabase.from('user_connections').upsert({
+                    user_id: authUser.id,
+                    meli_test_user: user
+                });
+            }
+            alert('¡Éxito! Se ha creado un nuevo usuario de prueba en MercadoLibre.');
+        } catch (err: any) {
+            console.error("Error creating test user:", err);
+            alert("No se pudo crear el usuario: " + err.message);
+        } finally {
+            setIsCreatingUser(false);
+        }
+    };
 
     // Derived State: Filtered Products logic
     const filteredProducts = useMemo(() => {
@@ -171,11 +204,25 @@ export const TestProductsPage = () => {
                                     <div className="flex-1">
                                         <div className="flex justify-between items-center mb-4">
                                             <h3 className="font-bold text-slate-900 dark:text-white">Cuenta Mercado Libre (Test)</h3>
-                                            <span className="text-xs font-bold text-green-600 dark:text-green-400 bg-green-50 dark:bg-green-900/20 px-2 py-1 rounded">VINCULADO</span>
+                                            <span className={`text-xs font-bold px-2 py-1 rounded ${testUser ? 'text-green-600 dark:text-green-400 bg-green-50 dark:bg-green-900/20' : 'text-slate-400 bg-slate-100'}`}>
+                                                {testUser ? 'VINCULADO' : 'PENDIENTE'}
+                                            </span>
                                         </div>
                                         <div className="flex flex-col sm:flex-row items-center gap-4 bg-slate-50 dark:bg-slate-900/50 p-4 rounded-xl border border-slate-100 dark:border-slate-800">
-                                            <div className="flex-1 text-sm text-slate-600 dark:text-slate-400 italic">Usuario: <span className="font-bold text-slate-800 dark:text-slate-200">test_meli_123</span></div>
-                                            <button className="text-primary font-bold text-sm hover:underline">Gestionar</button>
+                                            <div className="flex-1 text-sm text-slate-600 dark:text-slate-400 italic">
+                                                {testUser ? (
+                                                    <>Usuario: <span className="font-bold text-slate-800 dark:text-slate-200">{testUser.nickname}</span></>
+                                                ) : (
+                                                    'No hay un usuario de prueba activo.'
+                                                )}
+                                            </div>
+                                            <button 
+                                                onClick={handleCreateTestUser}
+                                                disabled={isCreatingUser}
+                                                className="bg-primary text-white px-4 py-2 rounded-lg text-xs font-bold shadow-sm hover:opacity-90 disabled:opacity-50"
+                                            >
+                                                {isCreatingUser ? 'Generando...' : testUser ? 'Regenerar Usuario' : 'Crear Usuario Test'}
+                                            </button>
                                         </div>
                                     </div>
                                 </div>
@@ -186,14 +233,23 @@ export const TestProductsPage = () => {
                                     <div className="size-10 rounded-full bg-slate-100 dark:bg-slate-700 flex items-center justify-center font-bold text-slate-500">2</div>
                                     <div className="flex-1">
                                         <h3 className="font-bold text-slate-900 dark:text-white mb-2">Credenciales Sandbox</h3>
+                                        <p className="text-sm text-slate-500 mb-4">Utiliza estos datos para iniciar sesión en MercadoLibre y ver tus pruebas.</p>
                                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-3">
                                             <div className="bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg p-3">
                                                 <p className="text-[10px] font-bold text-slate-400 uppercase">Email</p>
-                                                <p className="text-xs font-mono text-slate-700 dark:text-slate-300 truncate">test_user_703944193@test.com</p>
+                                                <p className="text-xs font-mono text-slate-700 dark:text-slate-300 truncate">{testUser?.email || 'N/A'}</p>
                                             </div>
-                                            <div className="bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg p-3">
+                                            <div className="bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg p-3 relative">
                                                 <p className="text-[10px] font-bold text-slate-400 uppercase">Contraseña</p>
-                                                <p className="text-xs font-mono text-slate-700 dark:text-slate-300">••••••••</p>
+                                                <p className="text-xs font-mono text-slate-700 dark:text-slate-300">{testUser?.password || '••••••••'}</p>
+                                                {testUser?.password && (
+                                                     <button 
+                                                        onClick={() => {navigator.clipboard.writeText(testUser.password); alert('Copiado');}}
+                                                        className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-primary"
+                                                     >
+                                                         <span className="material-symbols-outlined text-[16px]">content_copy</span>
+                                                     </button>
+                                                )}
                                             </div>
                                         </div>
                                     </div>
@@ -204,15 +260,15 @@ export const TestProductsPage = () => {
                                 <div className="flex items-start gap-4">
                                     <div className="size-10 rounded-full bg-slate-100 dark:bg-slate-700 flex items-center justify-center font-bold text-slate-500">3</div>
                                     <div className="flex-1">
-                                        <h3 className="font-bold text-slate-900 dark:text-white mb-2">Autorización de Aplicación</h3>
-                                        <p className="text-sm text-slate-500 mb-4">Concede los permisos necesarios para sincronizar con tu sandbox.</p>
+                                        <h3 className="font-bold text-slate-900 dark:text-white mb-2">Acceso Rápido</h3>
+                                        <p className="text-sm text-slate-500 mb-4">Abre el panel de vendedor con tu cuenta de prueba.</p>
                                         <div className="flex gap-2">
-                                            <input disabled className="flex-1 rounded-lg border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-xs py-2 px-3 text-slate-400" value="https://auth.mercadolibre.com.mx/test-authorize" />
                                             <button 
-                                                onClick={() => window.open('https://auth.mercadolibre.com.mx/test-authorize', '_blank')}
-                                                className="bg-primary text-white px-6 py-2 rounded-lg text-xs font-bold hover:opacity-90 transition-opacity"
+                                                onClick={() => window.open('https://www.mercadolibre.com.mx/menu', '_blank')}
+                                                className="bg-slate-900 text-white px-6 py-2 rounded-lg text-xs font-bold hover:opacity-90 transition-opacity flex items-center gap-2"
                                             >
-                                                IR A AUTORIZAR
+                                                <span className="material-symbols-outlined text-[18px]">open_in_new</span>
+                                                IR A PANEL VENDEDOR TEST
                                             </button>
                                         </div>
                                     </div>

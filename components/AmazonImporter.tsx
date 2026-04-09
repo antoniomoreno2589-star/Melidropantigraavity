@@ -3,6 +3,8 @@ import { amazonService } from '../services/amazonService';
 import { aiImporterService, ProcessedProduct } from '../services/aiImporterService';
 import { meliService } from '../services/meliService';
 import { api } from '../services/api';
+import { supabase } from '../services/supabase';
+import { useEffect } from 'react';
 
 // ─── Types ────────────────────────────────────────────────────────────
 type Marketplace = 'MLM' | 'MLS';
@@ -89,6 +91,17 @@ export const AmazonImporter: React.FC = () => {
     const [publishingStatus, setPublishingStatus] = useState<Record<string, 'idle' | 'loading' | 'success' | 'error'>>({});
     const [publishResults, setPublishResults] = useState<Record<string, any>>({});
     const [dryRunResults, setDryRunResults] = useState<Record<string, any>>({});
+    const [testUserCreds, setTestUserCreds] = useState<any>(null);
+
+    useEffect(() => {
+        const fetchTestUser = async () => {
+            const { data } = await supabase.from('user_connections').select('meli_test_user').maybeSingle();
+            if (data?.meli_test_user) {
+                setTestUserCreds(data.meli_test_user);
+            }
+        };
+        fetchTestUser();
+    }, []);
 
     // ─── Guard: Amazon must be connected ────────────────────────────
     if (!amazonService.isAuthenticated()) {
@@ -277,7 +290,29 @@ export const AmazonImporter: React.FC = () => {
                 // Validate with Meli
                 const validation = await meliService.validateItem(payload);
                 
-                // Save to Sandbox Cataog in Supabase
+                let publishResult = null;
+                // If a test user is connected, REALLY publish to the test user's account
+                if (testUserCreds?.access_token) {
+                    try {
+                        // Upload images to ML first for the test user
+                        const imageIds: string[] = [];
+                        for (const img of processed.images.slice(0, 10)) {
+                            const id = await meliService.uploadImage(img.url, testUserCreds.access_token);
+                            if (id) imageIds.push(id);
+                        }
+                        
+                        const testPayload = { ...payload };
+                        if (imageIds.length > 0) {
+                            (testPayload as any).pictures = imageIds.map((id: string) => ({ id }));
+                        }
+                        
+                        publishResult = await meliService.publishItem(testPayload, false, testUserCreds.access_token);
+                    } catch (publishErr) {
+                        console.error("Test publish error:", publishErr);
+                    }
+                }
+
+                // Save to Sandbox Catalog in Supabase for local visibility
                 await api.testProducts.create({
                     title: payload.title,
                     asin: processed.asin,
@@ -289,7 +324,7 @@ export const AmazonImporter: React.FC = () => {
                     status: 'active'
                 });
 
-                setDryRunResults(prev => ({ ...prev, [processed.asin]: { payload, validation } }));
+                setDryRunResults(prev => ({ ...prev, [processed.asin]: { payload, validation, testPublish: publishResult } }));
             } catch (err) {
                 console.error("Dry Run error:", err);
             }

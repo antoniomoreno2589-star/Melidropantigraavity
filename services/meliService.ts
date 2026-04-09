@@ -109,8 +109,8 @@ class MeliService {
         }
     }
 
-    async fetchWithAuth(endpoint: string, options: RequestInit = {}) {
-        const token = await this.getValidToken();
+    async fetchWithAuth(endpoint: string, options: RequestInit = {}, customToken?: string) {
+        const token = customToken || await this.getValidToken();
         if (!token) throw new Error("No valid MercadoLibre token found");
 
         const targetUrl = `${this.baseUrl}${endpoint}`;
@@ -691,15 +691,15 @@ class MeliService {
 
     // ─── IMPORTER METHODS ────────────────────────────────────────────
 
-    async publishItem(itemData: any, isDraft: boolean = false): Promise<any> {
-        const creds = this.getCredentials();
-        if (!creds) throw new Error("No credentials");
+    async publishItem(itemData: any, isDraft: boolean = false, customToken?: string): Promise<any> {
+        const creds = customToken ? null : this.getCredentials();
+        if (!creds && !customToken) throw new Error("No credentials");
         const body = isDraft ? { ...itemData, status: 'paused' } : itemData;
         const response = await this.fetchWithAuth('/items', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(body)
-        });
+        }, customToken);
         const data = await response.json();
         if (!response.ok) throw new Error(data.message || JSON.stringify(data));
         return data;
@@ -761,18 +761,34 @@ class MeliService {
         }
     }
 
-    async uploadImage(imageUrl: string): Promise<string | null> {
+    async uploadImage(imageUrl: string, customToken?: string): Promise<string | null> {
         try {
             const response = await this.fetchWithAuth('/pictures', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ source: imageUrl })
-            });
+            }, customToken);
             if (!response.ok) return null;
             const data = await response.json();
             return data.id || null;
         } catch (e) {
             return null;
+        }
+    }
+
+    async createTestUser(siteId: string = 'MLM'): Promise<any> {
+        try {
+            const response = await this.fetchWithAuth('/users/test_user', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ site_id: siteId })
+            });
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.message || "Error al crear usuario de prueba");
+            return data;
+        } catch (e) {
+            console.error("Meli createTestUser error:", e);
+            throw e;
         }
     }
 }
