@@ -140,18 +140,24 @@ class AmazonService {
             const attributes = catalogItem?.attributes;
 
             // Collect all images from all groups
-            const allImages: string[] = [];
+            const uniqueBaseUrls = new Map<string, string>();
             if (Array.isArray(catalogItem?.images)) {
                 for (const imgGroup of catalogItem.images) {
                     if (Array.isArray(imgGroup?.images)) {
                         for (const img of imgGroup.images) {
-                            if (img?.link) allImages.push(img.link);
+                            if (img?.link) {
+                                // Amazon URLs variant tokens: strip everything from the first dot dot starting with underscore until the final dot
+                                // Example: ._AC_SX679_.jpg -> .jpg
+                                const baseUrl = img.link.replace(/\._[A-Z0-9_,]+\./, '.');
+                                if (!uniqueBaseUrls.has(baseUrl)) {
+                                    uniqueBaseUrls.set(baseUrl, img.link);
+                                }
+                            }
                         }
                     }
                 }
             }
-            // Deduplicate
-            const uniqueImages = [...new Set(allImages)];
+            const uniqueImages = Array.from(uniqueBaseUrls.values());
             const primaryImage = uniqueImages[0] || null;
 
             const pricing = result.pricing?.payload;

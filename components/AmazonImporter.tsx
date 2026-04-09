@@ -185,21 +185,24 @@ export const AmazonImporter: React.FC = () => {
                 }));
             }
 
-            results.push(processed);
-
-            // Deduplicate images and limit to 10
+            // Deduplicate images with a more aggressive approach (strip query params and variant tokens)
             const uniqueImages = [];
-            const seenUrls = new Set();
+            const seenKeys = new Set();
             for (const img of processed.images) {
-                if (!seenUrls.has(img.url)) {
+                // Strips Amazon variants and query params
+                const key = img.url.split('?')[0].replace(/\._[A-Z0-9_,]+\./, '.');
+                if (!seenKeys.has(key)) {
                     uniqueImages.push(img);
-                    seenUrls.add(img.url);
+                    seenKeys.add(key);
                 }
             }
             processed.images = uniqueImages.slice(0, 10);
+            results.push(processed);
 
             // Feature: Remove brand from optimized title as requested
-            let finalTitle = processed.optimizedTitle;
+            let finalTitle = processed.optimizedTitle || product.title;
+            // Ensure no "ni os" spacing issues by fixing common encoding/AI artifacts
+            finalTitle = finalTitle.replace(/ni\s+os/gi, 'niños').replace(/ni\s+as/gi, 'niñas');
             if (product.brand) {
                 const brandRegex = new RegExp(`${product.brand}`, 'gi');
                 finalTitle = finalTitle.replace(brandRegex, '').replace(/\s\s+/g, ' ').trim();
@@ -261,23 +264,30 @@ export const AmazonImporter: React.FC = () => {
             if (catId) {
                 try {
                     const attrs = await meliService.getCategoryAttributes(catId);
-                    const required = attrs.filter((a: any) => a.tags?.required || a.tags?.new_required);
-                    nextCategoryAttrs[product.asin] = required;
+                    // Get all relevant attributes, not just required, to help fill the product page
+                    const relevant = attrs.filter((a: any) => 
+                        a.tags?.required || a.tags?.new_required || 
+                        (!a.tags?.read_only && a.relevance >= 1)
+                    ).slice(0, 40);
 
-                    if (required.length > 0) {
+                    nextCategoryAttrs[product.asin] = relevant;
+
+                    if (relevant.length > 0) {
                         const aiMapped = await aiImporterService.mapAttributes(
                             product.title,
                             product.description || '',
                             product.attributes || {},
-                            required
+                            relevant
                         );
                         
                         const defaultAttrs: Record<string, string> = {};
-                        aiMapped.forEach((ma: any) => {
-                            if (ma.value_name && !['genérico', 'generic', 'n/a'].includes(ma.value_name.toLowerCase())) {
-                                defaultAttrs[ma.id] = ma.value_name;
-                            }
-                        });
+                        if (Array.isArray(aiMapped)) {
+                            aiMapped.forEach((ma: any) => {
+                                if (ma.id && ma.value_name && !['genérico', 'generic', 'n/a', 'no aplica', 'unknown'].includes(ma.value_name.toLowerCase())) {
+                                    defaultAttrs[ma.id] = ma.value_name;
+                                }
+                            });
+                        }
                         
                         // Merge with existing user input if any
                         const current = userAttributes[product.asin] || {};
