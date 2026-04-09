@@ -121,6 +121,25 @@ export const TestProductsPage = () => {
         alert('Producto publicado exitosamente en MercadoLibre.');
     };
 
+    const handleDelete = async (id: string, meliId?: string) => {
+        if (!confirm('¿Estás seguro de que deseas eliminar este producto? Se cerrará en MercadoLibre y se borrará del sistema.')) return;
+        
+        try {
+            if (meliId) {
+                await meliService.deleteItem(meliId);
+            }
+            // Delete from database
+            const { error } = await supabase.from('products').delete().eq('id', id);
+            if (error) throw error;
+            
+            setTestProducts(prev => prev.filter(p => p.id !== id));
+            alert('Producto eliminado correctamente.');
+        } catch (err: any) {
+            console.error("Error deleting product:", err);
+            alert("No se pudo eliminar el producto: " + err.message);
+        }
+    };
+
     const handleBulkPublish = () => {
         if (selectedIds.length === 0) return;
         setTestProducts(prev => prev.map(p => selectedIds.includes(p.id) ? { ...p, isPublishedToReal: true, status: 'active' } : p));
@@ -441,12 +460,21 @@ export const TestProductsPage = () => {
                                                                 EN MERCADOLIBRE
                                                             </div>
                                                         ) : (
-                                                            <button 
-                                                                onClick={() => handlePublishToReal(p.id)}
-                                                                className="px-4 py-1.5 bg-slate-900 hover:bg-slate-800 dark:bg-slate-700 dark:hover:bg-slate-600 text-white rounded-lg text-xs font-bold shadow-sm transition-all transform active:scale-95"
-                                                            >
-                                                                Publicar en MercadoLibre
-                                                            </button>
+                                                            <div className="flex items-center justify-end gap-2">
+                                                                <button 
+                                                                    onClick={() => handlePublishToReal(p.id)}
+                                                                    className="px-3 py-1.5 bg-slate-900 hover:bg-slate-800 dark:bg-slate-700 dark:hover:bg-slate-600 text-white rounded-lg text-[10px] font-black shadow-sm transition-all"
+                                                                >
+                                                                    Publicar Real
+                                                                </button>
+                                                                <button 
+                                                                    onClick={() => handleDelete(p.id, p.meliId)}
+                                                                    className="p-1.5 bg-red-50 hover:bg-red-100 text-red-600 rounded-lg transition-all"
+                                                                    title="Eliminar producto"
+                                                                >
+                                                                    <span className="material-symbols-outlined text-[18px]">delete</span>
+                                                                </button>
+                                                            </div>
                                                         )}
                                                     </td>
                                                 </tr>

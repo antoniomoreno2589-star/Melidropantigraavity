@@ -733,7 +733,16 @@ class MeliService {
             if (!response.ok) return { isDuplicate: false };
             const data = await response.json();
             if (data.results && data.results.length > 0) {
-                return { isDuplicate: true, existingItem: { id: data.results[0] } };
+                const itemId = data.results[0];
+                
+                // Double check: Fetch the item to verify the ASIN matches exactly
+                const itemRes = await this.fetchWithAuth(`/items/${itemId}?attributes=seller_custom_field,status`);
+                if (itemRes.ok) {
+                    const itemData = await itemRes.json();
+                    if (itemData.seller_custom_field === asin && (itemData.status === 'active' || itemData.status === 'paused')) {
+                        return { isDuplicate: true, existingItem: { id: itemId } };
+                    }
+                }
             }
             return { isDuplicate: false };
         } catch (e) {
@@ -790,6 +799,32 @@ class MeliService {
         } catch (e) {
             console.error("Meli createTestUser error:", e);
             throw e;
+        }
+    async deleteItem(itemId: string): Promise<boolean> {
+        try {
+            // Step 1: Set status to closed
+            const res1 = await this.fetchWithAuth(`/items/${itemId}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ status: 'closed' })
+            });
+
+            if (!res1.ok) {
+                const err = await res1.json();
+                console.error("Meli deleteItem step 1 failed:", err);
+            }
+
+            // Step 2: Delete (hidden from user)
+            const res2 = await this.fetchWithAuth(`/items/${itemId}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ deleted: 'true' })
+            });
+
+            return res2.ok;
+        } catch (e) {
+            console.error("Meli deleteItem exception:", e);
+            return false;
         }
     }
 }
