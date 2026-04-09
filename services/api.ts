@@ -244,5 +244,72 @@ export const api = {
 
             if (err) throw err;
         }
+    },
+
+    testProducts: {
+        async list(): Promise<any[]> {
+            const { data, error } = await supabase
+                .from('test_products')
+                .select('*')
+                .order('created_at', { ascending: false });
+
+            if (error) throw error;
+            return data.map(p => ({
+                id: p.id,
+                title: p.title,
+                asin: p.asin,
+                sku: p.sku,
+                priceMXN: p.price_mxn,
+                costUSD: p.cost_usd,
+                stockProvider: p.stock_provider,
+                stockMeli: p.stock_meli,
+                status: p.status,
+                imageUrl: p.image_url,
+                category: p.category,
+                isPublishedToReal: p.is_published_to_real,
+                creationDate: new Date(p.created_at).toISOString().split('T')[0]
+            }));
+        },
+
+        async create(product: any): Promise<void> {
+            const { data: { user } } = await supabase.auth.getUser();
+            if (!user) throw new Error("User not authenticated");
+
+            const { error } = await supabase
+                .from('test_products')
+                .insert({
+                    user_id: user.id,
+                    title: product.title,
+                    asin: product.asin,
+                    sku: product.sku,
+                    price_mxn: product.price_mxn,
+                    cost_usd: product.cost_usd,
+                    stock_provider: product.stock_provider || 0,
+                    stock_meli: product.stock_meli || 0,
+                    status: product.status || 'active',
+                    image_url: product.image_url,
+                    category: product.category
+                });
+
+            if (error) throw error;
+        },
+
+        async delete(id: string): Promise<void> {
+            const { error } = await supabase
+                .from('test_products')
+                .delete()
+                .eq('id', id);
+            if (error) throw error;
+        },
+
+        async clearAll(): Promise<void> {
+            const { data: { user } } = await supabase.auth.getUser();
+            if (!user) return;
+            const { error } = await supabase
+                .from('test_products')
+                .delete()
+                .eq('user_id', user.id);
+            if (error) throw error;
+        }
     }
 };

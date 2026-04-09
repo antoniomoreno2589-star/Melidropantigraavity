@@ -1,5 +1,6 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { Product } from '../types';
+import { api } from '../services/api';
 
 interface TestProduct extends Product {
     isPublishedToReal: boolean;
@@ -17,59 +18,22 @@ export const TestProductsPage = () => {
     const [filterDate, setFilterDate] = useState<string>('');
     const [showFilters, setShowFilters] = useState(false);
 
-    const [testProducts, setTestProducts] = useState<TestProduct[]>([
-        {
-            id: 't1',
-            title: 'Arnés De Seguridad Ajustable Para Bebés Con Baberos',
-            sku: 'ARN-001',
-            asin: 'B0BJCQCYHK',
-            priceMXN: 1309,
-            costUSD: 40,
-            stockProvider: 50,
-            stockMeli: 10,
-            status: 'active',
-            imageUrl: 'https://picsum.photos/100/100?random=11',
-            lastUpdated: new Date(),
-            isPublishedToReal: true,
-            creationDate: '2025-11-10',
-            prepTime: '3 días',
-            category: 'Accesorios Bebé'
-        },
-        {
-            id: 't2',
-            title: 'Ruedas De Polea De Cable 90 Mm Silenciosas 360 Grados',
-            sku: 'POL-002',
-            asin: 'B09CQ9139',
-            priceMXN: 1329,
-            costUSD: 42,
-            stockProvider: 30,
-            stockMeli: 5,
-            status: 'paused',
-            imageUrl: 'https://picsum.photos/100/100?random=12',
-            lastUpdated: new Date(),
-            isPublishedToReal: false,
-            creationDate: '2025-11-10',
-            prepTime: '33 días',
-            category: 'Herramientas'
-        },
-        {
-            id: 't3',
-            title: 'Guantes De Entrenamiento Antideslizantes Para Gimnasio',
-            sku: 'GUA-003',
-            asin: 'B0BG9RY92Q',
-            priceMXN: 1409,
-            costUSD: 45,
-            stockProvider: 100,
-            stockMeli: 20,
-            status: 'active',
-            imageUrl: 'https://picsum.photos/100/100?random=13',
-            lastUpdated: new Date(),
-            isPublishedToReal: true,
-            creationDate: '2025-11-11',
-            prepTime: '6 días',
-            category: 'Deportes'
-        }
-    ]);
+    const [testProducts, setTestProducts] = useState<TestProduct[]>([]);
+    const [isLoading, setIsLoading] = useState(true);
+
+    useEffect(() => {
+        const fetchData = async () => {
+            try {
+                const data = await api.testProducts.list();
+                setTestProducts(data);
+            } catch (err) {
+                console.error("Error fetching test products:", err);
+            } finally {
+                setIsLoading(false);
+            }
+        };
+        fetchData();
+    }, []);
 
     // Derived State: Filtered Products logic
     const filteredProducts = useMemo(() => {
@@ -94,12 +58,17 @@ export const TestProductsPage = () => {
     }, [testProducts, searchQuery, filterStatus, filterDate]);
 
     // Handlers
-    const handleSync = () => {
+    const handleSync = async () => {
         setIsSyncing(true);
-        setTimeout(() => {
-            setIsSyncing(false);
+        try {
+            const data = await api.testProducts.list();
+            setTestProducts(data);
             alert('Sincronización con el Sandbox de Mercado Libre completada.');
-        }, 1500);
+        } catch (err) {
+            console.error("Sync error:", err);
+        } finally {
+            setIsSyncing(false);
+        }
     };
 
     const handleSelectAll = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -126,12 +95,17 @@ export const TestProductsPage = () => {
         alert(`${selectedIds.length} productos han sido publicados en MercadoLibre.`);
     };
 
-    const clearSandbox = () => {
+    const clearSandbox = async () => {
         const confirmClear = window.confirm('¿Estás seguro de limpiar todo el entorno de pruebas? Esta acción eliminará permanentemente todos los productos del catálogo de test.');
         if (confirmClear) {
-            setTestProducts([]);
-            setSelectedIds([]);
-            alert('Entorno Sandbox limpiado exitosamente.');
+            try {
+                await api.testProducts.clearAll();
+                setTestProducts([]);
+                setSelectedIds([]);
+                alert('Entorno Sandbox limpiado exitosamente.');
+            } catch (err) {
+                console.error("Clear error:", err);
+            }
         }
     };
 

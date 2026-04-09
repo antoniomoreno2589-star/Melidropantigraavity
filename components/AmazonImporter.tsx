@@ -2,6 +2,7 @@ import React, { useState, useCallback } from 'react';
 import { amazonService } from '../services/amazonService';
 import { aiImporterService, ProcessedProduct } from '../services/aiImporterService';
 import { meliService } from '../services/meliService';
+import { api } from '../services/api';
 
 // ─── Types ────────────────────────────────────────────────────────────
 type Marketplace = 'MLM' | 'MLS';
@@ -268,11 +269,32 @@ export const AmazonImporter: React.FC = () => {
     };
 
     const handleDryRun = async () => {
+        setIsDryRunning(true);
         for (const processed of processedProducts) {
             const payload = buildItemPayload(processed);
-            const validation = await meliService.validateItem(payload);
-            setDryRunResults(prev => ({ ...prev, [processed.asin]: { payload, validation } }));
+            
+            try {
+                // Validate with Meli
+                const validation = await meliService.validateItem(payload);
+                
+                // Save to Sandbox Cataog in Supabase
+                await api.testProducts.create({
+                    title: payload.title,
+                    asin: processed.asin,
+                    sku: processed.asin,
+                    price_mxn: payload.price,
+                    cost_usd: loadedProducts.find(p => p.asin === processed.asin)?.price || 0,
+                    image_url: processed.images[0]?.url,
+                    category: payload.category_id,
+                    status: 'active'
+                });
+
+                setDryRunResults(prev => ({ ...prev, [processed.asin]: { payload, validation } }));
+            } catch (err) {
+                console.error("Dry Run error:", err);
+            }
         }
+        setIsDryRunning(false);
     };
 
     const handlePublish = async (asin: string, isDraft: boolean = false) => {
