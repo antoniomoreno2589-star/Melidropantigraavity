@@ -186,6 +186,18 @@ export const AmazonImporter: React.FC = () => {
             }
 
             results.push(processed);
+
+            // Deduplicate images and limit to 10
+            const uniqueImages = [];
+            const seenUrls = new Set();
+            for (const img of processed.images) {
+                if (!seenUrls.has(img.url)) {
+                    uniqueImages.push(img);
+                    seenUrls.add(img.url);
+                }
+            }
+            processed.images = uniqueImages.slice(0, 10);
+
             // Feature: Remove brand from optimized title as requested
             let finalTitle = processed.optimizedTitle;
             if (product.brand) {
@@ -334,60 +346,64 @@ export const AmazonImporter: React.FC = () => {
             listing_type_id: listingType,
             condition: 'new',
             seller_custom_field: processed.asin,
-            pictures: processed.images.slice(0, 10).map(img => ({ source: img.url })),
+            pictures: Array.from(new Set(processed.images.map(i => i.url)))
+                .slice(0, 10)
+                .map(url => ({ source: url })),
             attributes: finalAttributes
         };
     };
 
-    const handleDryRun = async () => {
-        setIsDryRunning(true);
-        for (const processed of processedProducts) {
+    const handleDryRun = async (asin: string) => {
+        const processed = processedProducts.find(p => p.asin === asin);
+        if (!processed) return;
+
+        setPublishingStatus(prev => ({ ...prev, [asin]: 'loading' }));
+        
+        try {
             const payload = buildItemPayload(processed);
             
-            try {
-                // Validate with Meli
-                const validation = await meliService.validateItem(payload);
-                
-                let publishResult = null;
-                // If a test user is connected, REALLY publish to the test user's account
-                if (testUserCreds?.access_token) {
-                    try {
-                        // Upload images to ML first for the test user
-                        const imageIds: string[] = [];
-                        for (const img of processed.images.slice(0, 10)) {
-                            const id = await meliService.uploadImage(img.url, testUserCreds.access_token);
-                            if (id) imageIds.push(id);
-                        }
-                        
-                        const testPayload = { ...payload };
-                        if (imageIds.length > 0) {
-                            (testPayload as any).pictures = imageIds.map((id: string) => ({ id }));
-                        }
-                        
-                        publishResult = await meliService.publishItem(testPayload, false, testUserCreds.access_token);
-                    } catch (publishErr) {
-                        console.error("Test publish error:", publishErr);
+            // 1. Validate with Meli
+            const validation = await meliService.validateItem(payload);
+            
+            let publishResult = null;
+            // 2. If a test user is connected, REALLY publish to the test user's account (SANDBOX)
+            if (testUserCreds?.access_token) {
+                try {
+                    const imageIds = [];
+                    for (const img of processed.images.slice(0, 10)) {
+                        const id = await meliService.uploadImage(img.url, testUserCreds.access_token);
+                        if (id) imageIds.push(id);
                     }
+                    
+                    const testPayload = { ...payload };
+                    if (imageIds.length > 0) (testPayload as any).pictures = imageIds.map((id: string) => ({ id }));
+                    
+                    publishResult = await meliService.publishItem(testPayload, false, testUserCreds.access_token);
+                } catch (publishErr) {
+                    console.error("Test publish error:", publishErr);
                 }
-
-                // Save to Sandbox Catalog in Supabase for local visibility
-                await api.testProducts.create({
-                    title: payload.title,
-                    asin: processed.asin,
-                    sku: processed.asin,
-                    price_mxn: payload.price,
-                    cost_usd: loadedProducts.find(p => p.asin === processed.asin)?.price || 0,
-                    image_url: processed.images[0]?.url,
-                    category: payload.category_id,
-                    status: 'active'
-                });
-
-                setDryRunResults(prev => ({ ...prev, [processed.asin]: { payload, validation, testPublish: publishResult } }));
-            } catch (err) {
-                console.error("Dry Run error:", err);
             }
+
+            // 3. Save to Sandbox Catalog in Supabase
+            await api.testProducts.create({
+                title: payload.title,
+                asin: processed.asin,
+                sku: processed.asin,
+                price_mxn: payload.price,
+                cost_usd: loadedProducts.find(p => p.asin === processed.asin)?.price || 0,
+                image_url: processed.images[0]?.url,
+                category: payload.category_id,
+                status: 'active'
+            });
+
+            setDryRunResults(prev => ({ ...prev, [asin]: { payload, validation, testPublish: publishResult } }));
+            setPublishingStatus(prev => ({ ...prev, [asin]: 'idle' }));
+            alert('¡Producto enviado al Entorno de Pruebas correctamente!');
+        } catch (err: any) {
+            console.error("Dry Run error:", err);
+            setPublishResults(prev => ({ ...prev, [asin]: { error: `Error en prueba: ${err.message}` } }));
+            setPublishingStatus(prev => ({ ...prev, [asin]: 'error' }));
         }
-        setIsDryRunning(false);
     };
 
     const handlePublish = async (asin: string, isDraft: boolean = false) => {
@@ -409,8 +425,18 @@ export const AmazonImporter: React.FC = () => {
             }
 
             const result = await meliService.publishItem(payload, isDraft);
-            setPublishResults(prev => ({ ...prev, [asin]: result }));
-            setPublishingStatus(prev => ({ ...prev, [asin]: 'success' }));
+            
+            if (result.error) {
+                let msg = result.error;
+                if (result.cause && Array.isArray(result.cause)) {
+                    msg += ": " + result.cause.map((c: any) => c.message || JSON.stringify(c)).join(', ');
+                }
+                setPublishResults(prev => ({ ...prev, [asin]: { error: msg } }));
+                setPublishingStatus(prev => ({ ...prev, [asin]: 'error' }));
+            } else {
+                setPublishResults(prev => ({ ...prev, [asin]: result }));
+                setPublishingStatus(prev => ({ ...prev, [asin]: 'success' }));
+            }
         } catch (e: any) {
             setPublishResults(prev => ({ ...prev, [asin]: { error: e.message } }));
             setPublishingStatus(prev => ({ ...prev, [asin]: 'error' }));
@@ -833,12 +859,14 @@ export const AmazonImporter: React.FC = () => {
                                                 <div className="mb-3 bg-slate-50 dark:bg-slate-900 rounded-lg p-3">
                                                     <p className="text-[10px] font-black text-slate-500 uppercase mb-1">Resultado de Validación</p>
                                                     <div className="flex gap-2">
-                                                        <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${dry.validation?.valid ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
-                                                            {dry.validation?.valid ? '✓ Válido' : '✗ Con errores'}
+                                                        <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${dry.valid ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+                                                            {dry.valid ? '✓ Válido' : '✗ Con errores'}
                                                         </span>
                                                     </div>
-                                                    {dry.validation?.errors?.length > 0 && (
-                                                        <p className="text-[10px] text-red-500 mt-1">{dry.validation.errors.map((e: any) => e.message || JSON.stringify(e)).join(', ')}</p>
+                                                    {dry.errors?.length > 0 && (
+                                                        <p className="text-[10px] text-red-500 mt-1">
+                                                            {dry.errors.map((e: any) => e.message || e.error || JSON.stringify(e)).join(', ')}
+                                                        </p>
                                                     )}
                                                 </div>
                                             )}
@@ -865,13 +893,13 @@ export const AmazonImporter: React.FC = () => {
                                             )}
 
                                             {/* Action Buttons */}
-                                            {!status || status === 'idle' ? (
+                                            {!status || status === 'idle' || status === 'error' ? (
                                                 <div className="flex gap-2">
                                                     <button
-                                                        onClick={handleDryRun}
+                                                        onClick={() => handleDryRun(processed.asin)}
                                                         className="flex-1 py-2 border-2 border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-300 font-bold rounded-lg text-sm hover:bg-slate-50 dark:hover:bg-slate-700 transition-all flex items-center justify-center gap-1"
                                                     >
-                                                        <span className="material-symbols-outlined text-[16px]">science</span>Probar (Validar)
+                                                        <span className="material-symbols-outlined text-[16px]">science</span>Probar (Sandbox)
                                                     </button>
                                                     <button
                                                         onClick={() => handlePublish(processed.asin, false)}

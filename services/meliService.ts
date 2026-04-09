@@ -701,7 +701,9 @@ class MeliService {
             body: JSON.stringify(body)
         }, customToken);
         const data = await response.json();
-        if (!response.ok) throw new Error(data.message || JSON.stringify(data));
+        if (!response.ok) {
+            return { error: data.message || "Error al publicar", cause: data.cause };
+        }
         return data;
     }
 
