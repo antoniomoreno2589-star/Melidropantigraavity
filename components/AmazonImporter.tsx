@@ -208,71 +208,84 @@ export const AmazonImporter: React.FC = () => {
             .split('\n')
             .map((w: string) => w.trim().toLowerCase())
             .filter(Boolean);
+        
+        setIsProcessing(true);
+        setProcessingStage('Validando duplicados y palabras prohibidas...');
+        
+        const nextValidations: Record<string, any> = {};
+        const nextStatus: Record<string, string> = {};
+        const nextResults: Record<string, any> = {};
+        const nextCategoryAttrs: Record<string, any[]> = {};
+        const nextUserAttrs: Record<string, any> = {};
 
         for (const processed of processedProducts) {
-            const product = loadedProducts.find(p => p.asin === processed.asin)!;
-            const catId = selectedCategories[processed.asin]?.id;
+            const product = loadedProducts.find(p => p.asin === processed.asin);
+            if (!product) continue;
+            
+            const catId = selectedCategories[product.asin]?.id;
 
-            // Check duplicates
-            const dupCheck = await meliService.checkDuplicate(processed.asin);
+            // 1. Check duplicates
+            const dupCheck = await meliService.checkDuplicate(product.asin);
 
-            // Check forbidden words
-            const titleToCheck = (editedTitles[processed.asin] || processed.optimizedTitle).toLowerCase();
+            // 2. Check forbidden words
+            const titleToCheck = (editedTitles[product.asin] || processed.optimizedTitle).toLowerCase();
             const hasForbiddenWords = forbiddenWords.some(w => titleToCheck.includes(w));
             const forbiddenWord = forbiddenWords.find(w => titleToCheck.includes(w));
 
-            setValidationResults(prev => ({
-                ...prev,
-                [processed.asin]: { 
-                    isDuplicate: dupCheck.isDuplicate, 
-                    duplicateId: dupCheck.existingItem?.id,
-                    hasForbiddenWords, 
-                    forbiddenWord,
-                    isSkipped: (dupCheck.isDuplicate && !processed.asin.startsWith('TEST')) || hasForbiddenWords 
-                }
-            }));
+            nextValidations[product.asin] = { 
+                isDuplicate: dupCheck.isDuplicate, 
+                duplicateId: dupCheck.existingItem?.id,
+                hasForbiddenWords, 
+                forbiddenWord,
+                isSkipped: (dupCheck.isDuplicate && !product.asin.startsWith('TEST')) || hasForbiddenWords 
+            };
 
-            // Mark publishing status
-            if (dupCheck.isDuplicate && !processed.asin.startsWith('TEST')) {
-                setPublishingStatus(prev => ({ ...prev, [processed.asin]: 'error' }));
-                setPublishResults(prev => ({ ...prev, [processed.asin]: { error: `Ya publicado en tu cuenta (ID: ${dupCheck.existingItem?.id})` } }));
+            if (dupCheck.isDuplicate && !product.asin.startsWith('TEST')) {
+                nextStatus[product.asin] = 'error';
+                nextResults[product.asin] = { error: `Ya publicado en tu cuenta (ID: ${dupCheck.existingItem?.id})` };
             }
 
-            // Load & Map ML required attrs
+            // 3. Load ML Attributes
             if (catId) {
-                const attrs = await meliService.getCategoryAttributes(catId);
-                const required = attrs.filter((a: any) => a.tags?.required || a.tags?.new_required);
-                setCategoryAttributes(prev => ({ ...prev, [processed.asin]: required }));
+                try {
+                    const attrs = await meliService.getCategoryAttributes(catId);
+                    const required = attrs.filter((a: any) => a.tags?.required || a.tags?.new_required);
+                    nextCategoryAttrs[product.asin] = required;
 
-                // ENHANCED AUTO-FILL: Use AI to map Amazon data to ML required fields
-                if (required.length > 0) {
-                    try {
+                    if (required.length > 0) {
                         const aiMapped = await aiImporterService.mapAttributes(
                             product.title,
-                            product.description,
+                            product.description || '',
                             product.attributes || {},
                             required
                         );
                         
                         const defaultAttrs: Record<string, string> = {};
                         aiMapped.forEach((ma: any) => {
-                            if (ma.value_name && ma.value_name.toLowerCase() !== 'genérico') {
+                            if (ma.value_name && !['genérico', 'generic', 'n/a'].includes(ma.value_name.toLowerCase())) {
                                 defaultAttrs[ma.id] = ma.value_name;
                             }
                         });
                         
-                        setUserAttributes(prev => {
-                            const current = prev[processed.asin] || {};
-                            // AI suggestions should fill empty fields
-                            const merged = { ...defaultAttrs, ...current };
-                            return { ...prev, [processed.asin]: merged };
-                        });
-                    } catch (e) {
-                        console.error('AI Attribution mapping failed:', e);
+                        // Merge with existing user input if any
+                        const current = userAttributes[product.asin] || {};
+                        nextUserAttrs[product.asin] = { ...defaultAttrs, ...current };
                     }
+                } catch (e) {
+                    console.error(`Failed to map attributes for ${product.asin}:`, e);
                 }
             }
         }
+
+        // Batch update all states at once
+        setValidationResults(nextValidations);
+        setPublishingStatus(nextStatus);
+        setPublishResults(nextResults);
+        setCategoryAttributes(nextCategoryAttrs);
+        setUserAttributes(prev => ({ ...prev, ...nextUserAttrs }));
+        
+        setIsProcessing(false);
+        setStep(4);
     };
 
     // ─── Step 5: Dry Run & Publish ────────────────────────────────────
