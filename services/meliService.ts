@@ -22,8 +22,35 @@ class MeliService {
         return stored ? JSON.parse(stored) : null;
     }
 
-    private saveCredentials(creds: MeliCredentials) {
+    private async saveCredentials(creds: MeliCredentials) {
         localStorage.setItem('melidrop_meli_credentials', JSON.stringify(creds));
+        
+        // Sync to Supabase
+        const { data: { user } } = await supabase.auth.getUser();
+        if (user) {
+            await supabase.from('user_connections').upsert({
+                user_id: user.id,
+                meli_credentials: creds,
+                updated_at: new Error().stack?.includes('refreshToken') ? undefined : new Date().toISOString()
+            });
+        }
+    }
+
+    public async syncFromSupabase(): Promise<boolean> {
+        const { data: { user } } = await supabase.auth.getUser();
+        if (!user) return false;
+
+        const { data, error } = await supabase
+            .from('user_connections')
+            .select('meli_credentials')
+            .eq('user_id', user.id)
+            .single();
+
+        if (data?.meli_credentials) {
+            localStorage.setItem('melidrop_meli_credentials', JSON.stringify(data.meli_credentials));
+            return true;
+        }
+        return false;
     }
 
     async getValidToken(): Promise<string | null> {

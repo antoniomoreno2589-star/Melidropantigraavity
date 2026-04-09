@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { AmazonConnect } from './AmazonConnect';
+import { supabase } from '../services/supabase';
 
 interface PriceRule {
     id: number;
@@ -128,11 +129,22 @@ export const SettingsPage = () => {
         }
     };
 
-    const handleSaveSection = (section: string) => {
+    const handleSaveSection = async (section: string) => {
         localStorage.setItem('melidrop_usa_rules', JSON.stringify(usaRules));
         localStorage.setItem('melidrop_mx_rules', JSON.stringify(mxRules));
         localStorage.setItem('melidrop_exchange_rate', exchangeRate.toString());
         localStorage.setItem('melidrop_global_filters', globalFilters);
+        
+        // Sync to Supabase
+        const { data: { user } } = await supabase.auth.getUser();
+        if (user) {
+            await supabase.from('user_connections').upsert({
+                user_id: user.id,
+                exchange_rate: exchangeRate,
+                margin_rules: { usa: usaRules, mx: mxRules, filters: globalFilters }
+            });
+        }
+        
         alert(`Configuración de ${section} guardada exitosamente en el sistema.`);
     };
 

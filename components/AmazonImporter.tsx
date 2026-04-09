@@ -241,9 +241,13 @@ export const AmazonImporter: React.FC = () => {
         const title = editedTitles[processed.asin] || processed.optimizedTitle;
         const attrs = userAttributes[processed.asin] || {};
 
-        const attributes = Object.entries(attrs)
-            .filter(([, v]) => v)
-            .map(([id, value_name]) => ({ id, value_name }));
+        // Ensure ASIN is exactly the SKU
+        const finalAttributes = [
+            ...Object.entries(attrs)
+                .filter(([id, v]) => v && id !== 'SELLER_SKU')
+                .map(([id, value_name]) => ({ id, value_name })),
+            { id: 'SELLER_SKU', value_name: processed.asin }
+        ];
 
         const costUSD = product.price || 0;
         const priceMXN = calculateMexicoPrice(costUSD);
@@ -259,7 +263,7 @@ export const AmazonImporter: React.FC = () => {
             condition: 'new',
             seller_custom_field: processed.asin,
             pictures: processed.images.slice(0, 10).map(img => ({ source: img.url })),
-            attributes: attributes.length > 0 ? attributes : undefined
+            attributes: finalAttributes
         };
     };
 
@@ -754,6 +758,30 @@ export const AmazonImporter: React.FC = () => {
                                 })}
                             </div>
                         </div>
+
+                        {/* Results Summary */}
+                        {Object.keys(publishingStatus).length > 0 && (
+                            <div className="bg-slate-100 dark:bg-slate-900/50 rounded-xl p-4 flex items-center justify-around mb-6 border border-slate-200 dark:border-slate-700">
+                                <div className="text-center">
+                                    <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Total</p>
+                                    <p className="text-xl font-black text-slate-900 dark:text-white">{processedProducts.length}</p>
+                                </div>
+                                <div className="w-px h-8 bg-slate-200 dark:bg-slate-700" />
+                                <div className="text-center">
+                                    <p className="text-[10px] font-black text-green-500 uppercase tracking-widest">Éxito</p>
+                                    <p className="text-xl font-black text-green-600">
+                                        {Object.values(publishingStatus).filter(s => s === 'success').length}
+                                    </p>
+                                </div>
+                                <div className="w-px h-8 bg-slate-200 dark:bg-slate-700" />
+                                <div className="text-center">
+                                    <p className="text-[10px] font-black text-red-500 uppercase tracking-widest">Errores</p>
+                                    <p className="text-xl font-black text-red-600">
+                                        {Object.values(publishingStatus).filter(s => s === 'error').length}
+                                    </p>
+                                </div>
+                            </div>
+                        )}
 
                         <div className="flex gap-3">
                             <button onClick={() => setStep(4)} className="flex-1 py-3 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 font-bold rounded-xl hover:bg-slate-50 dark:hover:bg-slate-800 transition-all">Atrás</button>

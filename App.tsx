@@ -20,6 +20,7 @@ import { TestProductsPage } from './components/TestProductsPage';
 import { Product, User } from './types';
 import { getDashboardStats } from './services/mockService';
 import { meliService } from './services/meliService';
+import { amazonService } from './services/amazonService';
 
 const App = () => {
   const [session, setSession] = useState<any>(null);
@@ -60,6 +61,44 @@ const App = () => {
 
     return () => subscription.unsubscribe();
   }, []);
+
+  // Sync credentials and settings from Supabase
+  useEffect(() => {
+    if (session?.user) {
+      const syncCredentials = async () => {
+        try {
+          const { data, error } = await supabase
+            .from('user_connections')
+            .select('*')
+            .eq('user_id', session.user.id)
+            .single();
+
+          if (data) {
+            console.log('Sincronizando configuraciones desde la nube...');
+            
+            if (data.meli_credentials) {
+              localStorage.setItem('melidrop_meli_credentials', JSON.stringify(data.meli_credentials));
+              setMeliMetrics(null); 
+            }
+            if (data.amazon_credentials) {
+              localStorage.setItem('melidrop_amazon_credentials', JSON.stringify(data.amazon_credentials));
+            }
+            if (data.exchange_rate) {
+              localStorage.setItem('melidrop_exchange_rate', data.exchange_rate.toString());
+            }
+            if (data.margin_rules) {
+              if (data.margin_rules.usa) localStorage.setItem('melidrop_usa_rules', JSON.stringify(data.margin_rules.usa));
+              if (data.margin_rules.mx) localStorage.setItem('melidrop_mx_rules', JSON.stringify(data.margin_rules.mx));
+              if (data.margin_rules.filters) localStorage.setItem('melidrop_global_filters', data.margin_rules.filters);
+            }
+          }
+        } catch (err) {
+          console.error('Error sincronizando configuraciones:', err);
+        }
+      };
+      syncCredentials();
+    }
+  }, [session]);
 
   useEffect(() => {
     if (session) {

@@ -1,4 +1,5 @@
 import { Product } from '../types';
+import { supabase } from './supabase';
 
 export interface AmazonCredentials {
     sellerId: string;
@@ -22,12 +23,47 @@ class AmazonService {
         return stored ? JSON.parse(stored) : null;
     }
 
-    saveCredentials(creds: AmazonCredentials) {
+    async saveCredentials(creds: AmazonCredentials) {
         localStorage.setItem(this.credentialsKey, JSON.stringify(creds));
+        
+        // Sync to Supabase
+        const { data: { user } } = await supabase.auth.getUser();
+        if (user) {
+            await supabase.from('user_connections').upsert({
+                user_id: user.id,
+                amazon_credentials: creds,
+                updated_at: new Date().toISOString()
+            });
+        }
     }
 
-    clearCredentials() {
+    async clearCredentials() {
         localStorage.removeItem(this.credentialsKey);
+        
+        // Remove from Supabase
+        const { data: { user } } = await supabase.auth.getUser();
+        if (user) {
+            await supabase.from('user_connections').update({
+                amazon_credentials: null
+            }).eq('user_id', user.id);
+        }
+    }
+
+    public async syncFromSupabase(): Promise<boolean> {
+        const { data: { user } } = await supabase.auth.getUser();
+        if (!user) return false;
+
+        const { data, error } = await supabase
+            .from('user_connections')
+            .select('amazon_credentials')
+            .eq('user_id', user.id)
+            .single();
+
+        if (data?.amazon_credentials) {
+            localStorage.setItem(this.credentialsKey, JSON.stringify(data.amazon_credentials));
+            return true;
+        }
+        return false;
     }
 
     isAuthenticated(): boolean {
