@@ -202,6 +202,7 @@ export const AmazonImporter: React.FC = () => {
             .filter(Boolean);
 
         for (const processed of processedProducts) {
+            const product = loadedProducts.find(p => p.asin === processed.asin)!;
             const catId = selectedCategories[processed.asin]?.id;
 
             // Check duplicates
@@ -214,21 +215,46 @@ export const AmazonImporter: React.FC = () => {
 
             setValidationResults(prev => ({
                 ...prev,
-                [processed.asin]: { isDuplicate: dupCheck.isDuplicate, hasForbiddenWords, forbiddenWord }
+                [processed.asin]: { 
+                    isDuplicate: dupCheck.isDuplicate, 
+                    hasForbiddenWords, 
+                    forbiddenWord,
+                    isSkipped: dupCheck.isDuplicate || hasForbiddenWords 
+                }
             }));
 
-            // Load ML required attrs
+            // Mark publishing status as idle or error if duplicate
+            if (dupCheck.isDuplicate) {
+                setPublishingStatus(prev => ({ ...prev, [processed.asin]: 'error' }));
+                setPublishResults(prev => ({ ...prev, [processed.asin]: { error: 'Ya publicado en tu cuenta' } }));
+            }
+
+            // Load & Map ML required attrs
             if (catId) {
                 const attrs = await meliService.getCategoryAttributes(catId);
-                const required = attrs.filter((a: any) => a.tags?.required);
+                const required = attrs.filter((a: any) => a.tags?.required || a.tags?.new_required);
                 setCategoryAttributes(prev => ({ ...prev, [processed.asin]: required }));
 
-                // Apply AI-suggested attrs as defaults
-                const defaultAttrs: Record<string, string> = {};
-                (processed.mappedAttributes || []).forEach((ma: any) => {
-                    defaultAttrs[ma.id] = ma.value_name;
-                });
-                setUserAttributes(prev => ({ ...prev, [processed.asin]: { ...defaultAttrs, ...(prev[processed.asin] || {}) } }));
+                // ENHANCED AUTO-FILL: Use AI to map Amazon data to ML required fields
+                if (required.length > 0) {
+                    try {
+                        const aiMapped = await aiImporterService.mapAttributes(
+                            product.title,
+                            product.description,
+                            product.attributes || {},
+                            required
+                        );
+                        
+                        const defaultAttrs: Record<string, string> = {};
+                        aiMapped.forEach((ma: any) => {
+                            if (ma.value_name) defaultAttrs[ma.id] = ma.value_name;
+                        });
+                        
+                        setUserAttributes(prev => ({ ...prev, [processed.asin]: { ...defaultAttrs, ...(prev[processed.asin] || {}) } }));
+                    } catch (e) {
+                        console.error('AI Attribution mapping failed:', e);
+                    }
+                }
             }
         }
     };
@@ -797,6 +823,17 @@ export const AmazonImporter: React.FC = () => {
                                             )}
                                             {result?.error && <p className="text-xs text-red-500 font-mono">{result.error}</p>}
 
+                                            {/* Validation Messages */}
+                                            {val?.isSkipped && (
+                                                <div className="bg-red-50 dark:bg-red-900/20 border border-red-100 dark:border-red-800 rounded-lg p-3 flex items-center gap-2 mb-4">
+                                                    <span className="material-symbols-outlined text-red-500 text-[20px]">block</span>
+                                                    <div className="flex-1">
+                                                        <p className="text-xs font-black text-red-600 uppercase tracking-widest">Producto Descartado</p>
+                                                        <p className="text-[10px] text-red-500">{val.isDuplicate ? 'Ya existe en tus publicaciones activas.' : `Contiene palabra prohibida: "${val.forbiddenWord}"`}</p>
+                                                    </div>
+                                                </div>
+                                            )}
+
                                             {/* Action Buttons */}
                                             {!status || status === 'idle' ? (
                                                 <div className="flex gap-2">
@@ -808,8 +845,8 @@ export const AmazonImporter: React.FC = () => {
                                                     </button>
                                                     <button
                                                         onClick={() => handlePublish(processed.asin, false)}
-                                                        disabled={!!validationResults[processed.asin]?.hasForbiddenWords}
-                                                        className="flex-1 py-2 bg-green-600 hover:bg-green-700 text-white font-black rounded-lg text-sm transition-all disabled:opacity-50 flex items-center justify-center gap-1 shadow-sm shadow-green-600/30"
+                                                        disabled={!!validationResults[processed.asin]?.isSkipped}
+                                                        className="flex-1 py-2 bg-green-600 hover:bg-green-700 text-white font-black rounded-lg text-sm transition-all disabled:opacity-50 disabled:grayscale flex items-center justify-center gap-1 shadow-sm shadow-green-600/30"
                                                     >
                                                         <span className="material-symbols-outlined text-[16px]">rocket_launch</span>Publicar en ML
                                                     </button>
