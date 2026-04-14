@@ -338,9 +338,14 @@ class MeliService {
             console.log(`meliService: Fetching orders for seller ${creds.id}`);
             const response = await this.fetchWithAuth(`/orders/search?seller=${creds.id}&limit=${limit}&sort=date_desc`);
 
+            if (!response.ok) {
+                if (response.status === 403) throw new Error('forbidden');
+                throw new Error(`HTTP ${response.status}`);
+            }
+
             const data = await response.json();
             const results = data.results || [];
-            
+
             // Sync orders to Supabase for persistence and analytics
             if (results.length > 0) {
                 const ordersToSync = results.map((o: any) => ({
@@ -355,7 +360,7 @@ class MeliService {
                     amazon_asin: o.order_items?.[0]?.item?.seller_custom_field || '',
                     amazon_marketplace: 'MX'
                 }));
-                
+
                 try {
                     await api.orders.bulkUpsert(ordersToSync);
                 } catch (e) {
@@ -364,8 +369,9 @@ class MeliService {
             }
 
             return results;
-        } catch (e) {
+        } catch (e: any) {
             console.error('meliService: Error fetching orders:', e);
+            if (e.message === 'forbidden') throw e;
             return [];
         }
     }
@@ -375,9 +381,16 @@ class MeliService {
         if (!creds) return 0;
         try {
             const response = await this.fetchWithAuth(`/questions/search?seller_id=${creds.id}&status=UNANSWERED`);
+            if (!response.ok) {
+                if (response.status === 403) throw new Error('forbidden');
+                return 0;
+            }
             const data = await response.json();
             return data.total || 0;
-        } catch (e) { return 0; }
+        } catch (e: any) {
+            if (e.message === 'forbidden') throw e;
+            return 0;
+        }
     }
 
     async getUnreadMessagesCount() {
@@ -583,10 +596,20 @@ class MeliService {
             const balance = await this.getBalance().catch((e) => { console.error("MeliService: Error fetching balance:", e); return null; });
             await new Promise(r => setTimeout(r, 1000));
 
-            const orders = await this.getOrders(20).catch((e) => { console.error("MeliService: Error fetching orders:", e); return []; });
+            const permissionErrors: string[] = [];
+
+            const orders = await this.getOrders(20).catch((e) => {
+                console.error("MeliService: Error fetching orders:", e);
+                if (e.message === 'forbidden') permissionErrors.push('orders');
+                return [];
+            });
             await new Promise(r => setTimeout(r, 1000));
 
-            const unreadCount = await this.getQuestionsCount().catch((e) => { console.error("MeliService: Error fetching unread questions count:", e); return 0; });
+            const unreadCount = await this.getQuestionsCount().catch((e) => {
+                console.error("MeliService: Error fetching unread questions count:", e);
+                if (e.message === 'forbidden') permissionErrors.push('questions');
+                return 0;
+            });
             await new Promise(r => setTimeout(r, 1000));
 
             const unreadMessages = await this.getUnreadMessagesCount().catch((e) => { console.error("MeliService: Error fetching unread messages count:", e); return 0; });
@@ -635,7 +658,8 @@ class MeliService {
                     messagesUnread: unreadMessages || 0,
                     questionsToday: unreadCount || 0,
                     responseTime: responseTime > 0 ? `${responseTime} min` : 'N/A'
-                }
+                },
+                permissionErrors
             };
             this.lastStatsFetch = Date.now();
             return this.statsCache;
