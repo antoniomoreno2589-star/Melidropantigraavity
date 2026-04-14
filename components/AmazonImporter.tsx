@@ -65,6 +65,7 @@ export const AmazonImporter: React.FC = () => {
 
     // Step 1 State
     const [marketplace, setMarketplace] = useState<Marketplace>('MLM');
+    const [sourceAmazon, setSourceAmazon] = useState<'usa' | 'mx'>('usa');
     const [listingType, setListingType] = useState<ListingType>('gold_special');
     const [autoCategory, setAutoCategory] = useState(true);
     const [cleanImages, setCleanImages] = useState(false);
@@ -354,6 +355,10 @@ export const AmazonImporter: React.FC = () => {
         // Deduplicate picture URLs before building payload
         const pictureUrls = Array.from(new Set(processed.images.map(i => i.url))).slice(0, 10);
 
+        // Handling time: read from settings based on source Amazon
+        const handlingTimeKey = sourceAmazon === 'usa' ? 'melidrop_handling_time_usa' : 'melidrop_handling_time_mx';
+        const handlingTime = parseInt(localStorage.getItem(handlingTimeKey) || (sourceAmazon === 'usa' ? '7' : '3'));
+
         return {
             title,
             category_id: catId,
@@ -363,6 +368,7 @@ export const AmazonImporter: React.FC = () => {
             buying_mode: 'buy_it_now',
             listing_type_id: listingType,
             condition: 'new',
+            handling_time: handlingTime,
             description: { plain_text: descriptionText },
             seller_custom_field: processed.asin,
             pictures: pictureUrls.map(url => ({ source: url })),
@@ -522,6 +528,26 @@ export const AmazonImporter: React.FC = () => {
                 {step === 1 && (
                     <div className="bg-white dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 p-6 space-y-6">
                         <h2 className="text-lg font-black text-slate-900 dark:text-white">Configuración de Importación</h2>
+
+                        {/* Origen Amazon */}
+                        <div>
+                            <label className="text-xs font-black text-slate-500 uppercase tracking-widest mb-3 block">Origen del Producto</label>
+                            <div className="grid grid-cols-2 gap-3">
+                                {[
+                                    { id: 'usa', label: '🇺🇸 Amazon USA', desc: `${parseInt(localStorage.getItem('melidrop_handling_time_usa') || '7')} días preparación` },
+                                    { id: 'mx', label: '🇲🇽 Amazon México', desc: `${parseInt(localStorage.getItem('melidrop_handling_time_mx') || '3')} días preparación` }
+                                ].map(s => (
+                                    <button
+                                        key={s.id}
+                                        onClick={() => setSourceAmazon(s.id as 'usa' | 'mx')}
+                                        className={`p-4 rounded-xl border-2 text-left transition-all ${sourceAmazon === s.id ? 'border-amber-400 bg-amber-50 dark:bg-amber-900/10 shadow-sm shadow-amber-400/20' : 'border-slate-200 dark:border-slate-700 hover:border-slate-300'}`}
+                                    >
+                                        <p className="font-bold text-slate-900 dark:text-white text-sm">{s.label}</p>
+                                        <p className="text-xs text-slate-500 mt-0.5">{s.desc}</p>
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
 
                         {/* Marketplace */}
                         <div>

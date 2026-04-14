@@ -61,77 +61,67 @@ const App = () => {
     return () => subscription.unsubscribe();
   }, []);
 
-  // Sync credentials and settings from Supabase
+  // Sync from Supabase THEN load ML metrics sequentially (fixes mobile sync issue)
   useEffect(() => {
-    if (session?.user) {
-      const syncCredentials = async () => {
-        try {
-          const { data, error } = await supabase
-            .from('user_connections')
-            .select('*')
-            .eq('user_id', session.user.id)
-            .single();
+    if (!session?.user) return;
 
-          if (data) {
-            console.log('Sincronizando configuraciones desde la nube...');
-            
-            if (data.meli_credentials) {
-              localStorage.setItem('melidrop_meli_credentials', JSON.stringify(data.meli_credentials));
-              setMeliMetrics(null); 
-            }
-            if (data.amazon_credentials) {
-              localStorage.setItem('melidrop_amazon_credentials', JSON.stringify(data.amazon_credentials));
-            }
-            if (data.exchange_rate) {
-              localStorage.setItem('melidrop_exchange_rate', data.exchange_rate.toString());
-            }
-            if (data.margin_rules) {
-              if (data.margin_rules.usa) localStorage.setItem('melidrop_usa_rules', JSON.stringify(data.margin_rules.usa));
-              if (data.margin_rules.mx) localStorage.setItem('melidrop_mx_rules', JSON.stringify(data.margin_rules.mx));
-              if (data.margin_rules.filters) localStorage.setItem('melidrop_global_filters', data.margin_rules.filters);
-            }
+    const init = async () => {
+      // 1. Load products in parallel (doesn't depend on credentials)
+      api.products.list().then(setProducts).catch(err => console.error('Error fetching products:', err));
+
+      // 2. Sync credentials and settings from Supabase FIRST
+      try {
+        const { data } = await supabase
+          .from('user_connections')
+          .select('*')
+          .eq('user_id', session.user.id)
+          .single();
+
+        if (data) {
+          console.log('App: Sincronizando configuraciones desde la nube...');
+          if (data.meli_credentials) {
+            localStorage.setItem('melidrop_meli_credentials', JSON.stringify(data.meli_credentials));
+            const c = data.meli_credentials;
+            if (c.nickname) setUser(prev => prev ? ({ ...prev, name: c.nickname }) : null);
+          }
+          if (data.amazon_credentials) localStorage.setItem('melidrop_amazon_credentials', JSON.stringify(data.amazon_credentials));
+          if (data.exchange_rate) localStorage.setItem('melidrop_exchange_rate', data.exchange_rate.toString());
+          if (data.margin_rules) {
+            if (data.margin_rules.usa) localStorage.setItem('melidrop_usa_rules', JSON.stringify(data.margin_rules.usa));
+            if (data.margin_rules.mx) localStorage.setItem('melidrop_mx_rules', JSON.stringify(data.margin_rules.mx));
+            if (data.margin_rules.filters) localStorage.setItem('melidrop_global_filters', data.margin_rules.filters);
+            if (data.margin_rules.handling_time_usa != null) localStorage.setItem('melidrop_handling_time_usa', String(data.margin_rules.handling_time_usa));
+            if (data.margin_rules.handling_time_mx != null) localStorage.setItem('melidrop_handling_time_mx', String(data.margin_rules.handling_time_mx));
+          }
+        }
+      } catch (err) {
+        console.error('App: Error sincronizando configuraciones:', err);
+      }
+
+      // 3. NOW read localStorage (already populated) and fetch ML metrics
+      const credsRaw = localStorage.getItem('melidrop_meli_credentials');
+      console.log('App: melidrop_meli_credentials present?', !!credsRaw);
+      if (credsRaw) {
+        try {
+          const creds = JSON.parse(credsRaw);
+          if (creds.nickname) setUser(prev => prev ? ({ ...prev, name: creds.nickname }) : null);
+          const metrics = await meliService.getDashboardMetrics();
+          setMeliMetrics(metrics);
+          if (metrics.user?.nickname) {
+            setUser(prev => prev ? ({
+              ...prev,
+              name: metrics.user.nickname,
+              level: metrics.user.power_seller_status || 'Vendedor'
+            }) : null);
           }
         } catch (err) {
-          console.error('Error sincronizando configuraciones:', err);
+          console.error('App: Error cargando Meli:', err);
         }
-      };
-      syncCredentials();
-    }
-  }, [session]);
-
-  useEffect(() => {
-    if (session) {
-      // Fetch initial data
-      api.products.list()
-        .then(setProducts)
-        .catch(err => console.error('Error fetching products:', err));
-
-      // Fetch Meli data if connected
-      const credsRaw = localStorage.getItem('melidrop_meli_credentials');
-      console.log("App.tsx Check: melidrop_meli_credentials present?", !!credsRaw);
-
-      if (credsRaw && !meliMetrics) {
-        const creds = JSON.parse(credsRaw);
-        // Prioridad inmediata al nombre de vendedor
-        if (creds.nickname) {
-          setUser(prev => prev ? ({ ...prev, name: creds.nickname }) : null);
-        }
-
-        meliService.getDashboardMetrics()
-          .then(metrics => {
-            setMeliMetrics(metrics);
-            if (metrics.user?.nickname) {
-              setUser(prev => prev ? ({
-                ...prev,
-                name: metrics.user.nickname,
-                level: metrics.user.power_seller_status || 'Vendedor'
-              }) : null);
-            }
-          })
-          .catch(err => console.error('Error cargando Meli:', err));
       }
-    }
-  }, [session, meliMetrics]);
+    };
+
+    init();
+  }, [session]); // Only re-runs on session change, not on meliMetrics change
 
   const handleLogout = async () => {
     await supabase.auth.signOut();

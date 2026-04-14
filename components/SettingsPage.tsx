@@ -168,6 +168,8 @@ export const SettingsPage = () => {
         return saved ? JSON.parse(saved) : [{ id: 1, min: 0, max: 300, margin: 150 }, { id: 2, min: 301, max: 600, margin: 130 }, { id: 3, min: 601, max: null, margin: 80 }];
     });
     const [exchangeRate, setExchangeRate] = useState<number>(() => parseFloat(localStorage.getItem('melidrop_exchange_rate') || '18.24'));
+    const [usaHandlingTime, setUsaHandlingTime] = useState<number>(() => parseInt(localStorage.getItem('melidrop_handling_time_usa') || '7'));
+    const [mxHandlingTime, setMxHandlingTime] = useState<number>(() => parseInt(localStorage.getItem('melidrop_handling_time_mx') || '3'));
     const [usaDefaultMargin, setUsaDefaultMargin] = useState<number>(30);
     const [mxDefaultMargin, setMxDefaultMargin] = useState<number>(20);
     const [isUpdatingDolar, setIsUpdatingDolar] = useState(false);
@@ -201,17 +203,19 @@ export const SettingsPage = () => {
         localStorage.setItem('melidrop_mx_rules', JSON.stringify(mxRules));
         localStorage.setItem('melidrop_exchange_rate', exchangeRate.toString());
         localStorage.setItem('melidrop_global_filters', globalFilters);
-        
+        localStorage.setItem('melidrop_handling_time_usa', usaHandlingTime.toString());
+        localStorage.setItem('melidrop_handling_time_mx', mxHandlingTime.toString());
+
         // Sync to Supabase
         const { data: { user } } = await supabase.auth.getUser();
         if (user) {
             await supabase.from('user_connections').upsert({
                 user_id: user.id,
                 exchange_rate: exchangeRate,
-                margin_rules: { usa: usaRules, mx: mxRules, filters: globalFilters }
+                margin_rules: { usa: usaRules, mx: mxRules, filters: globalFilters, handling_time_usa: usaHandlingTime, handling_time_mx: mxHandlingTime }
             });
         }
-        
+
         alert(`Configuración de ${section} guardada exitosamente en el sistema.`);
     };
 
@@ -265,6 +269,24 @@ export const SettingsPage = () => {
                                     </div>
                                 </div>
                             </div>
+                            <div className="flex flex-col gap-2">
+                                <label className="text-xs font-semibold text-slate-500 uppercase flex items-center gap-1">
+                                    <span className="material-symbols-outlined text-[14px] text-amber-500">schedule</span>
+                                    Días de Preparación (Amazon USA)
+                                </label>
+                                <div className="flex items-center gap-3">
+                                    <div className="relative flex-1">
+                                        <input
+                                            className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg px-3 py-2 text-sm font-black"
+                                            type="number" min="1" max="60"
+                                            value={usaHandlingTime}
+                                            onChange={(e) => setUsaHandlingTime(Math.max(1, parseInt(e.target.value) || 1))}
+                                        />
+                                        <span className="absolute right-3 top-2 text-slate-400 text-xs">días</span>
+                                    </div>
+                                </div>
+                                <p className="text-[10px] text-slate-400 italic">Tiempo entre compra del cliente y envío a ML (incluye entrega Amazon → tú). Se envía como <code>handling_time</code> a MercadoLibre.</p>
+                            </div>
                         </div>
                         <div className="p-4 bg-slate-50 dark:bg-slate-800/50 border-t border-slate-100 dark:border-slate-800">
                             <button onClick={() => handleSaveSection('USA')} className="w-full bg-slate-900 dark:bg-slate-100 dark:text-slate-900 text-white font-black py-2.5 rounded-lg shadow-sm text-sm active:scale-95 transition-all">
@@ -291,6 +313,22 @@ export const SettingsPage = () => {
                                     <input className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg px-3 py-2 text-sm font-black" type="number" value={mxDefaultMargin} onChange={(e) => setMxDefaultMargin(parseFloat(e.target.value))} />
                                     <span className="absolute right-3 top-2 text-slate-400 text-xs">%</span>
                                 </div>
+                            </div>
+                            <div className="flex flex-col gap-2">
+                                <label className="text-xs font-semibold text-slate-500 uppercase flex items-center gap-1">
+                                    <span className="material-symbols-outlined text-[14px] text-amber-500">schedule</span>
+                                    Días de Preparación (Amazon MX)
+                                </label>
+                                <div className="relative">
+                                    <input
+                                        className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg px-3 py-2 text-sm font-black"
+                                        type="number" min="1" max="30"
+                                        value={mxHandlingTime}
+                                        onChange={(e) => setMxHandlingTime(Math.max(1, parseInt(e.target.value) || 1))}
+                                    />
+                                    <span className="absolute right-3 top-2 text-slate-400 text-xs">días</span>
+                                </div>
+                                <p className="text-[10px] text-slate-400 italic">Tiempo entre compra del cliente y envío desde Amazon MX. Se envía como <code>handling_time</code> a MercadoLibre.</p>
                             </div>
                         </div>
                         <div className="p-4 bg-slate-50 dark:bg-slate-800/50 border-t border-slate-100 dark:border-slate-800">
