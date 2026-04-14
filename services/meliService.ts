@@ -204,7 +204,14 @@ class MeliService {
                 return { total_amount: null, error: 'unavailable' };
             }
 
-            return await response.json();
+            const raw = await response.json();
+            console.log("MeliService: Balance raw response:", JSON.stringify(raw));
+            // Normalize field names — API may return 'total' or 'total_amount'
+            return {
+                total_amount: raw.total_amount ?? raw.total ?? raw.balance ?? null,
+                available_balance: raw.available_balance ?? raw.available ?? raw.available_amount ?? null,
+                unavailable_balance: raw.unavailable_balance ?? raw.unavailable ?? raw.blocked ?? null,
+            };
         } catch (e: any) {
             console.error("MeliService: Exception in getBalance:", e.message || e);
             return { total_amount: null, error: 'exception' };
@@ -800,6 +807,39 @@ class MeliService {
             return data;
         } catch (e) {
             console.error("Meli createTestUser error:", e);
+            throw e;
+        }
+    }
+
+    /**
+     * Authenticate a test user (resource owner password flow) and return their access_token.
+     * ML test users use this flow: https://developers.mercadolibre.com/es_ar/autenticacion-y-autorizacion
+     */
+    async loginTestUser(testUserEmail: string, testUserPassword: string): Promise<string | null> {
+        const creds = this.getCredentials();
+        if (!creds) throw new Error("No hay credenciales de MercadoLibre configuradas");
+
+        try {
+            const body = new URLSearchParams({
+                grant_type: 'password',
+                client_id: creds.appId,
+                client_secret: creds.secret,
+                username: testUserEmail,
+                password: testUserPassword
+            });
+            const response = await fetch(`${this.baseUrl}/oauth/token`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Accept': 'application/json' },
+                body
+            });
+            if (!response.ok) {
+                const err = await response.text();
+                throw new Error(`Error de autenticación: ${err}`);
+            }
+            const data = await response.json();
+            return data.access_token || null;
+        } catch (e: any) {
+            console.error("meliService.loginTestUser error:", e.message);
             throw e;
         }
     }
