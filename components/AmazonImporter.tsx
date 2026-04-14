@@ -65,6 +65,7 @@ export const AmazonImporter: React.FC = () => {
 
     // Step 1 State
     const [marketplace, setMarketplace] = useState<Marketplace>('MLM');
+    const [sourceAmazon, setSourceAmazon] = useState<'usa' | 'mx'>('usa');
     const [listingType, setListingType] = useState<ListingType>('gold_special');
     const [autoCategory, setAutoCategory] = useState(true);
     const [cleanImages, setCleanImages] = useState(false);
@@ -185,15 +186,15 @@ export const AmazonImporter: React.FC = () => {
                 }));
             }
 
-            // Deduplicate images with a more aggressive approach (strip query params and variant tokens)
+            // Deduplicate images by extracting the Amazon image hash
             const uniqueImages = [];
-            const seenKeys = new Set();
+            const seenHashes = new Set<string>();
             for (const img of processed.images) {
-                // Strips Amazon variants and query params
-                const key = img.url.split('?')[0].replace(/\._[A-Z0-9_,]+\./, '.');
-                if (!seenKeys.has(key)) {
+                const hashMatch = img.url.match(/\/images\/I\/([^./]+)/);
+                const key = hashMatch ? hashMatch[1] : img.url.split('?')[0];
+                if (!seenHashes.has(key)) {
+                    seenHashes.add(key);
                     uniqueImages.push(img);
-                    seenKeys.add(key);
                 }
             }
             processed.images = uniqueImages.slice(0, 10);
@@ -206,9 +207,11 @@ export const AmazonImporter: React.FC = () => {
             if (product.brand) {
                 const brandRegex = new RegExp(`${product.brand}`, 'gi');
                 finalTitle = finalTitle.replace(brandRegex, '').replace(/\s\s+/g, ' ').trim();
-                // Capitalize first letter if it became lowercase
-                finalTitle = finalTitle.charAt(0).toUpperCase() + finalTitle.slice(1);
             }
+            // Clean leading dashes, hyphens, or punctuation left after brand removal
+            finalTitle = finalTitle.replace(/^[\s\-–—,.:;|]+/, '').trim();
+            // Capitalize first letter
+            finalTitle = finalTitle.charAt(0).toUpperCase() + finalTitle.slice(1);
             setEditedTitles(prev => ({ ...prev, [product.asin]: finalTitle }));
         }
 
@@ -346,6 +349,18 @@ export const AmazonImporter: React.FC = () => {
         const costUSD = product.price || 0;
         const priceMXN = calculateMexicoPrice(costUSD);
 
+        // Build description from Amazon bullet points / description
+        const descriptionText = product.description
+            ? product.description.substring(0, 3000)
+            : `${product.title}. Producto nuevo, condición original de fábrica.`;
+
+        // Deduplicate picture URLs before building payload
+        const pictureUrls = Array.from(new Set(processed.images.map(i => i.url))).slice(0, 10);
+
+        // Handling time: read from settings based on source Amazon
+        const handlingTimeKey = sourceAmazon === 'usa' ? 'melidrop_handling_time_usa' : 'melidrop_handling_time_mx';
+        const handlingTime = parseInt(localStorage.getItem(handlingTimeKey) || (sourceAmazon === 'usa' ? '7' : '3'));
+
         return {
             title,
             category_id: catId,
@@ -355,10 +370,10 @@ export const AmazonImporter: React.FC = () => {
             buying_mode: 'buy_it_now',
             listing_type_id: listingType,
             condition: 'new',
+            handling_time: handlingTime,
+            description: { plain_text: descriptionText },
             seller_custom_field: processed.asin,
-            pictures: Array.from(new Set(processed.images.map(i => i.url)))
-                .slice(0, 10)
-                .map(url => ({ source: url })),
+            pictures: pictureUrls.map(url => ({ source: url })),
             attributes: finalAttributes
         };
     };
@@ -368,33 +383,49 @@ export const AmazonImporter: React.FC = () => {
         if (!processed) return;
 
         setPublishingStatus(prev => ({ ...prev, [asin]: 'loading' }));
-        
+
         try {
             const payload = buildItemPayload(processed);
-            
-            // 1. Validate with Meli
+
+            // 1. Validate with Meli (structural validation)
             const validation = await meliService.validateItem(payload);
-            
-            let publishResult = null;
-            // 2. If a test user is connected, REALLY publish to the test user's account (SANDBOX)
+            console.log('[DryRun] Validation result:', validation);
+
+            let publishResult: any = null;
+            let testMeliId: string | null = null;
+
+            // 2. If a test user token is stored, publish to the test account on MercadoLibre
             if (testUserCreds?.access_token) {
                 try {
-                    const imageIds = [];
+                    // Upload images using test user token
+                    const imageIds: string[] = [];
                     for (const img of processed.images.slice(0, 10)) {
                         const id = await meliService.uploadImage(img.url, testUserCreds.access_token);
                         if (id) imageIds.push(id);
                     }
-                    
+
                     const testPayload = { ...payload };
-                    if (imageIds.length > 0) (testPayload as any).pictures = imageIds.map((id: string) => ({ id }));
-                    
+                    if (imageIds.length > 0) {
+                        (testPayload as any).pictures = imageIds.map((id: string) => ({ id }));
+                    }
+
                     publishResult = await meliService.publishItem(testPayload, false, testUserCreds.access_token);
-                } catch (publishErr) {
-                    console.error("Test publish error:", publishErr);
+                    console.log('[DryRun] Test publish result:', publishResult);
+
+                    if (publishResult?.id) {
+                        testMeliId = publishResult.id;
+                    } else if (publishResult?.error) {
+                        console.warn('[DryRun] Test publish failed:', publishResult.error, publishResult.cause);
+                    }
+                } catch (publishErr: any) {
+                    console.error('[DryRun] Test publish exception:', publishErr.message);
+                    publishResult = { error: publishErr.message };
                 }
+            } else {
+                console.info('[DryRun] No test user token — skipping ML sandbox publish. Configure a test user in Settings.');
             }
 
-            // 3. Save to Sandbox Catalog in Supabase
+            // 3. Always save to Supabase test catalog (local sandbox)
             await api.testProducts.create({
                 title: payload.title,
                 asin: processed.asin,
@@ -403,14 +434,29 @@ export const AmazonImporter: React.FC = () => {
                 cost_usd: loadedProducts.find(p => p.asin === processed.asin)?.price || 0,
                 image_url: processed.images[0]?.url,
                 category: payload.category_id,
-                status: 'active'
+                status: 'active',
+                ...(testMeliId ? { meli_id: testMeliId } : {})
             });
 
-            setDryRunResults(prev => ({ ...prev, [asin]: { payload, validation, testPublish: publishResult } }));
+            setDryRunResults(prev => ({
+                ...prev,
+                [asin]: {
+                    payload,
+                    validation,
+                    testPublish: publishResult,
+                    hasTestUser: !!testUserCreds?.access_token
+                }
+            }));
             setPublishingStatus(prev => ({ ...prev, [asin]: 'idle' }));
-            alert('¡Producto enviado al Entorno de Pruebas correctamente!');
+
+            const msg = testMeliId
+                ? `✅ Publicado en cuenta de prueba de ML (ID: ${testMeliId}) y guardado en el catálogo de pruebas.`
+                : testUserCreds?.access_token
+                    ? `⚠️ Error al publicar en ML de pruebas. Guardado en catálogo de pruebas de la app.`
+                    : `📋 Guardado en catálogo de pruebas de la app. Para publicar en cuenta test de ML, configura el usuario de prueba en Configuración.`;
+            alert(msg);
         } catch (err: any) {
-            console.error("Dry Run error:", err);
+            console.error('[DryRun] Error:', err);
             setPublishResults(prev => ({ ...prev, [asin]: { error: `Error en prueba: ${err.message}` } }));
             setPublishingStatus(prev => ({ ...prev, [asin]: 'error' }));
         }
@@ -422,7 +468,7 @@ export const AmazonImporter: React.FC = () => {
 
         setPublishingStatus(prev => ({ ...prev, [asin]: 'loading' }));
         try {
-            // Upload images to ML first
+            // Upload images to ML first (for better quality and reliability)
             const imageIds: string[] = [];
             for (const img of processed.images.slice(0, 10)) {
                 const id = await meliService.uploadImage(img.url);
@@ -430,17 +476,28 @@ export const AmazonImporter: React.FC = () => {
             }
 
             const payload = buildItemPayload(processed);
+            // Use uploaded ML picture IDs if available, else keep source URLs as fallback
             if (imageIds.length > 0) {
                 (payload as any).pictures = imageIds.map((id: string) => ({ id }));
             }
 
+            console.log('[Publish] Sending payload to ML:', JSON.stringify(payload, null, 2));
             const result = await meliService.publishItem(payload, isDraft);
-            
+            console.log('[Publish] ML response:', JSON.stringify(result));
+
             if (result.error) {
-                let msg = result.error;
+                // Build a detailed, human-readable error message from ML response
+                const causes: string[] = [];
                 if (result.cause && Array.isArray(result.cause)) {
-                    msg += ": " + result.cause.map((c: any) => c.message || JSON.stringify(c)).join(', ');
+                    result.cause.forEach((c: any) => {
+                        if (c.message) causes.push(c.message);
+                        else if (c.code) causes.push(`[${c.code}] ${c.description || ''}`);
+                        else causes.push(JSON.stringify(c));
+                    });
                 }
+                const msg = causes.length > 0
+                    ? `${result.error}\n• ${causes.join('\n• ')}`
+                    : result.error;
                 setPublishResults(prev => ({ ...prev, [asin]: { error: msg } }));
                 setPublishingStatus(prev => ({ ...prev, [asin]: 'error' }));
             } else {
@@ -473,6 +530,26 @@ export const AmazonImporter: React.FC = () => {
                 {step === 1 && (
                     <div className="bg-white dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 p-6 space-y-6">
                         <h2 className="text-lg font-black text-slate-900 dark:text-white">Configuración de Importación</h2>
+
+                        {/* Origen Amazon */}
+                        <div>
+                            <label className="text-xs font-black text-slate-500 uppercase tracking-widest mb-3 block">Origen del Producto</label>
+                            <div className="grid grid-cols-2 gap-3">
+                                {[
+                                    { id: 'usa', label: '🇺🇸 Amazon USA', desc: `${parseInt(localStorage.getItem('melidrop_handling_time_usa') || '7')} días preparación` },
+                                    { id: 'mx', label: '🇲🇽 Amazon México', desc: `${parseInt(localStorage.getItem('melidrop_handling_time_mx') || '3')} días preparación` }
+                                ].map(s => (
+                                    <button
+                                        key={s.id}
+                                        onClick={() => setSourceAmazon(s.id as 'usa' | 'mx')}
+                                        className={`p-4 rounded-xl border-2 text-left transition-all ${sourceAmazon === s.id ? 'border-amber-400 bg-amber-50 dark:bg-amber-900/10 shadow-sm shadow-amber-400/20' : 'border-slate-200 dark:border-slate-700 hover:border-slate-300'}`}
+                                    >
+                                        <p className="font-bold text-slate-900 dark:text-white text-sm">{s.label}</p>
+                                        <p className="text-xs text-slate-500 mt-0.5">{s.desc}</p>
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
 
                         {/* Marketplace */}
                         <div>
@@ -866,16 +943,28 @@ export const AmazonImporter: React.FC = () => {
 
                                             {/* Dry run result */}
                                             {dry && (
-                                                <div className="mb-3 bg-slate-50 dark:bg-slate-900 rounded-lg p-3">
-                                                    <p className="text-[10px] font-black text-slate-500 uppercase mb-1">Resultado de Validación</p>
-                                                    <div className="flex gap-2">
-                                                        <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${dry.valid ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
-                                                            {dry.valid ? '✓ Válido' : '✗ Con errores'}
+                                                <div className="mb-3 bg-slate-50 dark:bg-slate-900 rounded-lg p-3 space-y-2">
+                                                    <p className="text-[10px] font-black text-slate-500 uppercase mb-1">Resultado de Prueba</p>
+                                                    <div className="flex flex-wrap gap-2">
+                                                        <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${dry.validation?.valid ? 'bg-green-100 text-green-700' : 'bg-amber-100 text-amber-700'}`}>
+                                                            {dry.validation?.valid ? '✓ Estructura válida' : '⚠ Errores de validación'}
                                                         </span>
+                                                        {dry.hasTestUser ? (
+                                                            <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${dry.testPublish?.id ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+                                                                {dry.testPublish?.id ? `✓ Publicado en ML Test (${dry.testPublish.id})` : '✗ Error en ML Test'}
+                                                            </span>
+                                                        ) : (
+                                                            <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-blue-100 text-blue-700">
+                                                                📋 Guardado en catálogo de pruebas
+                                                            </span>
+                                                        )}
                                                     </div>
-                                                    {dry.errors?.length > 0 && (
-                                                        <p className="text-[10px] text-red-500 mt-1">
-                                                            {dry.errors.map((e: any) => e.message || e.error || JSON.stringify(e)).join(', ')}
+                                                    {dry.testPublish?.error && (
+                                                        <p className="text-[10px] text-red-500 font-mono mt-1">{dry.testPublish.error}</p>
+                                                    )}
+                                                    {!dry.hasTestUser && (
+                                                        <p className="text-[10px] text-slate-400 mt-1">
+                                                            Para publicar en una cuenta test de ML, configura el Usuario de Prueba en <strong>Configuración → MercadoLibre</strong>.
                                                         </p>
                                                     )}
                                                 </div>
@@ -889,7 +978,14 @@ export const AmazonImporter: React.FC = () => {
                                                     Ver en MercadoLibre: {result.id}
                                                 </a>
                                             )}
-                                            {result?.error && <p className="text-xs text-red-500 font-mono">{result.error}</p>}
+                                            {result?.error && (
+                                                <div className="mt-2 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-3">
+                                                    <p className="text-[10px] font-black text-red-600 uppercase tracking-widest mb-1">Error de MercadoLibre</p>
+                                                    {result.error.split('\n').map((line: string, i: number) => (
+                                                        <p key={i} className="text-xs text-red-500 font-mono leading-relaxed">{line}</p>
+                                                    ))}
+                                                </div>
+                                            )}
 
                                             {/* Validation Messages */}
                                             {val?.isSkipped && (

@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { AmazonConnect } from './AmazonConnect';
 import { supabase } from '../services/supabase';
+import { meliService } from '../services/meliService';
 
 interface PriceRule {
     id: number;
@@ -92,6 +93,72 @@ const PriceRuleManager = ({
 };
 
 export const SettingsPage = () => {
+    const [testUser, setTestUser] = useState<any>(null);
+    const [testUserLoading, setTestUserLoading] = useState(false);
+    const [testUserEmail, setTestUserEmail] = useState('');
+    const [testUserPassword, setTestUserPassword] = useState('');
+    const [testUserStatus, setTestUserStatus] = useState<string>('');
+
+    useEffect(() => {
+        const fetchTestUser = async () => {
+            const { data } = await supabase.from('user_connections').select('meli_test_user').maybeSingle();
+            if (data?.meli_test_user) setTestUser(data.meli_test_user);
+        };
+        fetchTestUser();
+    }, []);
+
+    const handleCreateTestUser = async () => {
+        setTestUserLoading(true);
+        setTestUserStatus('Creando usuario de prueba en MercadoLibre...');
+        try {
+            const newUser = await meliService.createTestUser('MLM');
+            setTestUserStatus(`✅ Usuario creado: ${newUser.nickname} | Email: ${newUser.email} | Contraseña: ${newUser.password}\n\nAhora pega el email y contraseña abajo para conectarlo.`);
+            setTestUserEmail(newUser.email || '');
+            setTestUserPassword(newUser.password || '');
+        } catch (e: any) {
+            setTestUserStatus(`❌ Error: ${e.message}`);
+        } finally {
+            setTestUserLoading(false);
+        }
+    };
+
+    const handleConnectTestUser = async () => {
+        if (!testUserEmail || !testUserPassword) {
+            setTestUserStatus('❌ Ingresa el email y contraseña del usuario de prueba.');
+            return;
+        }
+        setTestUserLoading(true);
+        setTestUserStatus('Autenticando usuario de prueba...');
+        try {
+            const accessToken = await meliService.loginTestUser(testUserEmail, testUserPassword);
+            if (!accessToken) throw new Error('No se obtuvo token de acceso');
+            const testUserData = { email: testUserEmail, access_token: accessToken, connected_at: new Date().toISOString() };
+            const { data: { user } } = await supabase.auth.getUser();
+            if (user) {
+                await supabase.from('user_connections').upsert({
+                    user_id: user.id,
+                    meli_test_user: testUserData
+                });
+            }
+            setTestUser(testUserData);
+            setTestUserStatus('✅ Usuario de prueba conectado correctamente. Ya puedes usar "Probar (Sandbox)" en el importador.');
+            setTestUserPassword('');
+        } catch (e: any) {
+            setTestUserStatus(`❌ Error de autenticación: ${e.message}`);
+        } finally {
+            setTestUserLoading(false);
+        }
+    };
+
+    const handleDisconnectTestUser = async () => {
+        const { data: { user } } = await supabase.auth.getUser();
+        if (user) {
+            await supabase.from('user_connections').upsert({ user_id: user.id, meli_test_user: null });
+        }
+        setTestUser(null);
+        setTestUserStatus('Usuario de prueba desconectado.');
+    };
+
     const [usaRules, setUsaRules] = useState<PriceRule[]>(() => {
         const saved = localStorage.getItem('melidrop_usa_rules');
         return saved ? JSON.parse(saved) : [{ id: 1, min: 0, max: 20, margin: 200 }, { id: 2, min: 21, max: 50, margin: 100 }, { id: 3, min: 51, max: null, margin: 50 }];
@@ -101,6 +168,8 @@ export const SettingsPage = () => {
         return saved ? JSON.parse(saved) : [{ id: 1, min: 0, max: 300, margin: 150 }, { id: 2, min: 301, max: 600, margin: 130 }, { id: 3, min: 601, max: null, margin: 80 }];
     });
     const [exchangeRate, setExchangeRate] = useState<number>(() => parseFloat(localStorage.getItem('melidrop_exchange_rate') || '18.24'));
+    const [usaHandlingTime, setUsaHandlingTime] = useState<number>(() => parseInt(localStorage.getItem('melidrop_handling_time_usa') || '7'));
+    const [mxHandlingTime, setMxHandlingTime] = useState<number>(() => parseInt(localStorage.getItem('melidrop_handling_time_mx') || '3'));
     const [usaDefaultMargin, setUsaDefaultMargin] = useState<number>(30);
     const [mxDefaultMargin, setMxDefaultMargin] = useState<number>(20);
     const [isUpdatingDolar, setIsUpdatingDolar] = useState(false);
@@ -134,17 +203,19 @@ export const SettingsPage = () => {
         localStorage.setItem('melidrop_mx_rules', JSON.stringify(mxRules));
         localStorage.setItem('melidrop_exchange_rate', exchangeRate.toString());
         localStorage.setItem('melidrop_global_filters', globalFilters);
-        
+        localStorage.setItem('melidrop_handling_time_usa', usaHandlingTime.toString());
+        localStorage.setItem('melidrop_handling_time_mx', mxHandlingTime.toString());
+
         // Sync to Supabase
         const { data: { user } } = await supabase.auth.getUser();
         if (user) {
             await supabase.from('user_connections').upsert({
                 user_id: user.id,
                 exchange_rate: exchangeRate,
-                margin_rules: { usa: usaRules, mx: mxRules, filters: globalFilters }
+                margin_rules: { usa: usaRules, mx: mxRules, filters: globalFilters, handling_time_usa: usaHandlingTime, handling_time_mx: mxHandlingTime }
             });
         }
-        
+
         alert(`Configuración de ${section} guardada exitosamente en el sistema.`);
     };
 
@@ -198,6 +269,24 @@ export const SettingsPage = () => {
                                     </div>
                                 </div>
                             </div>
+                            <div className="flex flex-col gap-2">
+                                <label className="text-xs font-semibold text-slate-500 uppercase flex items-center gap-1">
+                                    <span className="material-symbols-outlined text-[14px] text-amber-500">schedule</span>
+                                    Días de Preparación (Amazon USA)
+                                </label>
+                                <div className="flex items-center gap-3">
+                                    <div className="relative flex-1">
+                                        <input
+                                            className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg px-3 py-2 text-sm font-black"
+                                            type="number" min="1" max="60"
+                                            value={usaHandlingTime}
+                                            onChange={(e) => setUsaHandlingTime(Math.max(1, parseInt(e.target.value) || 1))}
+                                        />
+                                        <span className="absolute right-3 top-2 text-slate-400 text-xs">días</span>
+                                    </div>
+                                </div>
+                                <p className="text-[10px] text-slate-400 italic">Tiempo entre compra del cliente y envío a ML (incluye entrega Amazon → tú). Se envía como <code>handling_time</code> a MercadoLibre.</p>
+                            </div>
                         </div>
                         <div className="p-4 bg-slate-50 dark:bg-slate-800/50 border-t border-slate-100 dark:border-slate-800">
                             <button onClick={() => handleSaveSection('USA')} className="w-full bg-slate-900 dark:bg-slate-100 dark:text-slate-900 text-white font-black py-2.5 rounded-lg shadow-sm text-sm active:scale-95 transition-all">
@@ -225,11 +314,113 @@ export const SettingsPage = () => {
                                     <span className="absolute right-3 top-2 text-slate-400 text-xs">%</span>
                                 </div>
                             </div>
+                            <div className="flex flex-col gap-2">
+                                <label className="text-xs font-semibold text-slate-500 uppercase flex items-center gap-1">
+                                    <span className="material-symbols-outlined text-[14px] text-amber-500">schedule</span>
+                                    Días de Preparación (Amazon MX)
+                                </label>
+                                <div className="relative">
+                                    <input
+                                        className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg px-3 py-2 text-sm font-black"
+                                        type="number" min="1" max="30"
+                                        value={mxHandlingTime}
+                                        onChange={(e) => setMxHandlingTime(Math.max(1, parseInt(e.target.value) || 1))}
+                                    />
+                                    <span className="absolute right-3 top-2 text-slate-400 text-xs">días</span>
+                                </div>
+                                <p className="text-[10px] text-slate-400 italic">Tiempo entre compra del cliente y envío desde Amazon MX. Se envía como <code>handling_time</code> a MercadoLibre.</p>
+                            </div>
                         </div>
                         <div className="p-4 bg-slate-50 dark:bg-slate-800/50 border-t border-slate-100 dark:border-slate-800">
                             <button onClick={() => handleSaveSection('México')} className="w-full bg-slate-900 dark:bg-slate-100 dark:text-slate-900 text-white font-black py-2.5 rounded-lg shadow-sm text-sm active:scale-95 transition-all">
                                 GUARDAR CONFIGURACIÓN MX
                             </button>
+                        </div>
+                    </section>
+
+                    {/* TEST USER (SANDBOX ML) */}
+                    <section className="flex flex-col lg:col-span-2 bg-surface-light dark:bg-surface-dark rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 overflow-hidden">
+                        <div className="absolute top-0 left-0 w-full h-1 bg-purple-500 rounded-t-xl" />
+                        <div className="px-6 py-5 border-b border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-800/50 flex items-center gap-3">
+                            <div className="p-2 rounded-lg bg-purple-100 text-purple-600">
+                                <span className="material-symbols-outlined">science</span>
+                            </div>
+                            <div>
+                                <h2 className="text-lg font-bold text-slate-900 dark:text-white uppercase tracking-tighter">Usuario de Prueba (Sandbox ML)</h2>
+                                <p className="text-xs text-slate-500">Permite publicar productos en una cuenta de prueba de MercadoLibre antes de publicar en tu cuenta real.</p>
+                            </div>
+                            {testUser?.access_token && (
+                                <span className="ml-auto bg-green-100 text-green-700 text-[10px] font-black px-3 py-1 rounded-full">✓ Conectado</span>
+                            )}
+                        </div>
+                        <div className="p-6 space-y-4">
+                            {testUser?.access_token ? (
+                                <div className="flex flex-col gap-3">
+                                    <div className="bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-xl p-4">
+                                        <p className="text-sm font-bold text-green-800 dark:text-green-300">✅ Cuenta de prueba activa</p>
+                                        <p className="text-xs text-green-700 dark:text-green-400 mt-1">Email: {testUser.email}</p>
+                                        <p className="text-xs text-green-600 mt-0.5">Conectado: {new Date(testUser.connected_at).toLocaleDateString('es-MX')}</p>
+                                    </div>
+                                    <button onClick={handleDisconnectTestUser} className="w-fit text-xs text-red-500 hover:text-red-700 font-bold flex items-center gap-1">
+                                        <span className="material-symbols-outlined text-[14px]">link_off</span>Desconectar usuario de prueba
+                                    </button>
+                                </div>
+                            ) : (
+                                <div className="space-y-4">
+                                    <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-xl p-4 text-sm text-blue-700 dark:text-blue-300">
+                                        <p className="font-bold mb-1">¿Cómo funciona?</p>
+                                        <ol className="text-xs space-y-1 list-decimal list-inside">
+                                            <li>Crea un usuario de prueba con el botón de abajo (requiere ML conectado)</li>
+                                            <li>Copia el email y contraseña que aparecen</li>
+                                            <li>Pégalos en los campos e ingresa "Conectar"</li>
+                                            <li>Ahora "Probar (Sandbox)" publicará en esa cuenta de prueba</li>
+                                        </ol>
+                                    </div>
+                                    <button
+                                        onClick={handleCreateTestUser}
+                                        disabled={testUserLoading}
+                                        className="w-full py-2.5 bg-purple-600 hover:bg-purple-700 text-white font-black rounded-xl text-sm transition-all disabled:opacity-50 flex items-center justify-center gap-2"
+                                    >
+                                        {testUserLoading ? <span className="w-4 h-4 rounded-full border-2 border-white/30 border-t-white animate-spin" /> : <span className="material-symbols-outlined text-[18px]">person_add</span>}
+                                        Crear Usuario de Prueba en ML
+                                    </button>
+                                    <div className="grid grid-cols-2 gap-3">
+                                        <div>
+                                            <label className="text-xs font-bold text-slate-500 uppercase">Email del usuario test</label>
+                                            <input
+                                                type="email"
+                                                value={testUserEmail}
+                                                onChange={e => setTestUserEmail(e.target.value)}
+                                                placeholder="test_user@testuser.com"
+                                                className="mt-1 w-full px-3 py-2 border border-slate-300 dark:border-slate-600 rounded-lg text-sm bg-white dark:bg-slate-900 dark:text-white"
+                                            />
+                                        </div>
+                                        <div>
+                                            <label className="text-xs font-bold text-slate-500 uppercase">Contraseña</label>
+                                            <input
+                                                type="password"
+                                                value={testUserPassword}
+                                                onChange={e => setTestUserPassword(e.target.value)}
+                                                placeholder="qatest1234"
+                                                className="mt-1 w-full px-3 py-2 border border-slate-300 dark:border-slate-600 rounded-lg text-sm bg-white dark:bg-slate-900 dark:text-white"
+                                            />
+                                        </div>
+                                    </div>
+                                    <button
+                                        onClick={handleConnectTestUser}
+                                        disabled={testUserLoading || !testUserEmail || !testUserPassword}
+                                        className="w-full py-2.5 bg-slate-900 dark:bg-white dark:text-slate-900 text-white font-black rounded-xl text-sm transition-all disabled:opacity-50 flex items-center justify-center gap-2"
+                                    >
+                                        {testUserLoading ? <span className="w-4 h-4 rounded-full border-2 border-white/30 border-t-white animate-spin" /> : <span className="material-symbols-outlined text-[18px]">link</span>}
+                                        Conectar Usuario de Prueba
+                                    </button>
+                                </div>
+                            )}
+                            {testUserStatus && (
+                                <pre className={`text-xs rounded-xl p-3 font-mono whitespace-pre-wrap ${testUserStatus.startsWith('✅') ? 'bg-green-50 dark:bg-green-900/20 text-green-700' : testUserStatus.startsWith('❌') ? 'bg-red-50 dark:bg-red-900/20 text-red-600' : 'bg-slate-50 dark:bg-slate-900 text-slate-600'}`}>
+                                    {testUserStatus}
+                                </pre>
+                            )}
                         </div>
                     </section>
 

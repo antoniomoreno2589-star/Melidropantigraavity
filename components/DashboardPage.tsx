@@ -147,7 +147,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ user, stats, meliD
         </div>
 
         {/* Banner de aviso si el balance falla por permisos (forbidden) */}
-        {(stats.balance?.error === 'forbidden') && (
+        {(meliData?.balance?.error === 'forbidden') && (
           <div className="mb-6 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 p-4 rounded-2xl flex flex-col sm:flex-row items-center justify-between gap-4">
             <div className="flex items-center gap-3">
               <div className="p-2 bg-amber-100 dark:bg-amber-800 text-amber-600 dark:text-amber-400 rounded-full">
@@ -297,19 +297,19 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ user, stats, meliD
               <h3 className="text-meli-purple font-black text-xs uppercase tracking-wider">Mercado Pago</h3>
             </div>
             <p className="text-xs text-meli-purple/70 font-bold">Dinero en cuenta</p>
-            <p className="text-2xl font-black text-meli-purple mt-1">${meliData?.balance?.total.toLocaleString() || '0.00'}</p>
+            <p className="text-2xl font-black text-meli-purple mt-1">${meliData?.balance?.total != null ? meliData.balance.total.toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : (meliData && !meliData.balance?.error ? '0.00' : '--')}</p>
           </div>
           <div className="flex-1 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 divide-y sm:divide-y-0 sm:divide-x divide-slate-100 dark:divide-slate-700">
             <div className="p-6 flex flex-col justify-center">
               <p className="text-xs font-bold text-slate-400 uppercase mb-1">Disponible</p>
-              <p className="text-xl font-bold text-green-600">${meliData?.balance?.available.toLocaleString() || '0.00'}</p>
+              <p className="text-xl font-bold text-green-600">${meliData?.balance?.available != null ? meliData.balance.available.toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '--'}</p>
               <p className="text-[10px] text-slate-500 mt-1 flex items-center gap-1 font-medium">
                 <span className="material-symbols-outlined text-[14px]">bolt</span> Retiro inmediato
               </p>
             </div>
             <div className="p-6 flex flex-col justify-center">
               <p className="text-xs font-bold text-slate-400 uppercase mb-1">A Liquidar</p>
-              <p className="text-xl font-bold text-blue-600">${meliData?.balance?.unavailable.toLocaleString() || '0.00'}</p>
+              <p className="text-xl font-bold text-blue-600">${meliData?.balance?.unavailable != null ? meliData.balance.unavailable.toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '--'}</p>
               <p className="text-[10px] text-slate-500 mt-1 flex items-center gap-1 font-medium">
                 <span className="material-symbols-outlined text-[14px]">schedule</span> Ventas en proceso
               </p>
