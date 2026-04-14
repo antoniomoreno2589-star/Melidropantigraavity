@@ -96,8 +96,8 @@ Descripción/características: "${description.substring(0, 400)}"
 
 IMPORTANTE: Antes de responder, cuenta los caracteres. Si son menos de 55, agrega más detalles del producto. Si son más de 60, recorta. Objetivo: entre 55-60 caracteres.`;
   const result = await callGemini(prompt);
-  // Trim to 60 chars as hard cap
-  return result.replace(/^["']|["']$/g, '').substring(0, 60).trim();
+  // Trim to 60 chars as hard cap, also clean leading dashes/punctuation
+  return result.replace(/^["']|["']$/g, '').replace(/^[\s\-–—,.:;|]+/, '').substring(0, 60).trim();
 }
 
 async function detectCategory(title: string, description: string, productType: string, siteId: string): Promise<any> {

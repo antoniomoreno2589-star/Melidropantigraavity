@@ -155,7 +155,7 @@ class AmazonService {
                                 if (!seenHashes.has(hash)) {
                                     seenHashes.add(hash);
                                     // Store the highest-quality version: strip variant token to get base image
-                                    const cleanUrl = img.link.replace(/\._[A-Z0-9_,]+\./, '.');
+                                    const cleanUrl = img.link.replace(/\._[A-Za-z0-9_,]+\./, '.');
                                     uniqueImages.push(cleanUrl);
                                 }
                             }

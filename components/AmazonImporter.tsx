@@ -207,9 +207,11 @@ export const AmazonImporter: React.FC = () => {
             if (product.brand) {
                 const brandRegex = new RegExp(`${product.brand}`, 'gi');
                 finalTitle = finalTitle.replace(brandRegex, '').replace(/\s\s+/g, ' ').trim();
-                // Capitalize first letter if it became lowercase
-                finalTitle = finalTitle.charAt(0).toUpperCase() + finalTitle.slice(1);
             }
+            // Clean leading dashes, hyphens, or punctuation left after brand removal
+            finalTitle = finalTitle.replace(/^[\s\-–—,.:;|]+/, '').trim();
+            // Capitalize first letter
+            finalTitle = finalTitle.charAt(0).toUpperCase() + finalTitle.slice(1);
             setEditedTitles(prev => ({ ...prev, [product.asin]: finalTitle }));
         }
 
