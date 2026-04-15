@@ -1,217 +1,556 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import { api } from '../services/api';
+import { meliService } from '../services/meliService';
+import { supabase } from '../services/supabase';
 import { Order } from '../types';
 
+type DatePreset = 'today' | '7d' | '15d' | '30d' | 'custom';
+
+// ── helpers ────────────────────────────────────────────────────────────────
+
+function addDays(dateStr: string, days: number): string {
+    const d = new Date(dateStr + 'T12:00:00');
+    d.setDate(d.getDate() + days);
+    return d.toISOString().split('T')[0];
+}
+
+function getPresetRange(preset: DatePreset, customFrom: string, customTo: string, today: string): { from: string; to: string } {
+    if (preset === 'today')  return { from: today, to: today };
+    if (preset === 'custom') return { from: customFrom, to: customTo };
+    const days = preset === '7d' ? 7 : preset === '15d' ? 15 : 30;
+    return { from: addDays(today, -days), to: today };
+}
+
+function mapMlStatus(o: any): Order['status'] {
+    if (o.status === 'cancelled') return 'cancelled';
+    const ss = o.shipping?.status ?? '';
+    if (ss === 'delivered') return 'delivered';
+    if (['shipped', 'me2', 'in_transit', 'almost_there'].includes(ss)) return 'shipped';
+    if (o.status === 'paid') return 'paid';
+    return 'pending';
+}
+
+// ── component ──────────────────────────────────────────────────────────────
+
 export const OrdersPage = () => {
-  const [search, setSearch] = useState('');
-  const [statusFilter, setStatusFilter] = useState('all');
-  const [amazonFilter, setAmazonFilter] = useState('all');
-  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+    const todayStr = new Date().toISOString().split('T')[0];
+    const exchangeRate = parseFloat(localStorage.getItem('melidrop_exchange_rate') ?? '18.5');
 
-  const [purchaseModal, setPurchaseModal] = useState<Order | null>(null);
-  const [purchasePrice, setPurchasePrice] = useState('');
+    // ── state ──────────────────────────────────────────────────────────
+    const [orders, setOrders] = useState<Order[]>([]);
+    const [currencyMap, setCurrencyMap] = useState<Record<string, 'USD' | 'MXN'>>({});
+    const [loading, setLoading] = useState(true);
+    const [syncing, setSyncing] = useState(false);
+    const [syncError, setSyncError] = useState<string | null>(null);
 
-  const [orders, setOrders] = useState<Order[]>([]);
-  const [loading, setLoading] = useState(true);
+    const [preset, setPreset] = useState<DatePreset>('7d');
+    const [customFrom, setCustomFrom] = useState('');
+    const [customTo, setCustomTo] = useState(todayStr);
 
-  const todayStr = new Date().toISOString().split('T')[0];
+    const [search, setSearch] = useState('');
+    const [mlStatusFilter, setMlStatusFilter] = useState('all');
+    const [amazonFilter, setAmazonFilter] = useState('all');
+    const [selectedIds, setSelectedIds] = useState<string[]>([]);
 
-  useEffect(() => {
-    // Initial fetch
-    api.orders.list()
-      .then(data => {
-        setOrders(data);
-        setLoading(false);
-      })
-      .catch(err => {
-        console.error('Error fetching orders:', err);
-        setLoading(false);
-      });
-  }, []);
+    // ── date range ─────────────────────────────────────────────────────
+    const range = useMemo(
+        () => getPresetRange(preset, customFrom, customTo, todayStr),
+        [preset, customFrom, customTo, todayStr]
+    );
 
-  const filteredOrders = useMemo(() => {
-    return orders.filter(order => {
-      const matchesSearch = order.id.toLowerCase().includes(search.toLowerCase()) ||
-        order.buyerName.toLowerCase().includes(search.toLowerCase()) ||
-        order.productTitle.toLowerCase().includes(search.toLowerCase()) ||
-        order.amazonAsin.toLowerCase().includes(search.toLowerCase());
-      const matchesStatus = statusFilter === 'all' || order.status === statusFilter;
-      const matchesAmazon = amazonFilter === 'all' || order.amazonStatus === amazonFilter;
-      return matchesSearch && matchesStatus && matchesAmazon;
-    });
-  }, [orders, search, statusFilter, amazonFilter]);
+    // ── load currency map (once) ────────────────────────────────────────
+    useEffect(() => {
+        api.products.getCurrencyMap()
+            .then(setCurrencyMap)
+            .catch(err => console.error('getCurrencyMap error:', err));
+    }, []);
 
-  const shipTodayCount = useMemo(() => orders.filter(o => o.shippingDeadline === todayStr && o.status !== 'shipped' && o.status !== 'delivered').length, [orders, todayStr]);
-  const pendingPurchaseCount = useMemo(() => orders.filter(o => o.amazonStatus === 'pending').length, [orders]);
+    // ── load orders from Supabase ───────────────────────────────────────
+    const loadOrders = useCallback(async () => {
+        if (!range.from || !range.to) return;
+        setLoading(true);
+        try {
+            setOrders(await api.orders.listWithDateRange(range.from, range.to));
+        } catch (e) {
+            console.error('loadOrders error:', e);
+        } finally {
+            setLoading(false);
+        }
+    }, [range]);
 
-  const handleSelectAll = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.checked) {
-      setSelectedIds(filteredOrders.map(o => o.id));
-    } else {
-      setSelectedIds([]);
-    }
-  };
+    useEffect(() => { loadOrders(); }, [loadOrders]);
 
-  const toggleSelectOne = (id: string) => {
-    setSelectedIds(prev => prev.includes(id) ? prev.filter(sid => sid !== id) : [...prev, id]);
-  };
+    // ── sync from ML ───────────────────────────────────────────────────
+    const handleSync = async () => {
+        setSyncing(true);
+        setSyncError(null);
+        try {
+            const dateFrom = `${range.from}T00:00:00.000-06:00`;
+            const dateTo   = `${range.to}T23:59:59.999-06:00`;
+            const raw = await meliService.getOrdersFiltered(dateFrom, dateTo);
 
-  const handleRegisterPurchase = async () => {
-    if (!purchaseModal || !purchasePrice) return;
+            if (raw.length > 0) {
+                const { data: { user } } = await supabase.auth.getUser();
+                const payloads = raw.map((o: any) => {
+                    const dateCreated = o.date_created?.split('T')[0] ?? todayStr;
+                    const asin = o.order_items?.[0]?.item?.seller_custom_field ?? '';
+                    return {
+                        id: o.id.toString(),
+                        user_id: user?.id,
+                        product_title: o.order_items?.[0]?.item?.title ?? 'Producto',
+                        buyer_name: o.buyer?.nickname ?? 'Comprador',
+                        total: o.total_amount ?? 0,
+                        net_income: o.payments?.[0]?.net_received_amount ?? null,
+                        ml_commission: o.payments?.[0]?.marketplace_fee ?? null,
+                        meli_item_id: o.order_items?.[0]?.item?.id ?? null,
+                        status: mapMlStatus(o),
+                        date: dateCreated,
+                        shipping_deadline: addDays(dateCreated, 3),
+                        amazon_status: 'pending',
+                        amazon_asin: asin,
+                        amazon_marketplace: currencyMap[asin] === 'USD' ? 'US' : 'MX',
+                    };
+                });
+                await api.orders.bulkUpsert(payloads);
+            }
+            await loadOrders();
+        } catch (e: any) {
+            setSyncError(e.message ?? 'Error al sincronizar');
+        } finally {
+            setSyncing(false);
+        }
+    };
 
-    // Optimistic update
-    const updatedOrder = { ...purchaseModal, amazonStatus: 'purchased' as const, amazonPurchasePrice: parseFloat(purchasePrice) };
+    // ── amazon link / buy ──────────────────────────────────────────────
+    const getAmazonDomain = (asin: string) =>
+        currencyMap[asin] === 'USD' ? 'amazon.com' : 'amazon.com.mx';
 
-    try {
-      await api.orders.update(updatedOrder);
-      setOrders(prev => prev.map(o => o.id === purchaseModal.id ? updatedOrder : o));
-      setPurchaseModal(null);
-      setPurchasePrice('');
-      alert('Compra registrada exitosamente.');
-    } catch (e) {
-      console.error("Error updating order", e);
-      alert('Error al registrar compra.');
-    }
-  };
+    const handleBuyClick = async (order: Order) => {
+        if (order.amazonAsin) {
+            window.open(`https://www.${getAmazonDomain(order.amazonAsin)}/dp/${order.amazonAsin}`, '_blank', 'noreferrer');
+        }
+        if (order.amazonStatus !== 'pending') return;
+        const updated = { ...order, amazonStatus: 'purchased' as const };
+        setOrders(prev => prev.map(o => o.id === order.id ? updated : o));
+        try { await api.orders.update(updated); }
+        catch { setOrders(prev => prev.map(o => o.id === order.id ? order : o)); }
+    };
 
-  const getAmazonLink = (order: Order) => {
-    const domain = order.amazonMarketplace === 'US' ? 'amazon.com' : 'amazon.com.mx';
-    return `https://www.${domain}/dp/${order.amazonAsin}`;
-  };
+    const handleCostBlur = async (order: Order, rawValue: string) => {
+        const price = parseFloat(rawValue);
+        if (isNaN(price) || price < 0) return;
+        const updated = { ...order, amazonPurchasePrice: price };
+        setOrders(prev => prev.map(o => o.id === order.id ? updated : o));
+        try { await api.orders.update(updated); }
+        catch (e) { console.error('Error saving cost', e); }
+    };
 
-  const handleExport = () => {
-    const header = "ID,Producto,Comprador,Fecha,Total,Estado,Status Amazon,Costo Amazon\n";
-    const rows = filteredOrders.map(o =>
-      `${o.id},"${o.productTitle}","${o.buyerName}",${o.date},${o.total},${o.status},${o.amazonStatus},${o.amazonPurchasePrice || 0}`
-    ).join("\n");
-    const csvContent = "data:text/csv;charset=utf-8," + encodeURIComponent(header + rows);
-    const link = document.createElement("a");
-    link.setAttribute("href", csvContent);
-    link.setAttribute("download", "ordenes_melidrop.csv");
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-  };
+    // ── cost in MXN (for profit calc) ──────────────────────────────────
+    const costMXN = (order: Order) => {
+        if (!order.amazonPurchasePrice) return 0;
+        return currencyMap[order.amazonAsin] === 'USD'
+            ? order.amazonPurchasePrice * exchangeRate
+            : order.amazonPurchasePrice;
+    };
 
-  return (
-    <div className="flex-1 overflow-y-auto p-4 md:p-8 scroll-smooth bg-background-light dark:bg-background-dark">
-      <div className="max-w-7xl mx-auto flex flex-col gap-8 pb-20">
+    // ── filtered list & stats ──────────────────────────────────────────
+    const filteredOrders = useMemo(() => orders.filter(o => {
+        if (search) {
+            const q = search.toLowerCase();
+            if (!o.id.toLowerCase().includes(q) &&
+                !o.buyerName.toLowerCase().includes(q) &&
+                !o.productTitle.toLowerCase().includes(q) &&
+                !o.amazonAsin.toLowerCase().includes(q)) return false;
+        }
+        if (mlStatusFilter !== 'all' && o.status !== mlStatusFilter) return false;
+        if (amazonFilter !== 'all' && o.amazonStatus !== amazonFilter) return false;
+        return true;
+    }), [orders, search, mlStatusFilter, amazonFilter]);
 
-        <div className="flex flex-col md:flex-row md:items-end justify-between gap-4">
-          <div>
-            <h1 className="text-3xl font-black text-slate-900 dark:text-white tracking-tight">Gestión de Órdenes</h1>
-            <p className="text-slate-500 dark:text-slate-400 mt-1 font-medium">Panel operativo de compras en Amazon y envíos Mercado Libre.</p>
-          </div>
-          <div className="flex gap-2">
-            <button onClick={() => alert('Actualizando órdenes...')} className="bg-primary hover:bg-primary-dark text-white px-5 py-2.5 rounded-xl text-sm font-bold flex items-center gap-2 transition-all shadow-lg shadow-primary/20">
-              <span className="material-symbols-outlined text-[20px]">sync</span>
-              Sincronizar Ventas
-            </button>
-          </div>
-        </div>
+    const stats = useMemo(() => {
+        const shipToday    = filteredOrders.filter(o => o.shippingDeadline === todayStr && !['shipped','delivered','cancelled'].includes(o.status)).length;
+        const pendingBuy   = filteredOrders.filter(o => o.amazonStatus === 'pending' && o.status !== 'cancelled').length;
+        const totalNet     = filteredOrders.reduce((s, o) => s + o.netIncome, 0);
+        const totalCost    = filteredOrders.reduce((s, o) => s + costMXN(o), 0);
+        const purchased    = filteredOrders.filter(o => o.amazonStatus === 'purchased').length;
+        return { shipToday, pendingBuy, totalNet, projectedProfit: totalNet - totalCost, purchased };
+    }, [filteredOrders, todayStr, exchangeRate, currencyMap]);
 
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <div className="bg-white dark:bg-slate-800 p-6 rounded-2xl border border-slate-200 dark:border-slate-700 shadow-sm relative overflow-hidden group">
-            <div className="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity">
-              <span className="material-symbols-outlined text-6xl text-orange-500">local_shipping</span>
-            </div>
-            <p className="text-slate-500 dark:text-slate-400 text-xs font-black uppercase tracking-widest">Envíos para Hoy</p>
-            <div className="flex items-end gap-3 mt-2">
-              <p className="text-4xl font-black text-slate-900 dark:text-white">{shipTodayCount}</p>
-              <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${shipTodayCount > 0 ? 'bg-orange-100 text-orange-600 animate-pulse' : 'bg-slate-100 text-slate-400'}`}>
-                {shipTodayCount > 0 ? 'URGENTE' : 'Al día'}
-              </span>
-            </div>
-          </div>
-          <div className="bg-white dark:bg-slate-800 p-6 rounded-2xl border border-slate-200 dark:border-slate-700 shadow-sm relative overflow-hidden group">
-            <div className="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity">
-              <span className="material-symbols-outlined text-6xl text-blue-500">shopping_cart</span>
-            </div>
-            <p className="text-slate-500 dark:text-slate-400 text-xs font-black uppercase tracking-widest">Pendientes Amazon</p>
-            <div className="flex items-end gap-3 mt-2">
-              <p className="text-4xl font-black text-slate-900 dark:text-white">{pendingPurchaseCount}</p>
-              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-blue-100 text-blue-600">Por Comprar</span>
-            </div>
-          </div>
-          <div className="bg-white dark:bg-slate-800 p-6 rounded-2xl border border-slate-200 dark:border-slate-700 shadow-sm flex flex-col justify-between">
-            <div>
-              <p className="text-slate-500 dark:text-slate-400 text-xs font-black uppercase tracking-widest">Ingresos Proyectados</p>
-              <p className="text-3xl font-black text-slate-900 dark:text-white mt-1">$45,200.00</p>
-            </div>
-            <div className="flex items-center gap-2 mt-4">
-              <div className="flex-1 h-1.5 bg-slate-100 dark:bg-slate-700 rounded-full"><div className="h-full bg-green-500 rounded-full" style={{ width: '65%' }}></div></div>
-              <span className="text-[10px] font-bold text-slate-400">Objetivo Mensual</span>
-            </div>
-          </div>
-        </div>
+    // ── select all ─────────────────────────────────────────────────────
+    const handleSelectAll = (e: React.ChangeEvent<HTMLInputElement>) =>
+        setSelectedIds(e.target.checked ? filteredOrders.map(o => o.id) : []);
 
-        <div className="bg-white dark:bg-slate-800 p-4 rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm flex flex-col lg:flex-row justify-between items-center gap-4">
-          <div className="relative w-full lg:w-96">
-            <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-slate-400">search</span>
-            <input value={search} onChange={(e) => setSearch(e.target.value)} className="w-full pl-10 pr-4 py-2 bg-slate-50 dark:bg-slate-900 border-slate-200 dark:border-slate-700 rounded-lg text-sm focus:ring-primary" placeholder="Buscar ID, Comprador o ASIN..." />
-          </div>
-          <div className="flex flex-wrap items-center gap-2 w-full lg:w-auto">
-            <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="bg-white dark:bg-slate-900 border-slate-200 rounded-lg text-xs font-bold py-2"><option value="all">Estado ML: Todos</option><option value="pending">Pendiente</option><option value="shipped">Enviado</option></select>
-            <select value={amazonFilter} onChange={(e) => setAmazonFilter(e.target.value)} className="bg-white dark:bg-slate-900 border-slate-200 rounded-lg text-xs font-bold py-2"><option value="all">Amazon: Todos</option><option value="pending">No Comprados</option><option value="purchased">Comprados</option></select>
-            <button onClick={handleExport} className="flex items-center gap-2 px-4 py-2 bg-slate-100 text-slate-700 rounded-lg text-xs font-bold hover:bg-slate-200 transition-colors"><span className="material-symbols-outlined text-[18px]">download</span>Exportar CSV</button>
-          </div>
-        </div>
+    // ── export csv ─────────────────────────────────────────────────────
+    const handleExport = () => {
+        const header = 'ID,Comprador,Producto,ASIN,Fecha,Entrega,Estado ML,Total MXN,Neto MXN,Comisión,Estado Amazon,Costo Real,Moneda,Ganancia MXN\n';
+        const rows = filteredOrders.map(o => {
+            const currency = currencyMap[o.amazonAsin] ?? 'USD';
+            const gan      = o.amazonPurchasePrice != null ? (o.netIncome - costMXN(o)).toFixed(2) : '';
+            return `${o.id},"${o.buyerName}","${o.productTitle}",${o.amazonAsin},${o.date},${o.shippingDeadline ?? ''},${o.status},${o.total},${o.netIncome},${o.mlCommission},${o.amazonStatus},${o.amazonPurchasePrice ?? ''},${currency},${gan}`;
+        }).join('\n');
+        const blob = new Blob([header + rows], { type: 'text/csv;charset=utf-8;' });
+        const url  = URL.createObjectURL(blob);
+        const a    = document.createElement('a');
+        a.href = url; a.download = 'ordenes_melidrop.csv';
+        document.body.appendChild(a); a.click();
+        document.body.removeChild(a); URL.revokeObjectURL(url);
+    };
 
-        <div className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-2xl shadow-sm overflow-hidden min-h-[500px]">
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-sm">
-              <thead className="bg-slate-50 dark:bg-slate-900 text-slate-400 uppercase text-[10px] font-black tracking-widest border-b">
-                <tr>
-                  <th className="px-6 py-4 w-12"><input type="checkbox" className="rounded" checked={filteredOrders.length > 0 && selectedIds.length === filteredOrders.length} onChange={handleSelectAll} /></th>
-                  <th className="px-6 py-4">Orden</th>
-                  <th className="px-6 py-4">Producto / Enlace</th>
-                  <th className="px-6 py-4 text-center">Entrega Límite</th>
-                  <th className="px-6 py-4 text-right">Venta</th>
-                  <th className="px-6 py-4 text-center">Compra Amazon</th>
-                  <th className="px-6 py-4 text-right">Costo Real</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                {filteredOrders.length === 0 ? (
-                  <tr><td colSpan={7} className="px-6 py-20 text-center text-slate-400 italic">No hay órdenes para mostrar.</td></tr>
-                ) : (
-                  filteredOrders.map(order => (
-                    <tr key={order.id} className={`hover:bg-slate-50 dark:hover:bg-slate-900/50 transition-colors ${selectedIds.includes(order.id) ? 'bg-primary/5' : ''}`}>
-                      <td className="px-6 py-4"><input type="checkbox" className="rounded" checked={selectedIds.includes(order.id)} onChange={() => toggleSelectOne(order.id)} /></td>
-                      <td className="px-6 py-4">
-                        <div className="flex flex-col"><span className="font-black text-slate-900 dark:text-white">{order.id}</span><span className="text-xs text-slate-500">{order.buyerName}</span></div>
-                      </td>
-                      <td className="px-6 py-4">
-                        <div className="flex flex-col max-w-[220px]"><span className="font-bold text-slate-700 dark:text-slate-300 text-xs line-clamp-1">{order.productTitle}</span><a href={getAmazonLink(order)} target="_blank" rel="noreferrer" onClick={() => { if (order.amazonStatus === 'pending') setPurchaseModal(order); }} className="inline-flex items-center gap-1.5 bg-slate-900 text-white px-2 py-1 rounded text-[10px] font-black mt-1">COMPRAR EN {order.amazonMarketplace}<span className="material-symbols-outlined text-[14px]">open_in_new</span></a></div>
-                      </td>
-                      <td className="px-6 py-4 text-center"><span className={`text-[11px] font-black px-2 py-1 rounded ${order.shippingDeadline === todayStr ? 'bg-orange-500 text-white' : 'text-slate-600'}`}>{order.shippingDeadline}</span></td>
-                      <td className="px-6 py-4 text-right font-black">${order.total.toLocaleString()}</td>
-                      <td className="px-6 py-4 text-center">{order.amazonStatus === 'pending' ? <span className="text-[9px] font-black uppercase text-red-500">PENDIENTE</span> : <span className="text-[9px] font-black uppercase text-green-500">COMPRADO</span>}</td>
-                      <td className="px-6 py-4 text-right">{order.amazonStatus === 'purchased' ? <span className="text-sm font-black">${order.amazonPurchasePrice?.toLocaleString()}</span> : <span className="text-xs text-slate-300">N/A</span>}</td>
-                    </tr>
-                  ))
+    // ── misc ────────────────────────────────────────────────────────────
+    const fmt = (n: number) => n.toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+    const statusBadge: Record<string, { label: string; cls: string }> = {
+        pending:   { label: 'Pendiente', cls: 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400' },
+        paid:      { label: 'Pagada',    cls: 'bg-blue-100   text-blue-700   dark:bg-blue-900/30   dark:text-blue-400'   },
+        shipped:   { label: 'Enviada',   cls: 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-400' },
+        delivered: { label: 'Entregada', cls: 'bg-green-100  text-green-700  dark:bg-green-900/30  dark:text-green-400'  },
+        cancelled: { label: 'Cancelada', cls: 'bg-red-100    text-red-600    dark:bg-red-900/30    dark:text-red-400'    },
+    };
+
+    const datePresets: { value: DatePreset; label: string }[] = [
+        { value: 'today', label: 'Hoy'          },
+        { value: '7d',    label: '7 días'        },
+        { value: '15d',   label: '15 días'       },
+        { value: '30d',   label: '30 días'       },
+        { value: 'custom', label: 'Personalizado' },
+    ];
+
+    // ── render ──────────────────────────────────────────────────────────
+    return (
+        <div className="flex-1 overflow-y-auto p-4 md:p-8 scroll-smooth bg-background-light dark:bg-background-dark">
+            <div className="max-w-[1600px] mx-auto flex flex-col gap-6 pb-20">
+
+                {/* ── Header ── */}
+                <div className="flex flex-col md:flex-row md:items-end justify-between gap-4">
+                    <div>
+                        <h1 className="text-3xl font-black text-slate-900 dark:text-white tracking-tight">Gestión de Órdenes</h1>
+                        <p className="text-slate-500 dark:text-slate-400 mt-1 font-medium">Panel operativo de compras en Amazon y envíos Mercado Libre.</p>
+                    </div>
+                    <div className="flex flex-col items-end gap-1">
+                        <button
+                            onClick={handleSync}
+                            disabled={syncing}
+                            className="bg-primary hover:bg-primary-dark disabled:opacity-60 text-white px-5 py-2.5 rounded-xl text-sm font-bold flex items-center gap-2 transition-all shadow-lg shadow-primary/20"
+                        >
+                            <span className={`material-symbols-outlined text-[20px] ${syncing ? 'animate-spin' : ''}`}>sync</span>
+                            {syncing ? 'Sincronizando...' : 'Sincronizar Ventas'}
+                        </button>
+                        {syncError && <p className="text-xs text-red-500 font-bold">{syncError}</p>}
+                    </div>
+                </div>
+
+                {/* ── Date filter tabs ── */}
+                <div className="flex flex-wrap items-center gap-2">
+                    {datePresets.map(({ value, label }) => (
+                        <button
+                            key={value}
+                            onClick={() => setPreset(value)}
+                            className={`px-4 py-2 rounded-lg text-xs font-black uppercase tracking-wide transition-all ${
+                                preset === value
+                                    ? 'bg-primary text-white shadow-md shadow-primary/25'
+                                    : 'bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700 hover:border-primary/50'
+                            }`}
+                        >
+                            {label}
+                        </button>
+                    ))}
+                    {preset === 'custom' && (
+                        <div className="flex items-center gap-2 ml-1">
+                            <input
+                                type="date"
+                                value={customFrom}
+                                onChange={e => setCustomFrom(e.target.value)}
+                                className="px-3 py-2 text-xs border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-200"
+                            />
+                            <span className="text-slate-400 text-xs font-bold">—</span>
+                            <input
+                                type="date"
+                                value={customTo}
+                                onChange={e => setCustomTo(e.target.value)}
+                                className="px-3 py-2 text-xs border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-200"
+                            />
+                        </div>
+                    )}
+                </div>
+
+                {/* ── Stats cards ── */}
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <div className="bg-white dark:bg-slate-800 p-6 rounded-2xl border border-slate-200 dark:border-slate-700 shadow-sm relative overflow-hidden group">
+                        <div className="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity">
+                            <span className="material-symbols-outlined text-6xl text-orange-500">local_shipping</span>
+                        </div>
+                        <p className="text-slate-500 dark:text-slate-400 text-xs font-black uppercase tracking-widest">Envíos para Hoy</p>
+                        <div className="flex items-end gap-3 mt-2">
+                            <p className="text-4xl font-black text-slate-900 dark:text-white">{stats.shipToday}</p>
+                            <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${stats.shipToday > 0 ? 'bg-orange-100 text-orange-600 animate-pulse' : 'bg-slate-100 dark:bg-slate-700 text-slate-400'}`}>
+                                {stats.shipToday > 0 ? 'URGENTE' : 'Al día'}
+                            </span>
+                        </div>
+                    </div>
+
+                    <div className="bg-white dark:bg-slate-800 p-6 rounded-2xl border border-slate-200 dark:border-slate-700 shadow-sm relative overflow-hidden group">
+                        <div className="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity">
+                            <span className="material-symbols-outlined text-6xl text-blue-500">shopping_cart</span>
+                        </div>
+                        <p className="text-slate-500 dark:text-slate-400 text-xs font-black uppercase tracking-widest">Pendientes Amazon</p>
+                        <div className="flex items-end gap-3 mt-2">
+                            <p className="text-4xl font-black text-slate-900 dark:text-white">{stats.pendingBuy}</p>
+                            <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400">Por Comprar</span>
+                        </div>
+                    </div>
+
+                    <div className="bg-white dark:bg-slate-800 p-6 rounded-2xl border border-slate-200 dark:border-slate-700 shadow-sm flex flex-col justify-between">
+                        <div>
+                            <p className="text-slate-500 dark:text-slate-400 text-xs font-black uppercase tracking-widest">Ingresos Proyectados</p>
+                            <p className="text-2xl font-black text-slate-900 dark:text-white mt-1">${fmt(stats.totalNet)}</p>
+                            <p className={`text-xs mt-1 font-bold ${stats.projectedProfit >= 0 ? 'text-green-600 dark:text-green-400' : 'text-red-500'}`}>
+                                Ganancia est.:&nbsp;
+                                {stats.projectedProfit >= 0 ? '+' : ''}${fmt(stats.projectedProfit)}
+                                {stats.purchased > 0 && (
+                                    <span className="text-slate-400 font-normal ml-1">({stats.purchased} costos registrados)</span>
+                                )}
+                            </p>
+                        </div>
+                        <div className="flex items-center gap-2 mt-4">
+                            <div className="flex-1 h-1.5 bg-slate-100 dark:bg-slate-700 rounded-full overflow-hidden">
+                                <div
+                                    className={`h-full rounded-full transition-all ${stats.projectedProfit >= 0 ? 'bg-green-500' : 'bg-red-500'}`}
+                                    style={{ width: `${stats.totalNet > 0 ? Math.min(100, (Math.abs(stats.projectedProfit) / stats.totalNet) * 100) : 0}%` }}
+                                />
+                            </div>
+                            <span className="text-[10px] font-bold text-slate-400 shrink-0">Margen est.</span>
+                        </div>
+                    </div>
+                </div>
+
+                {/* ── Search / filter bar ── */}
+                <div className="bg-white dark:bg-slate-800 p-4 rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm flex flex-col lg:flex-row justify-between items-center gap-4">
+                    <div className="relative w-full lg:w-96">
+                        <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-[20px]">search</span>
+                        <input
+                            value={search}
+                            onChange={e => setSearch(e.target.value)}
+                            className="w-full pl-10 pr-4 py-2 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-sm text-slate-800 dark:text-slate-200 placeholder-slate-400"
+                            placeholder="Buscar por ID, comprador, producto o ASIN..."
+                        />
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2 w-full lg:w-auto">
+                        <select
+                            value={mlStatusFilter}
+                            onChange={e => setMlStatusFilter(e.target.value)}
+                            className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-xs font-bold py-2 px-3 text-slate-700 dark:text-slate-200"
+                        >
+                            <option value="all">Estado ML: Todos</option>
+                            <option value="pending">Pendiente</option>
+                            <option value="paid">Pagada</option>
+                            <option value="shipped">Enviada</option>
+                            <option value="delivered">Entregada</option>
+                            <option value="cancelled">Cancelada</option>
+                        </select>
+                        <select
+                            value={amazonFilter}
+                            onChange={e => setAmazonFilter(e.target.value)}
+                            className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-xs font-bold py-2 px-3 text-slate-700 dark:text-slate-200"
+                        >
+                            <option value="all">Amazon: Todos</option>
+                            <option value="pending">No Comprados</option>
+                            <option value="purchased">Comprados</option>
+                        </select>
+                        <button
+                            onClick={handleExport}
+                            className="flex items-center gap-2 px-4 py-2 bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-200 rounded-lg text-xs font-bold hover:bg-slate-200 dark:hover:bg-slate-600 transition-colors"
+                        >
+                            <span className="material-symbols-outlined text-[18px]">download</span>
+                            Exportar CSV
+                        </button>
+                    </div>
+                </div>
+
+                {/* ── Table ── */}
+                <div className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-2xl shadow-sm overflow-hidden">
+                    <div className="overflow-x-auto">
+                        <table className="w-full text-left text-sm">
+                            <thead className="bg-slate-50 dark:bg-slate-900 text-slate-400 uppercase text-[10px] font-black tracking-widest border-b border-slate-200 dark:border-slate-700">
+                                <tr>
+                                    <th className="px-4 py-4 w-10">
+                                        <input
+                                            type="checkbox"
+                                            className="rounded"
+                                            checked={filteredOrders.length > 0 && selectedIds.length === filteredOrders.length}
+                                            onChange={handleSelectAll}
+                                        />
+                                    </th>
+                                    <th className="px-4 py-4">Orden</th>
+                                    <th className="px-4 py-4 min-w-[180px]">Producto</th>
+                                    <th className="px-4 py-4 text-center">Entrega</th>
+                                    <th className="px-4 py-4 text-right">Venta ML</th>
+                                    <th className="px-4 py-4 text-right">Neto ML</th>
+                                    <th className="px-4 py-4 text-center min-w-[155px]">Compra Amazon</th>
+                                    <th className="px-4 py-4 text-right min-w-[130px]">Costo Real</th>
+                                    <th className="px-4 py-4 text-right">Ganancia</th>
+                                </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                                {loading ? (
+                                    Array.from({ length: 6 }).map((_, i) => (
+                                        <tr key={i}>
+                                            {Array.from({ length: 9 }).map((__, j) => (
+                                                <td key={j} className="px-4 py-4">
+                                                    <div className="h-4 bg-slate-100 dark:bg-slate-700 rounded animate-pulse" style={{ width: `${55 + (j * 11) % 45}%` }} />
+                                                </td>
+                                            ))}
+                                        </tr>
+                                    ))
+                                ) : filteredOrders.length === 0 ? (
+                                    <tr>
+                                        <td colSpan={9} className="px-6 py-20 text-center">
+                                            <span className="material-symbols-outlined text-5xl text-slate-200 dark:text-slate-600 block mb-3">receipt_long</span>
+                                            <p className="text-slate-500 dark:text-slate-400 font-bold">No hay órdenes para este período</p>
+                                            <p className="text-slate-400 text-xs mt-1">Selecciona otro rango de fechas o sincroniza con Mercado Libre.</p>
+                                        </td>
+                                    </tr>
+                                ) : filteredOrders.map(order => {
+                                    const cost      = costMXN(order);
+                                    const ganancia  = order.amazonPurchasePrice != null ? order.netIncome - cost : null;
+                                    const asinCur   = currencyMap[order.amazonAsin] ?? 'USD';
+                                    const isToday   = order.shippingDeadline === todayStr;
+                                    const sb        = statusBadge[order.status] ?? { label: order.status, cls: 'bg-slate-100 text-slate-500' };
+                                    return (
+                                        <tr
+                                            key={order.id}
+                                            className={`hover:bg-slate-50 dark:hover:bg-slate-900/40 transition-colors ${selectedIds.includes(order.id) ? 'bg-primary/5' : ''}`}
+                                        >
+                                            <td className="px-4 py-3.5">
+                                                <input
+                                                    type="checkbox"
+                                                    className="rounded"
+                                                    checked={selectedIds.includes(order.id)}
+                                                    onChange={() => setSelectedIds(prev =>
+                                                        prev.includes(order.id) ? prev.filter(id => id !== order.id) : [...prev, order.id]
+                                                    )}
+                                                />
+                                            </td>
+
+                                            {/* Order */}
+                                            <td className="px-4 py-3.5">
+                                                <div className="flex flex-col gap-0.5">
+                                                    <span className="font-black text-slate-900 dark:text-white text-[11px] tracking-wide">#{order.id}</span>
+                                                    <span className="text-[11px] text-slate-500 dark:text-slate-400">{order.buyerName}</span>
+                                                    <span className="text-[10px] text-slate-400">{order.date}</span>
+                                                </div>
+                                            </td>
+
+                                            {/* Product */}
+                                            <td className="px-4 py-3.5 max-w-[200px]">
+                                                <p className="text-xs font-bold text-slate-700 dark:text-slate-300 line-clamp-2 leading-snug">{order.productTitle}</p>
+                                                {order.amazonAsin && (
+                                                    <span className="inline-block mt-1 text-[9px] font-mono text-slate-400 bg-slate-100 dark:bg-slate-700 px-1.5 py-0.5 rounded">{order.amazonAsin}</span>
+                                                )}
+                                                <span className={`inline-block mt-1 ml-1 text-[9px] font-black px-1.5 py-0.5 rounded ${sb.cls}`}>{sb.label}</span>
+                                            </td>
+
+                                            {/* Shipping deadline */}
+                                            <td className="px-4 py-3.5 text-center">
+                                                <span className={`text-[11px] font-black px-2 py-1 rounded-lg whitespace-nowrap ${isToday ? 'bg-orange-500 text-white' : 'bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300'}`}>
+                                                    {order.shippingDeadline || '—'}
+                                                </span>
+                                            </td>
+
+                                            {/* Gross sale */}
+                                            <td className="px-4 py-3.5 text-right">
+                                                <span className="font-black text-slate-900 dark:text-white">${fmt(order.total)}</span>
+                                            </td>
+
+                                            {/* Net income */}
+                                            <td className="px-4 py-3.5 text-right">
+                                                <span className="font-bold text-slate-700 dark:text-slate-300">${fmt(order.netIncome)}</span>
+                                                {order.mlCommission > 0 && (
+                                                    <span className="block text-[9px] text-red-400 font-bold">-${fmt(order.mlCommission)}</span>
+                                                )}
+                                            </td>
+
+                                            {/* Amazon buy */}
+                                            <td className="px-4 py-3.5 text-center">
+                                                {order.amazonStatus === 'purchased' ? (
+                                                    <span className="inline-flex items-center gap-1 text-[10px] font-black text-green-600 dark:text-green-400 bg-green-100 dark:bg-green-900/30 px-2 py-1 rounded-lg">
+                                                        <span className="material-symbols-outlined text-[13px]">check_circle</span>
+                                                        COMPRADO
+                                                    </span>
+                                                ) : order.amazonAsin ? (
+                                                    <button
+                                                        onClick={() => handleBuyClick(order)}
+                                                        title={`Abrir en ${getAmazonDomain(order.amazonAsin)} y marcar como comprado`}
+                                                        className="inline-flex items-center gap-1 bg-slate-900 dark:bg-slate-200 text-white dark:text-slate-900 px-2.5 py-1.5 rounded-lg text-[10px] font-black hover:bg-slate-700 dark:hover:bg-white transition-colors"
+                                                    >
+                                                        <span className="material-symbols-outlined text-[12px]">open_in_new</span>
+                                                        {asinCur === 'USD' ? 'amazon.com' : 'amazon.mx'}
+                                                    </button>
+                                                ) : (
+                                                    <span className="text-[10px] text-slate-300 dark:text-slate-600 italic">Sin ASIN</span>
+                                                )}
+                                            </td>
+
+                                            {/* Real cost (inline editable) */}
+                                            <td className="px-4 py-3.5 text-right">
+                                                {order.amazonStatus === 'purchased' ? (
+                                                    <div className="flex flex-col items-end gap-0.5">
+                                                        <div className="flex items-center gap-0.5">
+                                                            <span className="text-xs text-slate-400">$</span>
+                                                            <input
+                                                                type="number"
+                                                                min="0"
+                                                                step="0.01"
+                                                                defaultValue={order.amazonPurchasePrice ?? ''}
+                                                                key={`${order.id}-${order.amazonPurchasePrice ?? 'empty'}`}
+                                                                onBlur={e => handleCostBlur(order, e.target.value)}
+                                                                placeholder="0.00"
+                                                                className="w-20 pr-1 py-1 text-xs text-right border border-slate-200 dark:border-slate-600 rounded-lg bg-slate-50 dark:bg-slate-900 text-slate-800 dark:text-slate-200 focus:border-primary outline-none font-bold"
+                                                            />
+                                                        </div>
+                                                        <span className="text-[9px] text-slate-400 font-bold uppercase tracking-wide">{asinCur}</span>
+                                                    </div>
+                                                ) : (
+                                                    <span className="text-xs text-slate-300 dark:text-slate-600">—</span>
+                                                )}
+                                            </td>
+
+                                            {/* Profit */}
+                                            <td className="px-4 py-3.5 text-right">
+                                                {ganancia != null ? (
+                                                    <span className={`text-sm font-black ${ganancia >= 0 ? 'text-green-600 dark:text-green-400' : 'text-red-500'}`}>
+                                                        {ganancia >= 0 ? '+' : ''}${fmt(ganancia)}
+                                                    </span>
+                                                ) : (
+                                                    <span className="text-xs text-slate-300 dark:text-slate-600">—</span>
+                                                )}
+                                            </td>
+                                        </tr>
+                                    );
+                                })}
+                            </tbody>
+                        </table>
+                    </div>
+
+                    {/* Table footer */}
+                    {!loading && filteredOrders.length > 0 && (
+                        <div className="px-5 py-3 bg-slate-50 dark:bg-slate-900/50 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between text-xs text-slate-400">
+                            <span>{filteredOrders.length} orden{filteredOrders.length !== 1 ? 'es' : ''}</span>
+                            <span>
+                                {filteredOrders.filter(o => o.amazonStatus === 'purchased').length} compradas ·{' '}
+                                {filteredOrders.filter(o => o.amazonStatus === 'pending' && o.status !== 'cancelled').length} pendientes
+                            </span>
+                        </div>
+                    )}
+                </div>
+
+                {/* Bulk selection bar */}
+                {selectedIds.length > 0 && (
+                    <div className="fixed bottom-6 left-1/2 -translate-x-1/2 bg-slate-900 text-white px-8 py-4 rounded-2xl shadow-2xl flex items-center gap-8 z-50">
+                        <span className="text-sm font-black uppercase">{selectedIds.length} seleccionada{selectedIds.length !== 1 ? 's' : ''}</span>
+                        <button onClick={() => setSelectedIds([])} className="text-[11px] font-black text-red-400 hover:text-red-300">Descartar</button>
+                    </div>
                 )}
-              </tbody>
-            </table>
-          </div>
-        </div>
-
-        {selectedIds.length > 0 && (
-          <div className="fixed bottom-6 left-1/2 -translate-x-1/2 bg-slate-900 text-white px-8 py-4 rounded-2xl shadow-2xl flex items-center gap-8 animate-slide-up z-50"><span className="text-sm font-black uppercase">{selectedIds.length} Seleccionadas</span><button onClick={() => setSelectedIds([])} className="text-[11px] font-black text-red-400">Descartar</button></div>
-        )}
-      </div>
-
-      {purchaseModal && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/70 backdrop-blur-md">
-          <div className="bg-white dark:bg-slate-800 w-full max-w-md rounded-3xl shadow-2xl overflow-hidden">
-            <div className="p-6 border-b flex justify-between items-center"><h3 className="text-lg font-black uppercase">Costo Real Amazon</h3><button onClick={() => setPurchaseModal(null)} className="text-slate-400"><span className="material-symbols-outlined">close</span></button></div>
-            <div className="p-8 space-y-6">
-              <div className="space-y-3"><label className="text-[10px] font-black text-slate-500 uppercase">Monto Final Pagado</label><div className="relative"><span className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 font-black text-xl">$</span><input type="number" autoFocus value={purchasePrice} onChange={(e) => setPurchasePrice(e.target.value)} className="w-full pl-10 pr-4 py-4 bg-slate-50 dark:bg-slate-900 border-2 rounded-2xl font-black text-2xl text-slate-900 dark:text-white focus:border-primary" /></div></div>
             </div>
-            <div className="p-6 bg-slate-50 dark:bg-slate-900/50 flex gap-4"><button onClick={() => setPurchaseModal(null)} className="flex-1 py-4 text-xs font-black text-slate-500 uppercase">Cancelar</button><button onClick={handleRegisterPurchase} disabled={!purchasePrice} className="flex-1 py-4 text-xs font-black bg-primary text-white rounded-2xl">REGISTRAR</button></div>
-          </div>
         </div>
-      )}
-    </div>
-  );
+    );
 };

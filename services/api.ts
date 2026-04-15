@@ -121,6 +121,21 @@ export const api = {
 
             if (error) throw error;
         },
+        // Single lightweight query: ASIN (stored as sku) → currency for Amazon link routing.
+        async getCurrencyMap(): Promise<Record<string, 'USD' | 'MXN'>> {
+            const { data, error } = await supabase
+                .from('products')
+                .select('sku, currency');
+
+            if (error) throw error;
+
+            const map: Record<string, 'USD' | 'MXN'> = {};
+            for (const row of data ?? []) {
+                if (row.sku) map[row.sku] = row.currency === 'MXN' ? 'MXN' : 'USD';
+            }
+            return map;
+        },
+
         async bulkUpsert(products: Partial<Product>[]): Promise<void> {
             const { data: { user } } = await supabase.auth.getUser();
             if (!user) throw new Error("User not authenticated");
@@ -161,14 +176,45 @@ export const api = {
                 id: o.id,
                 productTitle: o.product_title,
                 buyerName: o.buyer_name,
-                total: o.total,
+                total: o.total ?? 0,
+                netIncome: o.net_income ?? o.total ?? 0,
+                mlCommission: o.ml_commission ?? 0,
+                meliItemId: o.meli_item_id ?? '',
                 status: o.status,
                 date: o.date,
                 shippingDeadline: o.shipping_deadline,
-                amazonStatus: o.amazon_status,
+                amazonStatus: o.amazon_status ?? 'pending',
                 amazonPurchasePrice: o.amazon_purchase_price,
-                amazonAsin: o.amazon_asin,
-                amazonMarketplace: o.amazon_marketplace
+                amazonAsin: o.amazon_asin ?? '',
+                amazonMarketplace: o.amazon_marketplace ?? 'MX',
+            }));
+        },
+
+        async listWithDateRange(dateFrom: string, dateTo: string): Promise<Order[]> {
+            const { data, error } = await supabase
+                .from('orders')
+                .select('*')
+                .gte('date', dateFrom)
+                .lte('date', dateTo)
+                .order('date', { ascending: false });
+
+            if (error) throw error;
+
+            return (data ?? []).map(o => ({
+                id: o.id,
+                productTitle: o.product_title ?? '',
+                buyerName: o.buyer_name ?? '',
+                total: o.total ?? 0,
+                netIncome: o.net_income ?? o.total ?? 0,
+                mlCommission: o.ml_commission ?? 0,
+                meliItemId: o.meli_item_id ?? '',
+                status: o.status ?? 'pending',
+                date: o.date ?? '',
+                shippingDeadline: o.shipping_deadline ?? '',
+                amazonStatus: o.amazon_status ?? 'pending',
+                amazonPurchasePrice: o.amazon_purchase_price,
+                amazonAsin: o.amazon_asin ?? '',
+                amazonMarketplace: o.amazon_marketplace ?? 'MX',
             }));
         },
 
@@ -194,9 +240,11 @@ export const api = {
                 ...o
             }));
 
+            // ignoreDuplicates: true preserves existing amazon_status / amazon_purchase_price
+            // for orders the user has already marked as purchased.
             const { error } = await supabase
                 .from('orders')
-                .upsert(payloads, { onConflict: 'id' });
+                .upsert(payloads, { onConflict: 'id', ignoreDuplicates: true });
 
             if (error) throw error;
         }

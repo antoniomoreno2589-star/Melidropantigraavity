@@ -376,6 +376,37 @@ class MeliService {
         }
     }
 
+    // Paginated order fetch with optional date range (ISO strings with timezone).
+    // ML Orders API filter params: order.date_created.from / order.date_created.to
+    async getOrdersFiltered(dateFrom?: string, dateTo?: string): Promise<any[]> {
+        const creds = this.getCredentials();
+        if (!creds) return [];
+        try {
+            let allOrders: any[] = [];
+            let offset = 0;
+            const limit = 50;
+
+            while (allOrders.length < 300) {
+                let url = `/orders/search?seller=${creds.id}&limit=${limit}&offset=${offset}&sort=date_desc`;
+                if (dateFrom) url += `&order.date_created.from=${encodeURIComponent(dateFrom)}`;
+                if (dateTo)   url += `&order.date_created.to=${encodeURIComponent(dateTo)}`;
+
+                const res = await this.fetchWithAuth(url);
+                if (!res.ok) break;
+
+                const data = await res.json();
+                const results: any[] = data.results || [];
+                allOrders = [...allOrders, ...results];
+                if (results.length < limit) break;
+                offset += limit;
+            }
+            return allOrders;
+        } catch (e) {
+            console.error('meliService.getOrdersFiltered error:', e);
+            return [];
+        }
+    }
+
     async getQuestionsCount() {
         const creds = this.getCredentials();
         if (!creds) return 0;

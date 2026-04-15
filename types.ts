@@ -17,14 +17,17 @@ export interface Order {
   id: string;
   productTitle: string;
   buyerName: string;
-  total: number;
-  status: 'pending' | 'shipped' | 'delivered' | 'cancelled';
-  date: string;
-  shippingDeadline: string; // YYYY-MM-DD
+  total: number;          // Gross ML sale amount
+  netIncome: number;      // After ML commission + shipping (net_received_amount)
+  mlCommission: number;   // ML marketplace fee
+  meliItemId: string;     // ML item ID (for catalog cross-reference)
+  status: 'pending' | 'paid' | 'shipped' | 'delivered' | 'cancelled';
+  date: string;           // YYYY-MM-DD
+  shippingDeadline: string;
   amazonStatus: 'pending' | 'purchased';
-  amazonPurchasePrice?: number;
+  amazonPurchasePrice?: number; // Amazon cost at time of purchase
   amazonAsin: string;
-  amazonMarketplace: 'US' | 'MX'; // New field to determine link
+  amazonMarketplace: 'US' | 'MX';
 }
 
 export interface User {
