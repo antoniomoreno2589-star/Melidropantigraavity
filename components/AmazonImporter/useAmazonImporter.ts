@@ -256,20 +256,24 @@ export function useAmazonImporter() {
     };
 
     // ── Pricing helpers ────────────────────────────────────────────────
-    const calculateMexicoPrice = (costUSD: number): number => {
+    const calculateMexicoPrice = (cost: number, currency: string): number => {
+        const isUSD = (currency?.toUpperCase() ?? 'USD') !== 'MXN';
         const exchangeRate = parseFloat(localStorage.getItem('melidrop_exchange_rate') || '18.5');
-        const savedRulesRaw = localStorage.getItem('melidrop_usa_rules');
+        const rulesKey = isUSD ? 'melidrop_usa_rules' : 'melidrop_mx_rules';
+        const savedRulesRaw = localStorage.getItem(rulesKey);
+        const defaultRules = isUSD
+            ? [{ min: 0, max: 20, margin: 200 }, { min: 21, max: 50, margin: 100 }, { min: 51, max: null, margin: 50 }]
+            : [{ min: 0, max: 300, margin: 150 }, { min: 301, max: 600, margin: 130 }, { min: 601, max: null, margin: 80 }];
         const rules: Array<{ min: number; max: number | null; margin: number }> = savedRulesRaw
             ? JSON.parse(savedRulesRaw)
-            : [
-                { min: 0, max: 20, margin: 200 },
-                { min: 21, max: 50, margin: 100 },
-                { min: 51, max: null, margin: 50 }
-            ];
-        const rule = rules.find(r => costUSD >= r.min && (r.max === null || costUSD <= r.max))
+            : defaultRules;
+        const rule = rules.find(r => cost >= r.min && (r.max === null || cost <= r.max))
             || rules[rules.length - 1];
         const margin = rule?.margin ?? 50;
-        return Math.ceil(costUSD * exchangeRate * (1 + margin / 100));
+        // USD → convert to MXN then apply margin; MXN → apply margin directly
+        return isUSD
+            ? Math.ceil(cost * exchangeRate * (1 + margin / 100))
+            : Math.ceil(cost * (1 + margin / 100));
     };
 
     const buildItemPayload = (processed: ProcessedProduct) => {
@@ -285,7 +289,9 @@ export function useAmazonImporter() {
             { id: 'SELLER_SKU', value_name: processed.asin }
         ];
 
-        const priceMXN = calculateMexicoPrice(product.price || 0);
+        const currency = product.currency || 'USD';
+        const isUSD = currency.toUpperCase() !== 'MXN';
+        const priceMXN = calculateMexicoPrice(product.price || 0, currency);
         const baseDescription = product.description
             ? product.description.substring(0, 2000)
             : `${product.title}. Producto nuevo, condición original de fábrica.`;
@@ -295,8 +301,12 @@ export function useAmazonImporter() {
             : baseDescription;
         const pictureUrls = Array.from(new Set(processed.images.map(i => i.url))).slice(0, 10);
 
-        const handlingTimeKey = sourceAmazon === 'usa' ? 'melidrop_handling_time_usa' : 'melidrop_handling_time_mx';
-        const handlingTime = parseInt(localStorage.getItem(handlingTimeKey) || (sourceAmazon === 'usa' ? '7' : '3'));
+        // handling_time = días que Amazon tarda en entregar a tu bodega + días de preparación
+        const prepKey     = isUSD ? 'melidrop_handling_time_usa'     : 'melidrop_handling_time_mx';
+        const deliveryKey = isUSD ? 'melidrop_amazon_delivery_usa'   : 'melidrop_amazon_delivery_mx';
+        const prepDays     = parseInt(localStorage.getItem(prepKey)     || (isUSD ? '7' : '3'));
+        const deliveryDays = parseInt(localStorage.getItem(deliveryKey) || (isUSD ? '5' : '3'));
+        const handlingTime = prepDays + deliveryDays;
         const availableQty = parseInt(localStorage.getItem('melidrop_default_stock') || '3');
         const warrantyMonths = parseInt(localStorage.getItem('melidrop_warranty_months') || '1');
 

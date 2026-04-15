@@ -186,6 +186,9 @@ export const SettingsPage = () => {
     const [exchangeRate, setExchangeRate] = useState<number>(() => parseFloat(localStorage.getItem('melidrop_exchange_rate') || '18.24'));
     const [usaHandlingTime, setUsaHandlingTime] = useState<number>(() => parseInt(localStorage.getItem('melidrop_handling_time_usa') || '7'));
     const [mxHandlingTime, setMxHandlingTime] = useState<number>(() => parseInt(localStorage.getItem('melidrop_handling_time_mx') || '3'));
+    const [usaDeliveryDays, setUsaDeliveryDays] = useState<number>(() => parseInt(localStorage.getItem('melidrop_amazon_delivery_usa') || '5'));
+    const [mxDeliveryDays, setMxDeliveryDays] = useState<number>(() => parseInt(localStorage.getItem('melidrop_amazon_delivery_mx') || '3'));
+    const [postalCode, setPostalCode] = useState<string>(() => localStorage.getItem('melidrop_postal_code') || '');
     const [usaDefaultMargin, setUsaDefaultMargin] = useState<number>(30);
     const [mxDefaultMargin, setMxDefaultMargin] = useState<number>(20);
     const [isUpdatingDolar, setIsUpdatingDolar] = useState(false);
@@ -299,6 +302,9 @@ export const SettingsPage = () => {
         localStorage.setItem('melidrop_global_filters', globalFilters);
         localStorage.setItem('melidrop_handling_time_usa', usaHandlingTime.toString());
         localStorage.setItem('melidrop_handling_time_mx', mxHandlingTime.toString());
+        localStorage.setItem('melidrop_amazon_delivery_usa', usaDeliveryDays.toString());
+        localStorage.setItem('melidrop_amazon_delivery_mx', mxDeliveryDays.toString());
+        localStorage.setItem('melidrop_postal_code', postalCode);
         localStorage.setItem('melidrop_warranty_months', warrantyMonths.toString());
         localStorage.setItem('melidrop_description_suffix', descriptionSuffix);
         localStorage.setItem('melidrop_sync_params', JSON.stringify(syncParams));
@@ -338,6 +344,30 @@ export const SettingsPage = () => {
                     {/* AMAZON CONNECT CARD */}
                     <div className="lg:col-span-2">
                         <AmazonConnect />
+                    </div>
+
+                    {/* POSTAL CODE */}
+                    <div className="lg:col-span-2 bg-surface-light dark:bg-surface-dark rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 p-6 flex flex-col sm:flex-row items-start sm:items-center gap-4">
+                        <div className="p-2 rounded-lg bg-indigo-100 text-indigo-600 flex-shrink-0">
+                            <span className="material-symbols-outlined">pin_drop</span>
+                        </div>
+                        <div className="flex-1">
+                            <p className="text-sm font-black text-slate-900 dark:text-white">Código Postal de tu Bodega / Domicilio</p>
+                            <p className="text-xs text-slate-500 mt-0.5">Se usa para estimar tiempos de entrega de Amazon a tu ubicación. Ingresa los días manualmente en cada sección.</p>
+                        </div>
+                        <div className="relative w-40 flex-shrink-0">
+                            <input
+                                type="text"
+                                maxLength={10}
+                                value={postalCode}
+                                onChange={e => setPostalCode(e.target.value.replace(/\D/g, ''))}
+                                placeholder="64000"
+                                className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg px-3 py-2 text-sm font-black text-center tracking-widest"
+                            />
+                        </div>
+                        <button onClick={() => handleSaveSection('Código Postal')} className="flex-shrink-0 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-black rounded-lg text-xs transition-all">
+                            Guardar CP
+                        </button>
                     </div>
 
                     {/* AMAZON USA CARD */}
@@ -392,7 +422,27 @@ export const SettingsPage = () => {
                                         <span className="absolute right-3 top-2 text-slate-400 text-xs">días</span>
                                     </div>
                                 </div>
-                                <p className="text-[10px] text-slate-400 italic">Tiempo entre compra del cliente y envío a ML (incluye entrega Amazon → tú). Se envía como <code>handling_time</code> a MercadoLibre.</p>
+                                <p className="text-[10px] text-slate-400 italic">Días de tu proceso interno antes de enviar al cliente.</p>
+                            </div>
+                            <div className="flex flex-col gap-2">
+                                <label className="text-xs font-semibold text-slate-500 uppercase flex items-center gap-1">
+                                    <span className="material-symbols-outlined text-[14px] text-blue-500">local_shipping</span>
+                                    Amazon USA → Tu bodega (días de entrega)
+                                </label>
+                                <div className="relative">
+                                    <input
+                                        className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg px-3 py-2 text-sm font-black"
+                                        type="number" min="1" max="30"
+                                        value={usaDeliveryDays}
+                                        onChange={(e) => setUsaDeliveryDays(Math.max(1, parseInt(e.target.value) || 1))}
+                                    />
+                                    <span className="absolute right-3 top-2 text-slate-400 text-xs">días</span>
+                                </div>
+                                <div className="bg-slate-100 dark:bg-slate-800 rounded-lg px-3 py-2 flex items-center justify-between">
+                                    <span className="text-xs text-slate-500">Total handling_time en ML:</span>
+                                    <span className="text-sm font-black text-primary">{usaDeliveryDays + usaHandlingTime} días</span>
+                                </div>
+                                <p className="text-[10px] text-slate-400 italic">ML esperará este total antes de exigirte el envío al cliente.</p>
                             </div>
                         </div>
                         <div className="p-4 bg-slate-50 dark:bg-slate-800/50 border-t border-slate-100 dark:border-slate-800">
@@ -435,7 +485,27 @@ export const SettingsPage = () => {
                                     />
                                     <span className="absolute right-3 top-2 text-slate-400 text-xs">días</span>
                                 </div>
-                                <p className="text-[10px] text-slate-400 italic">Tiempo entre compra del cliente y envío desde Amazon MX. Se envía como <code>handling_time</code> a MercadoLibre.</p>
+                                <p className="text-[10px] text-slate-400 italic">Días de tu proceso interno antes de enviar al cliente.</p>
+                            </div>
+                            <div className="flex flex-col gap-2">
+                                <label className="text-xs font-semibold text-slate-500 uppercase flex items-center gap-1">
+                                    <span className="material-symbols-outlined text-[14px] text-blue-500">local_shipping</span>
+                                    Amazon MX → Tu bodega (días de entrega)
+                                </label>
+                                <div className="relative">
+                                    <input
+                                        className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg px-3 py-2 text-sm font-black"
+                                        type="number" min="1" max="30"
+                                        value={mxDeliveryDays}
+                                        onChange={(e) => setMxDeliveryDays(Math.max(1, parseInt(e.target.value) || 1))}
+                                    />
+                                    <span className="absolute right-3 top-2 text-slate-400 text-xs">días</span>
+                                </div>
+                                <div className="bg-slate-100 dark:bg-slate-800 rounded-lg px-3 py-2 flex items-center justify-between">
+                                    <span className="text-xs text-slate-500">Total handling_time en ML:</span>
+                                    <span className="text-sm font-black text-primary">{mxDeliveryDays + mxHandlingTime} días</span>
+                                </div>
+                                <p className="text-[10px] text-slate-400 italic">ML esperará este total antes de exigirte el envío al cliente.</p>
                             </div>
                         </div>
                         <div className="p-4 bg-slate-50 dark:bg-slate-800/50 border-t border-slate-100 dark:border-slate-800">
@@ -692,9 +762,9 @@ export const SettingsPage = () => {
                                 <label className="text-xs font-black text-slate-500 uppercase mb-3 block">Frecuencia de Actualización</label>
                                 <div className="grid grid-cols-3 gap-2">
                                     {([
-                                        { hours: 6,  label: 'Cada 6h',  badge: 'Alta frecuencia',   color: 'text-amber-600' },
-                                        { hours: 12, label: 'Cada 12h', badge: 'Media frecuencia',   color: 'text-blue-600'  },
-                                        { hours: 24, label: 'Cada 24h', badge: '✓ Recomendado',      color: 'text-green-600' },
+                                        { hours: 24,  label: 'Cada día',    badge: '✓ Recomendado', color: 'text-green-600' },
+                                        { hours: 72,  label: 'Cada 3 días', badge: 'Moderado',       color: 'text-blue-600'  },
+                                        { hours: 120, label: 'Cada 5 días', badge: 'Conservador',    color: 'text-slate-500' },
                                     ] as const).map(opt => (
                                         <button key={opt.hours} onClick={() => setSyncFrequencyHours(opt.hours)}
                                             className={`p-3 rounded-xl border-2 text-left transition-all ${syncFrequencyHours === opt.hours ? 'border-primary bg-primary/5' : 'border-slate-200 dark:border-slate-700 hover:border-slate-300'}`}>
@@ -704,7 +774,7 @@ export const SettingsPage = () => {
                                     ))}
                                 </div>
                                 <p className="text-[10px] text-slate-400 italic mt-2">
-                                    Lotes de 200 productos con pausa de 5 min entre lotes. Ciclo completo de 20k productos ≈ 10h.
+                                    Lotes de 200 productos por ejecución (cron cada 10 min). Ciclo completo de 20k ≈ 17h.
                                 </p>
                             </div>
                         </div>
