@@ -286,13 +286,19 @@ export function useAmazonImporter() {
         ];
 
         const priceMXN = calculateMexicoPrice(product.price || 0);
-        const descriptionText = product.description
-            ? product.description.substring(0, 3000)
+        const baseDescription = product.description
+            ? product.description.substring(0, 2000)
             : `${product.title}. Producto nuevo, condición original de fábrica.`;
+        const descriptionSuffix = localStorage.getItem('melidrop_description_suffix') || '';
+        const descriptionText = descriptionSuffix
+            ? `${baseDescription}\n\n${descriptionSuffix}`.substring(0, 5000)
+            : baseDescription;
         const pictureUrls = Array.from(new Set(processed.images.map(i => i.url))).slice(0, 10);
 
         const handlingTimeKey = sourceAmazon === 'usa' ? 'melidrop_handling_time_usa' : 'melidrop_handling_time_mx';
         const handlingTime = parseInt(localStorage.getItem(handlingTimeKey) || (sourceAmazon === 'usa' ? '7' : '3'));
+        const availableQty = parseInt(localStorage.getItem('melidrop_default_stock') || '3');
+        const warrantyMonths = parseInt(localStorage.getItem('melidrop_warranty_months') || '1');
 
         return {
             title,
@@ -300,11 +306,12 @@ export function useAmazonImporter() {
             category_id: catId,
             price: priceMXN,
             currency_id: marketplace === 'MLM' ? 'MXN' : 'USD',
-            available_quantity: 10,
+            available_quantity: availableQty,
             buying_mode: 'buy_it_now',
             listing_type_id: listingType,
             condition: 'new',
             handling_time: handlingTime,
+            warranty: warrantyMonths > 0 ? `Garantía del vendedor: ${warrantyMonths} ${warrantyMonths === 1 ? 'mes' : 'meses'}` : undefined,
             description: { plain_text: descriptionText },
             seller_custom_field: processed.asin,
             pictures: pictureUrls.map(url => ({ source: url })),

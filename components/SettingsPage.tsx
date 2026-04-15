@@ -92,6 +92,22 @@ const PriceRuleManager = ({
     );
 };
 
+const DEFAULT_DESCRIPTION_SUFFIX = `==========================================
+IMPORTANTE:
+Este producto se importa de Estados Unidos
+Por favor revisa la fecha de entrega antes de comprar
+==========================================
+
+Este producto ha sido seleccionado cuidadosamente para ofrecerte la mejor calidad y desempeño. Ideal para quienes buscan confiabilidad y funcionalidad en su compra.
+
+¿Por qué elegirnos?
+
+Factura disponible: Al realizar tu compra, solicítanos la factura y con gusto te la enviaremos.
+Garantía de 30 días: Si no quedas satisfecho con el producto o presenta algún defecto, puedes realizar devoluciones sin problema durante los primeros 30 días.
+Compra con confianza, estamos comprometidos en ofrecerte productos de excelente calidad y un servicio de atención al cliente sobresaliente.
+
+¡Haz tu compra ahora y recibe tu producto en la puerta de tu hogar!`;
+
 export const SettingsPage = () => {
     const [testUser, setTestUser] = useState<any>(null);
     const [testUserLoading, setTestUserLoading] = useState(false);
@@ -175,6 +191,29 @@ export const SettingsPage = () => {
     const [isUpdatingDolar, setIsUpdatingDolar] = useState(false);
     const [globalFilters, setGlobalFilters] = useState("Nike\nAdidas\nReacondicionado");
 
+    const [warrantyMonths, setWarrantyMonths] = useState<number>(() =>
+        parseInt(localStorage.getItem('melidrop_warranty_months') || '1')
+    );
+    const [descriptionSuffix, setDescriptionSuffix] = useState<string>(() =>
+        localStorage.getItem('melidrop_description_suffix') ?? DEFAULT_DESCRIPTION_SUFFIX
+    );
+    const [syncParams, setSyncParams] = useState<{ price: boolean; stock: boolean; shipping: boolean; description: boolean }>(() => {
+        const saved = localStorage.getItem('melidrop_sync_params');
+        return saved ? JSON.parse(saved) : { price: true, stock: true, shipping: false, description: false };
+    });
+    const [defaultStock, setDefaultStock] = useState<number>(() =>
+        parseInt(localStorage.getItem('melidrop_default_stock') || '3')
+    );
+    const [autoPromos, setAutoPromos] = useState<boolean>(() =>
+        localStorage.getItem('melidrop_auto_promos') === 'true'
+    );
+    const [allowPriceDecrease, setAllowPriceDecrease] = useState<boolean>(() =>
+        localStorage.getItem('melidrop_allow_price_decrease') === 'true'
+    );
+    const [syncFrequencyHours, setSyncFrequencyHours] = useState<number>(() =>
+        parseInt(localStorage.getItem('melidrop_sync_frequency_hours') || '24')
+    );
+
     const updateDolarOnline = async () => {
         setIsUpdatingDolar(true);
         try {
@@ -205,6 +244,13 @@ export const SettingsPage = () => {
         localStorage.setItem('melidrop_global_filters', globalFilters);
         localStorage.setItem('melidrop_handling_time_usa', usaHandlingTime.toString());
         localStorage.setItem('melidrop_handling_time_mx', mxHandlingTime.toString());
+        localStorage.setItem('melidrop_warranty_months', warrantyMonths.toString());
+        localStorage.setItem('melidrop_description_suffix', descriptionSuffix);
+        localStorage.setItem('melidrop_sync_params', JSON.stringify(syncParams));
+        localStorage.setItem('melidrop_default_stock', defaultStock.toString());
+        localStorage.setItem('melidrop_auto_promos', autoPromos.toString());
+        localStorage.setItem('melidrop_allow_price_decrease', allowPriceDecrease.toString());
+        localStorage.setItem('melidrop_sync_frequency_hours', syncFrequencyHours.toString());
 
         // Sync to Supabase
         const { data: { user } } = await supabase.auth.getUser();
@@ -212,7 +258,13 @@ export const SettingsPage = () => {
             await supabase.from('user_connections').upsert({
                 user_id: user.id,
                 exchange_rate: exchangeRate,
-                margin_rules: { usa: usaRules, mx: mxRules, filters: globalFilters, handling_time_usa: usaHandlingTime, handling_time_mx: mxHandlingTime }
+                margin_rules: {
+                    usa: usaRules, mx: mxRules, filters: globalFilters,
+                    handling_time_usa: usaHandlingTime, handling_time_mx: mxHandlingTime,
+                    warranty_months: warrantyMonths, default_stock: defaultStock,
+                    sync_params: syncParams, auto_promos: autoPromos,
+                    allow_price_decrease: allowPriceDecrease, sync_frequency_hours: syncFrequencyHours
+                }
             });
         }
 
@@ -448,6 +500,163 @@ export const SettingsPage = () => {
                             <button onClick={() => handleSaveSection('Filtros Globales')} className="w-full bg-slate-800 hover:bg-slate-900 dark:bg-slate-100 dark:text-slate-900 text-white font-black py-3 px-4 rounded-xl shadow-sm transition-all flex items-center justify-center gap-2 text-sm uppercase">
                                 <span className="material-symbols-outlined text-[18px]">save</span>
                                 Aplicar Filtros Globales
+                            </button>
+                        </div>
+                    </section>
+
+                    {/* GARANTÍA Y DESCRIPCIÓN */}
+                    <section className="flex flex-col lg:col-span-2 bg-surface-light dark:bg-surface-dark rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 overflow-hidden">
+                        <div className="px-6 py-5 border-b border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-800/50 flex items-center gap-3">
+                            <div className="p-2 rounded-lg bg-emerald-100 text-emerald-600">
+                                <span className="material-symbols-outlined">verified_user</span>
+                            </div>
+                            <h2 className="text-lg font-bold text-slate-900 dark:text-white uppercase tracking-tighter">Garantía y Descripción</h2>
+                        </div>
+                        <div className="p-6 space-y-6">
+                            <div className="flex flex-col gap-2">
+                                <label className="text-xs font-black text-slate-500 uppercase">Garantía por Defecto</label>
+                                <div className="flex items-center gap-3">
+                                    <div className="relative w-40">
+                                        <input
+                                            type="number" min="0" max="60"
+                                            value={warrantyMonths}
+                                            onChange={e => setWarrantyMonths(Math.max(0, parseInt(e.target.value) || 0))}
+                                            className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg px-3 py-2 text-sm font-black"
+                                        />
+                                        <span className="absolute right-3 top-2 text-slate-400 text-xs">meses</span>
+                                    </div>
+                                </div>
+                                <p className="text-[10px] text-slate-400 italic">Se enviará como "Garantía del vendedor: N mes(es)" en cada publicación de MercadoLibre.</p>
+                            </div>
+                            <div className="flex flex-col gap-2">
+                                <label className="text-xs font-black text-slate-500 uppercase">Texto Adicional en Todas las Descripciones</label>
+                                <p className="text-[10px] text-slate-500">Se agrega al final de la descripción tomada de Amazon en cada publicación.</p>
+                                <textarea
+                                    value={descriptionSuffix}
+                                    onChange={e => setDescriptionSuffix(e.target.value)}
+                                    rows={12}
+                                    className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-xl px-4 py-3 text-sm font-mono focus:ring-primary resize-y"
+                                />
+                            </div>
+                        </div>
+                        <div className="p-4 bg-slate-50 dark:bg-slate-800/50 border-t border-slate-100 dark:border-slate-800">
+                            <button onClick={() => handleSaveSection('Garantía y Descripción')} className="w-full bg-slate-800 hover:bg-slate-900 dark:bg-slate-100 dark:text-slate-900 text-white font-black py-3 px-4 rounded-xl shadow-sm transition-all flex items-center justify-center gap-2 text-sm uppercase">
+                                <span className="material-symbols-outlined text-[18px]">save</span>
+                                Guardar Garantía y Descripción
+                            </button>
+                        </div>
+                    </section>
+
+                    {/* ACTUALIZADOR */}
+                    <section className="flex flex-col lg:col-span-2 bg-surface-light dark:bg-surface-dark rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 overflow-hidden">
+                        <div className="px-6 py-5 border-b border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-800/50 flex items-center gap-3">
+                            <div className="p-2 rounded-lg bg-blue-100 text-blue-600">
+                                <span className="material-symbols-outlined">sync</span>
+                            </div>
+                            <h2 className="text-lg font-bold text-slate-900 dark:text-white uppercase tracking-tighter">Actualizador Amazon → MercadoLibre</h2>
+                        </div>
+                        <div className="p-6 space-y-6">
+                            <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-xl p-4">
+                                <p className="font-black text-amber-800 dark:text-amber-200 text-sm flex items-center gap-2">
+                                    <span className="material-symbols-outlined text-[18px]">info</span>
+                                    Recomendación para +20,000 publicaciones
+                                </p>
+                                <p className="text-xs text-amber-700 dark:text-amber-300 mt-2 leading-relaxed">
+                                    La API de MercadoLibre permite ~3,600 req/hora. Actualizar 20k productos de golpe tomaría más de 5h solo en llamadas a ML,
+                                    más las consultas a Amazon SP-API. El sistema procesa en <strong>lotes de 200 productos con pausas de 5 min</strong> entre lotes
+                                    → ciclo completo de 20k en ~10h, sin riesgo de bloqueo. <strong>Frecuencia recomendada: 1 vez al día.</strong>
+                                </p>
+                            </div>
+
+                            <div>
+                                <label className="text-xs font-black text-slate-500 uppercase mb-3 block">Parámetros a Sincronizar</label>
+                                <div className="grid grid-cols-2 gap-2">
+                                    {([
+                                        { key: 'price',       label: '💰 Precio',          desc: 'Actualiza el precio según Amazon' },
+                                        { key: 'stock',       label: '📦 Stock',            desc: 'Sincroniza disponibilidad' },
+                                        { key: 'shipping',    label: '🚚 Tiempo de envío',  desc: 'Actualiza handling_time' },
+                                        { key: 'description', label: '📝 Descripción',      desc: 'Sincroniza descripción del producto' },
+                                    ] as const).map(p => (
+                                        <label key={p.key} className="flex items-start gap-3 p-3 rounded-xl border border-slate-200 dark:border-slate-700 cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors">
+                                            <input
+                                                type="checkbox"
+                                                checked={syncParams[p.key]}
+                                                onChange={e => setSyncParams((prev: typeof syncParams) => ({ ...prev, [p.key]: e.target.checked }))}
+                                                className="mt-0.5 accent-primary"
+                                            />
+                                            <div>
+                                                <p className="text-sm font-bold text-slate-900 dark:text-white">{p.label}</p>
+                                                <p className="text-xs text-slate-500">{p.desc}</p>
+                                            </div>
+                                        </label>
+                                    ))}
+                                </div>
+                            </div>
+
+                            <div className="flex flex-col gap-2">
+                                <label className="text-xs font-black text-slate-500 uppercase">Stock por Defecto al Importar</label>
+                                <div className="relative w-40">
+                                    <input
+                                        type="number" min="1" max="999"
+                                        value={defaultStock}
+                                        onChange={e => setDefaultStock(Math.max(1, parseInt(e.target.value) || 1))}
+                                        className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg px-3 py-2 text-sm font-black"
+                                    />
+                                    <span className="absolute right-3 top-2 text-slate-400 text-xs">pzas</span>
+                                </div>
+                                <p className="text-[10px] text-slate-400 italic">Cantidad disponible asignada a cada publicación nueva en MercadoLibre.</p>
+                            </div>
+
+                            <div>
+                                <label className="text-xs font-black text-slate-500 uppercase mb-3 block">Opciones de Precio</label>
+                                <div className="space-y-3">
+                                    <div className="flex items-center justify-between p-3 rounded-xl border border-slate-200 dark:border-slate-700">
+                                        <div>
+                                            <p className="text-sm font-bold text-slate-900 dark:text-white">🎯 Crear Promociones Automáticas</p>
+                                            <p className="text-xs text-slate-500">Cuando Amazon baja el precio, crea una promoción en MercadoLibre.</p>
+                                        </div>
+                                        <div onClick={() => setAutoPromos(v => !v)}
+                                            className={`w-12 h-6 rounded-full transition-all cursor-pointer relative flex-shrink-0 ml-4 ${autoPromos ? 'bg-primary' : 'bg-slate-200 dark:bg-slate-700'}`}>
+                                            <span className={`absolute top-0.5 w-5 h-5 bg-white rounded-full shadow transition-all ${autoPromos ? 'left-6' : 'left-0.5'}`} />
+                                        </div>
+                                    </div>
+                                    <div className="flex items-center justify-between p-3 rounded-xl border border-slate-200 dark:border-slate-700">
+                                        <div>
+                                            <p className="text-sm font-bold text-slate-900 dark:text-white">📉 Permitir Fluctuación de Precios (Bajas)</p>
+                                            <p className="text-xs text-slate-500">Desactivado: el precio solo sube. Activado: sigue los cambios de Amazon en ambas direcciones.</p>
+                                        </div>
+                                        <div onClick={() => setAllowPriceDecrease(v => !v)}
+                                            className={`w-12 h-6 rounded-full transition-all cursor-pointer relative flex-shrink-0 ml-4 ${allowPriceDecrease ? 'bg-primary' : 'bg-slate-200 dark:bg-slate-700'}`}>
+                                            <span className={`absolute top-0.5 w-5 h-5 bg-white rounded-full shadow transition-all ${allowPriceDecrease ? 'left-6' : 'left-0.5'}`} />
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div>
+                                <label className="text-xs font-black text-slate-500 uppercase mb-3 block">Frecuencia de Actualización</label>
+                                <div className="grid grid-cols-3 gap-2">
+                                    {([
+                                        { hours: 6,  label: 'Cada 6h',  badge: 'Alta frecuencia',   color: 'text-amber-600' },
+                                        { hours: 12, label: 'Cada 12h', badge: 'Media frecuencia',   color: 'text-blue-600'  },
+                                        { hours: 24, label: 'Cada 24h', badge: '✓ Recomendado',      color: 'text-green-600' },
+                                    ] as const).map(opt => (
+                                        <button key={opt.hours} onClick={() => setSyncFrequencyHours(opt.hours)}
+                                            className={`p-3 rounded-xl border-2 text-left transition-all ${syncFrequencyHours === opt.hours ? 'border-primary bg-primary/5' : 'border-slate-200 dark:border-slate-700 hover:border-slate-300'}`}>
+                                            <p className="font-bold text-slate-900 dark:text-white text-sm">{opt.label}</p>
+                                            <p className={`text-xs font-black ${opt.color}`}>{opt.badge}</p>
+                                        </button>
+                                    ))}
+                                </div>
+                                <p className="text-[10px] text-slate-400 italic mt-2">
+                                    Lotes de 200 productos con pausa de 5 min entre lotes. Ciclo completo de 20k productos ≈ 10h.
+                                </p>
+                            </div>
+                        </div>
+                        <div className="p-4 bg-slate-50 dark:bg-slate-800/50 border-t border-slate-100 dark:border-slate-800">
+                            <button onClick={() => handleSaveSection('Actualizador')} className="w-full bg-slate-800 hover:bg-slate-900 dark:bg-slate-100 dark:text-slate-900 text-white font-black py-3 px-4 rounded-xl shadow-sm transition-all flex items-center justify-center gap-2 text-sm uppercase">
+                                <span className="material-symbols-outlined text-[18px]">save</span>
+                                Guardar Configuración del Actualizador
                             </button>
                         </div>
                     </section>
