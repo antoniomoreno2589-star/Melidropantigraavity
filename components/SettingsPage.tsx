@@ -214,6 +214,61 @@ export const SettingsPage = () => {
         parseInt(localStorage.getItem('melidrop_sync_frequency_hours') || '24')
     );
 
+    const UPDATER_URL = `https://gbdrxwfywxvyoxroqcut.supabase.co/functions/v1/amazon-ml-updater`;
+    const ANON_KEY    = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdiZHJ4d2Z5d3h2eW94cm9xY3V0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjkxMzU1MTQsImV4cCI6MjA4NDcxMTUxNH0.8bGbL6bKSfGShizUiijZIJqRdyO_72hecEujK3vYvr4';
+
+    const [syncRunning, setSyncRunning]   = useState(false);
+    const [syncResult,  setSyncResult]    = useState<string>('');
+    const [lastJob,     setLastJob]       = useState<any>(null);
+
+    useEffect(() => {
+        const fetchLastJob = async () => {
+            const { data: { user } } = await supabase.auth.getUser();
+            if (!user) return;
+            const { data } = await supabase
+                .from('sync_jobs')
+                .select('*')
+                .eq('user_id', user.id)
+                .order('started_at', { ascending: false })
+                .limit(1)
+                .maybeSingle();
+            if (data) setLastJob(data);
+        };
+        fetchLastJob();
+    }, []);
+
+    const handleRunNow = async () => {
+        setSyncRunning(true);
+        setSyncResult('Ejecutando sincronización...');
+        try {
+            const res = await fetch(UPDATER_URL, {
+                method:  'POST',
+                headers: { 'Authorization': `Bearer ${ANON_KEY}`, 'Content-Type': 'application/json' },
+                body:    '{}',
+            });
+            const data = await res.json();
+            if (data.success) {
+                const s = data.summary?.[0];
+                if (s?.skipped)   setSyncResult(`⏳ No es necesario aún (próxima sincronización en ${syncFrequencyHours}h).`);
+                else if (s)       setSyncResult(`✅ Lote procesado: ${s.updated} actualizados, ${s.errors} errores. Offset: ${s.offset}/${lastJob?.total_products ?? '?'}`);
+                else              setSyncResult('✅ Sincronización ejecutada (sin productos pendientes).');
+
+                // Refresh job status
+                const { data: { user } } = await supabase.auth.getUser();
+                if (user) {
+                    const { data: job } = await supabase.from('sync_jobs').select('*').eq('user_id', user.id).order('started_at', { ascending: false }).limit(1).maybeSingle();
+                    if (job) setLastJob(job);
+                }
+            } else {
+                setSyncResult(`❌ Error: ${data.error}`);
+            }
+        } catch (e: any) {
+            setSyncResult(`❌ Error de red: ${e.message}`);
+        } finally {
+            setSyncRunning(false);
+        }
+    };
+
     const updateDolarOnline = async () => {
         setIsUpdatingDolar(true);
         try {
@@ -653,10 +708,68 @@ export const SettingsPage = () => {
                                 </p>
                             </div>
                         </div>
-                        <div className="p-4 bg-slate-50 dark:bg-slate-800/50 border-t border-slate-100 dark:border-slate-800">
-                            <button onClick={() => handleSaveSection('Actualizador')} className="w-full bg-slate-800 hover:bg-slate-900 dark:bg-slate-100 dark:text-slate-900 text-white font-black py-3 px-4 rounded-xl shadow-sm transition-all flex items-center justify-center gap-2 text-sm uppercase">
+                        {/* Sync status */}
+                        {lastJob && (
+                            <div className="px-6 pb-4">
+                                <div className="bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl p-4 space-y-2">
+                                    <p className="text-xs font-black text-slate-500 uppercase tracking-widest">Estado del Ciclo Actual</p>
+                                    <div className="flex items-center gap-2">
+                                        <span className={`w-2 h-2 rounded-full flex-shrink-0 ${lastJob.status === 'running' ? 'bg-blue-500 animate-pulse' : lastJob.status === 'completed' ? 'bg-green-500' : 'bg-red-500'}`} />
+                                        <span className="text-sm font-bold text-slate-700 dark:text-slate-300 capitalize">
+                                            {lastJob.status === 'running' ? 'En progreso' : lastJob.status === 'completed' ? 'Completado' : 'Fallido'}
+                                        </span>
+                                    </div>
+                                    {lastJob.total_products > 0 && (
+                                        <div className="w-full bg-slate-200 dark:bg-slate-700 rounded-full h-2">
+                                            <div
+                                                className="bg-primary h-2 rounded-full transition-all"
+                                                style={{ width: `${Math.min(100, (lastJob.processed_count / lastJob.total_products) * 100)}%` }}
+                                            />
+                                        </div>
+                                    )}
+                                    <div className="grid grid-cols-3 gap-2 text-center">
+                                        <div>
+                                            <p className="text-lg font-black text-slate-900 dark:text-white">{lastJob.processed_count?.toLocaleString()}</p>
+                                            <p className="text-[10px] text-slate-400 uppercase">Procesados</p>
+                                        </div>
+                                        <div>
+                                            <p className="text-lg font-black text-green-600">{lastJob.updated_count?.toLocaleString()}</p>
+                                            <p className="text-[10px] text-slate-400 uppercase">Actualizados</p>
+                                        </div>
+                                        <div>
+                                            <p className="text-lg font-black text-red-500">{lastJob.error_count?.toLocaleString()}</p>
+                                            <p className="text-[10px] text-slate-400 uppercase">Errores</p>
+                                        </div>
+                                    </div>
+                                    {lastJob.started_at && (
+                                        <p className="text-[10px] text-slate-400">
+                                            Iniciado: {new Date(lastJob.started_at).toLocaleString('es-MX')}
+                                            {lastJob.finished_at && ` · Terminado: ${new Date(lastJob.finished_at).toLocaleString('es-MX')}`}
+                                        </p>
+                                    )}
+                                </div>
+                                {syncResult && (
+                                    <p className={`mt-2 text-xs font-mono ${syncResult.startsWith('✅') ? 'text-green-600' : syncResult.startsWith('❌') ? 'text-red-500' : 'text-slate-500'}`}>
+                                        {syncResult}
+                                    </p>
+                                )}
+                            </div>
+                        )}
+
+                        <div className="p-4 bg-slate-50 dark:bg-slate-800/50 border-t border-slate-100 dark:border-slate-800 flex gap-3">
+                            <button onClick={() => handleSaveSection('Actualizador')} className="flex-1 bg-slate-800 hover:bg-slate-900 dark:bg-slate-100 dark:text-slate-900 text-white font-black py-3 px-4 rounded-xl shadow-sm transition-all flex items-center justify-center gap-2 text-sm uppercase">
                                 <span className="material-symbols-outlined text-[18px]">save</span>
-                                Guardar Configuración del Actualizador
+                                Guardar
+                            </button>
+                            <button
+                                onClick={handleRunNow}
+                                disabled={syncRunning}
+                                className="flex-1 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-black py-3 px-4 rounded-xl shadow-sm transition-all flex items-center justify-center gap-2 text-sm uppercase"
+                            >
+                                {syncRunning
+                                    ? <><span className="w-4 h-4 rounded-full border-2 border-white/30 border-t-white animate-spin" />Ejecutando...</>
+                                    : <><span className="material-symbols-outlined text-[18px]">play_arrow</span>Ejecutar Ahora</>
+                                }
                             </button>
                         </div>
                     </section>
