@@ -6,7 +6,6 @@ type Props = ReturnType<typeof useAmazonImporter>;
 
 // ── Step 1 ─────────────────────────────────────────────────────────────────
 export const Step1Config: React.FC<Props> = ({
-    sourceAmazon, setSourceAmazon,
     marketplace, setMarketplace,
     listingType, setListingType,
     autoCategory, setAutoCategory,
@@ -15,23 +14,6 @@ export const Step1Config: React.FC<Props> = ({
 }) => (
     <div className="bg-white dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 p-6 space-y-6">
         <h2 className="text-lg font-black text-slate-900 dark:text-white">Configuración de Importación</h2>
-
-        {/* Origen Amazon */}
-        <div>
-            <label className="text-xs font-black text-slate-500 uppercase tracking-widest mb-3 block">Origen del Producto</label>
-            <div className="grid grid-cols-2 gap-3">
-                {[
-                    { id: 'usa', label: '🇺🇸 Amazon USA', desc: `${parseInt(localStorage.getItem('melidrop_handling_time_usa') || '7')} días preparación` },
-                    { id: 'mx',  label: '🇲🇽 Amazon México', desc: `${parseInt(localStorage.getItem('melidrop_handling_time_mx') || '3')} días preparación` }
-                ].map(s => (
-                    <button key={s.id} onClick={() => setSourceAmazon(s.id as 'usa' | 'mx')}
-                        className={`p-4 rounded-xl border-2 text-left transition-all ${sourceAmazon === s.id ? 'border-amber-400 bg-amber-50 dark:bg-amber-900/10 shadow-sm shadow-amber-400/20' : 'border-slate-200 dark:border-slate-700 hover:border-slate-300'}`}>
-                        <p className="font-bold text-slate-900 dark:text-white text-sm">{s.label}</p>
-                        <p className="text-xs text-slate-500 mt-0.5">{s.desc}</p>
-                    </button>
-                ))}
-            </div>
-        </div>
 
         {/* Marketplace Destino */}
         <div>
