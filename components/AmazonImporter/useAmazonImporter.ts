@@ -12,7 +12,6 @@ export function useAmazonImporter() {
 
     // ── Step 1: Config ─────────────────────────────────────────────────
     const [marketplace, setMarketplace] = useState<Marketplace>('MLM');
-    const [sourceAmazon, setSourceAmazon] = useState<'usa' | 'mx'>('usa');
     const [listingType, setListingType] = useState<ListingType>('gold_special');
     const [autoCategory, setAutoCategory] = useState(true);
     const [cleanImages, setCleanImages] = useState(false);
@@ -426,6 +425,28 @@ export function useAmazonImporter() {
             } else {
                 setPublishResults(prev => ({ ...prev, [asin]: result }));
                 setPublishingStatus(prev => ({ ...prev, [asin]: 'success' }));
+
+                // Persist the product to Supabase so the updater knows its currency
+                // and description without having to re-fetch from Amazon.
+                if (result.id) {
+                    const { data: { user } } = await supabase.auth.getUser();
+                    if (user) {
+                        const product = loadedProducts.find(p => p.asin === asin);
+                        await supabase.from('products').upsert({
+                            user_id:          user.id,
+                            meli_id:          result.id,
+                            title:            payload.title,
+                            sku:              processed.asin,
+                            price_mxn:        payload.price,
+                            stock_meli:       payload.available_quantity,
+                            status:           isDraft ? 'inactive' : 'active',
+                            image_url:        processed.images[0]?.url ?? null,
+                            currency:         product?.currency ?? 'USD',
+                            description_text: payload.description?.plain_text ?? null,
+                            last_updated:     new Date().toISOString(),
+                        }, { onConflict: 'meli_id' });
+                    }
+                }
             }
         } catch (e: any) {
             setPublishResults(prev => ({ ...prev, [asin]: { error: e.message } }));
@@ -438,7 +459,6 @@ export function useAmazonImporter() {
         step, setStep,
         // Step 1
         marketplace, setMarketplace,
-        sourceAmazon, setSourceAmazon,
         listingType, setListingType,
         autoCategory, setAutoCategory,
         cleanImages, setCleanImages,

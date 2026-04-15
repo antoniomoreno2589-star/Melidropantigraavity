@@ -23,7 +23,10 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 const MELI_API  = "https://api.mercadolibre.com";
 const LWA_URL   = "https://api.amazon.com/auth/o2/token";
 const BATCH_SIZE = 200;
-const PRICE_CONCURRENCY = 20; // Amazon pricing calls in parallel per sub-chunk
+const PRICE_CONCURRENCY = 20;
+
+const MARKETPLACE_USA = "ATVPDKIKX0DER"; // Amazon USA  (prices in USD)
+const MARKETPLACE_MXN = "A1AM78C64UM0Y8"; // Amazon Mexico (prices in MXN)
 
 // ── Amazon helpers ──────────────────────────────────────────────────────────
 
@@ -66,22 +69,14 @@ async function fetchAmazonPrice(
     }
 }
 
-// Fetch prices for up to PRICE_CONCURRENCY ASINs in parallel
+// Fetch prices for a list of ASINs from the given marketplace, PRICE_CONCURRENCY at a time.
 async function fetchPricesBatch(
-    amazonCreds: any,
-    asins: string[]
+    endpoint: string,
+    accessToken: string,
+    asins: string[],
+    marketplaceId: string
 ): Promise<Record<string, number>> {
-    const endpoint = {
-        na: "https://sellingpartnerapi-na.amazon.com",
-        eu: "https://sellingpartnerapi-eu.amazon.com",
-        fe: "https://sellingpartnerapi-fe.amazon.com",
-    }[amazonCreds.region as string] ?? "https://sellingpartnerapi-na.amazon.com";
-
-    const marketplaceId = "A1AM78C64UM0Y8"; // Amazon Mexico
-    const accessToken   = await getAmazonToken(amazonCreds);
     const prices: Record<string, number> = {};
-
-    // Process in parallel chunks of PRICE_CONCURRENCY
     for (let i = 0; i < asins.length; i += PRICE_CONCURRENCY) {
         const chunk   = asins.slice(i, i + PRICE_CONCURRENCY);
         const results = await Promise.allSettled(
@@ -115,7 +110,6 @@ async function refreshMeliToken(creds: any): Promise<string> {
 }
 
 async function getValidMeliToken(creds: any): Promise<string> {
-    // Refresh if within 5 min of expiry or already expired
     const expiresAt = creds.expiresAt ?? 0;
     if (Date.now() < expiresAt - 5 * 60 * 1000) return creds.token;
     return refreshMeliToken(creds);
@@ -134,22 +128,49 @@ async function updateMeliItem(
     return res.ok;
 }
 
+async function updateMeliDescription(
+    meliId: string,
+    plainText: string,
+    token: string
+): Promise<boolean> {
+    const res = await fetch(`${MELI_API}/items/${meliId}/description`, {
+        method:  "PUT",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body:    JSON.stringify({ plain_text: plainText }),
+    });
+    return res.ok;
+}
+
 // ── Pricing calculation ─────────────────────────────────────────────────────
 
 function calculateMxnPrice(
-    costUSD: number,
+    cost: number,
+    currency: string,
     exchangeRate: number,
-    rules: Array<{ min: number; max: number | null; margin: number }>
+    usaRules: Array<{ min: number; max: number | null; margin: number }>,
+    mxRules:  Array<{ min: number; max: number | null; margin: number }>
 ): number {
-    const defaultRules = [
-        { min: 0, max: 20, margin: 200 },
-        { min: 21, max: 50, margin: 100 },
-        { min: 51, max: null, margin: 50 },
+    const isMXN = currency?.toUpperCase() === 'MXN';
+    const defaultUsaRules = [
+        { min: 0,   max: 20,   margin: 200 },
+        { min: 21,  max: 50,   margin: 100 },
+        { min: 51,  max: null, margin: 50  },
     ];
-    const r = (rules?.length ? rules : defaultRules).find(
-        rule => costUSD >= rule.min && (rule.max === null || costUSD <= rule.max)
-    ) ?? defaultRules[defaultRules.length - 1];
-    return Math.ceil(costUSD * exchangeRate * (1 + r.margin / 100));
+    const defaultMxRules = [
+        { min: 0,   max: 300,  margin: 150 },
+        { min: 301, max: 600,  margin: 130 },
+        { min: 601, max: null, margin: 80  },
+    ];
+    const rules = isMXN
+        ? (mxRules?.length  ? mxRules  : defaultMxRules)
+        : (usaRules?.length ? usaRules : defaultUsaRules);
+    const r = rules.find(rule => cost >= rule.min && (rule.max === null || cost <= rule.max))
+        ?? rules[rules.length - 1];
+    // MXN source: Amazon Mexico price is already MXN — apply margin directly.
+    // USD source: Amazon USA price → convert to MXN, then apply margin.
+    return isMXN
+        ? Math.ceil(cost * (1 + r.margin / 100))
+        : Math.ceil(cost * exchangeRate * (1 + r.margin / 100));
 }
 
 // ── Main handler ────────────────────────────────────────────────────────────
@@ -186,7 +207,8 @@ serve(async (_req) => {
             const allowDecrease = settings.allow_price_decrease ?? false;
             const defaultStock  = settings.default_stock ?? 3;
             const exchangeRate  = conn.exchange_rate      ?? settings.exchange_rate ?? 18.5;
-            const priceRules    = settings.usa            ?? [];
+            const usaRules      = settings.usa            ?? [];
+            const mxRules       = settings.mx             ?? [];
             const freqHours     = settings.sync_frequency_hours ?? 24;
 
             if (!meliCreds?.token || !amazonCreds?.refreshToken) continue;
@@ -204,7 +226,6 @@ serve(async (_req) => {
             let job = activeJob;
 
             if (!job) {
-                // Check when last cycle finished
                 const { data: lastJob } = await supabase
                     .from("sync_jobs")
                     .select("finished_at")
@@ -221,7 +242,6 @@ serve(async (_req) => {
                     continue;
                 }
 
-                // Count total products to sync
                 const { count } = await supabase
                     .from("products")
                     .select("*", { count: "exact", head: true })
@@ -242,17 +262,16 @@ serve(async (_req) => {
 
             const offset = job.next_offset as number;
 
-            // 3. Fetch next batch of products
+            // 3. Fetch next batch — includes currency and description_text
             const { data: products } = await supabase
                 .from("products")
-                .select("meli_id, sku, price_mxn, stock_meli")
+                .select("meli_id, sku, price_mxn, stock_meli, currency, description_text")
                 .eq("user_id", userId)
                 .not("sku", "is", null)
                 .neq("sku", "")
                 .range(offset, offset + BATCH_SIZE - 1);
 
             if (!products?.length) {
-                // Nothing left — mark complete
                 await supabase
                     .from("sync_jobs")
                     .update({ status: "completed", finished_at: new Date().toISOString(), updated_at: new Date().toISOString() })
@@ -261,9 +280,23 @@ serve(async (_req) => {
                 continue;
             }
 
-            // 4. Fetch Amazon prices for this batch
-            const asins       = products.map((p: any) => p.sku);
-            const asinPrices  = await fetchPricesBatch(amazonCreds, asins);
+            // 4. Fetch Amazon prices — USD ASINs → Amazon USA, MXN ASINs → Amazon Mexico
+            const endpoint = {
+                na: "https://sellingpartnerapi-na.amazon.com",
+                eu: "https://sellingpartnerapi-eu.amazon.com",
+                fe: "https://sellingpartnerapi-fe.amazon.com",
+            }[amazonCreds.region as string] ?? "https://sellingpartnerapi-na.amazon.com";
+
+            const accessToken = await getAmazonToken(amazonCreds);
+
+            const usdAsins = products.filter((p: any) => (p.currency ?? 'USD') !== 'MXN').map((p: any) => p.sku);
+            const mxnAsins = products.filter((p: any) => (p.currency ?? 'USD') === 'MXN').map((p: any) => p.sku);
+
+            const [usdPrices, mxnPrices] = await Promise.all([
+                usdAsins.length ? fetchPricesBatch(endpoint, accessToken, usdAsins, MARKETPLACE_USA) : Promise.resolve({}),
+                mxnAsins.length ? fetchPricesBatch(endpoint, accessToken, mxnAsins, MARKETPLACE_MXN) : Promise.resolve({}),
+            ]);
+            const asinPrices = { ...usdPrices, ...mxnPrices };
 
             // 5. Get a valid ML token
             let mlToken: string;
@@ -276,14 +309,15 @@ serve(async (_req) => {
             let updated = 0, errors = 0;
 
             for (const product of products) {
+                const currency = (product as any).currency ?? 'USD';
+                const meliId   = (product as any).meli_id;
                 const updatePayload: Record<string, unknown> = {};
 
                 if (syncParams.price) {
-                    const amazonUSD = asinPrices[(product as any).sku];
-                    if (amazonUSD) {
-                        const newMxn     = calculateMxnPrice(amazonUSD, exchangeRate, priceRules);
+                    const amazonPrice = asinPrices[(product as any).sku];
+                    if (amazonPrice) {
+                        const newMxn     = calculateMxnPrice(amazonPrice, currency, exchangeRate, usaRules, mxRules);
                         const currentMxn = (product as any).price_mxn ?? 0;
-                        // Only update if price changed AND direction is allowed
                         if (newMxn !== currentMxn && (allowDecrease || newMxn > currentMxn)) {
                             updatePayload.price = newMxn;
                         }
@@ -294,17 +328,22 @@ serve(async (_req) => {
                     updatePayload.available_quantity = defaultStock;
                 }
 
-                if (Object.keys(updatePayload).length === 0) continue;
+                if (Object.keys(updatePayload).length > 0) {
+                    const ok = await updateMeliItem(meliId, updatePayload, mlToken);
+                    if (ok) {
+                        const dbUpdate: any = { last_updated: new Date().toISOString() };
+                        if (updatePayload.price)              dbUpdate.price_mxn  = updatePayload.price;
+                        if (updatePayload.available_quantity) dbUpdate.stock_meli = updatePayload.available_quantity;
+                        await supabase.from("products").update(dbUpdate).eq("meli_id", meliId);
+                        updated++;
+                    } else {
+                        errors++;
+                    }
+                }
 
-                const ok = await updateMeliItem((product as any).meli_id, updatePayload, mlToken);
-                if (ok) {
-                    const dbUpdate: any = { last_updated: new Date().toISOString() };
-                    if (updatePayload.price)              dbUpdate.price_mxn   = updatePayload.price;
-                    if (updatePayload.available_quantity) dbUpdate.stock_meli  = updatePayload.available_quantity;
-                    await supabase.from("products").update(dbUpdate).eq("meli_id", (product as any).meli_id);
-                    updated++;
-                } else {
-                    errors++;
+                // Description lives on a separate ML endpoint — update independently
+                if (syncParams.description && (product as any).description_text) {
+                    await updateMeliDescription(meliId, (product as any).description_text, mlToken);
                 }
             }
 
@@ -327,9 +366,9 @@ serve(async (_req) => {
             // 7. Log to sync_logs when complete
             if (isComplete) {
                 await supabase.from("sync_logs").insert({
-                    status:       "success",
-                    finished_at:  new Date().toISOString(),
-                    items_synced: jobUpdate.updated_count,
+                    status:        "success",
+                    finished_at:   new Date().toISOString(),
+                    items_synced:  jobUpdate.updated_count,
                     error_message: errors > 0 ? `${errors} update errors` : null,
                 });
             }
