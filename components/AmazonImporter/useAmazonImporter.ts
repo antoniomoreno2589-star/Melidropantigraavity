@@ -212,13 +212,22 @@ export function useAmazonImporter() {
                     nextCategoryAttrs[product.asin] = relevant;
 
                     if (relevant.length > 0) {
+                        // Seed obvious values from Amazon data before calling AI
+                        const seed: Record<string, string> = {};
+                        const brandAttr = relevant.find((a: any) => a.id === 'BRAND' || a.id === 'MARCA');
+                        if (brandAttr && product.brand && !['unknown', 'n/a', ''].includes(product.brand.toLowerCase())) {
+                            seed[brandAttr.id] = product.brand;
+                        }
+                        const conditionAttr = relevant.find((a: any) => a.id === 'ITEM_CONDITION');
+                        if (conditionAttr) seed['ITEM_CONDITION'] = 'Nuevo';
+
                         const aiMapped = await aiImporterService.mapAttributes(
                             product.title,
                             product.description || '',
                             product.attributes || {},
                             relevant
                         );
-                        const defaultAttrs: Record<string, string> = {};
+                        const defaultAttrs: Record<string, string> = { ...seed };
                         if (Array.isArray(aiMapped)) {
                             aiMapped.forEach((ma: any) => {
                                 if (ma.id && ma.value_name &&
@@ -287,6 +296,7 @@ export function useAmazonImporter() {
 
         return {
             title,
+            family_name: processed.asin,
             category_id: catId,
             price: priceMXN,
             currency_id: marketplace === 'MLM' ? 'MXN' : 'USD',
