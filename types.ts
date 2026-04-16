@@ -37,6 +37,14 @@ export interface User {
   avatarUrl: string;
 }
 
+export interface Expense {
+  id: number;
+  concept: string;
+  amount: number;
+  period: string;
+  year_month: string; // 'YYYY-MM'
+}
+
 export interface DashboardStats {
   questionsUnanswered: number;
   messagesUnread: number;

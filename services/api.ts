@@ -1,5 +1,5 @@
 import { supabase } from './supabase';
-import { Product, Order, DashboardStats } from '../types';
+import { Product, Order, Expense, DashboardStats } from '../types';
 
 export const api = {
     products: {
@@ -357,6 +357,59 @@ export const api = {
                 .from('test_products')
                 .delete()
                 .eq('user_id', user.id);
+            if (error) throw error;
+        }
+    },
+
+    expenses: {
+        async listRange(fromYM: string, toYM: string): Promise<Expense[]> {
+            const { data: { user } } = await supabase.auth.getUser();
+            if (!user) throw new Error('Not authenticated');
+
+            const { data, error } = await supabase
+                .from('expenses')
+                .select('*')
+                .eq('user_id', user.id)
+                .gte('year_month', fromYM)
+                .lte('year_month', toYM)
+                .order('year_month', { ascending: true })
+                .order('created_at', { ascending: true });
+
+            if (error) throw error;
+            return (data ?? []).map(e => ({
+                id: e.id,
+                concept: e.concept,
+                amount: e.amount,
+                period: e.period,
+                year_month: e.year_month,
+            }));
+        },
+
+        async create(data: { concept: string; amount: number; period?: string; year_month: string }): Promise<Expense> {
+            const { data: { user } } = await supabase.auth.getUser();
+            if (!user) throw new Error('Not authenticated');
+
+            const { data: row, error } = await supabase
+                .from('expenses')
+                .insert({
+                    user_id: user.id,
+                    concept: data.concept,
+                    amount: data.amount,
+                    period: data.period ?? 'Mensual',
+                    year_month: data.year_month,
+                })
+                .select()
+                .single();
+
+            if (error) throw error;
+            return { id: row.id, concept: row.concept, amount: row.amount, period: row.period, year_month: row.year_month };
+        },
+
+        async delete(id: number): Promise<void> {
+            const { error } = await supabase
+                .from('expenses')
+                .delete()
+                .eq('id', id);
             if (error) throw error;
         }
     }

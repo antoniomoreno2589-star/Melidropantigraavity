@@ -1,400 +1,570 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect, useCallback } from 'react';
+import { api } from '../services/api';
+import { Order, Expense } from '../types';
 
-interface Expense {
-  id: number;
-  concept: string;
-  amount: number;
-  period: string;
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function nowYM(): string {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
 }
 
-interface ProductProfit {
-  id: string;
-  name: string;
-  asin: string;
-  cost: number;
-  shipping: number;
-  package: number;
-  sale: number;
-  image: string;
+function subtractMonths(ym: string, n: number): string {
+  const [y, m] = ym.split('-').map(Number);
+  const d = new Date(y, m - 1 - n, 1);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
 }
 
-export const AnalyticsPage = () => {
-  // Period State
-  const [selectedMonth, setSelectedMonth] = useState('Octubre');
-  const [showMonthPicker, setShowMonthPicker] = useState(false);
-  const months = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];
-  const monthAbbr = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
+function monthRange(ym: string): { from: string; to: string } {
+  const [y, m] = ym.split('-').map(Number);
+  const last = new Date(y, m, 0).getDate();
+  return { from: `${ym}-01`, to: `${ym}-${String(last).padStart(2, '0')}` };
+}
 
-  // Time and Chart State
-  const [timeFilter, setTimeFilter] = useState<'1m' | '3m' | '6m' | '12m'>('6m');
+function ymLabel(ym: string): string {
+  const [y, m] = ym.split('-').map(Number);
+  const names = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
+  return `${names[m - 1]} ${y}`;
+}
 
-  // Expenses State
-  const [expenses, setExpenses] = useState<Expense[]>([
-    { id: 1, concept: 'Suscripción Software', amount: 1200, period: 'Mensual' },
-    { id: 2, concept: 'Internet Fibra', amount: 890, period: 'Mensual' },
-    { id: 3, concept: 'Asistente Virtual', amount: 4500, period: 'Salario' },
-    { id: 4, concept: 'Publicidad Ads', amount: 8610, period: 'Presupuesto' }
-  ]);
+function fmt(n: number): string {
+  return new Intl.NumberFormat('es-MX', {
+    style: 'currency', currency: 'MXN', maximumFractionDigits: 0,
+  }).format(n);
+}
+
+function fmtShort(n: number): string {
+  if (Math.abs(n) >= 1_000_000) return `$${(n / 1_000_000).toFixed(1)}M`;
+  if (Math.abs(n) >= 1_000) return `$${(n / 1_000).toFixed(0)}k`;
+  return `$${n.toFixed(0)}`;
+}
+
+// ─── MarginRing ───────────────────────────────────────────────────────────────
+
+const MarginRing: React.FC<{ pct: number }> = ({ pct }) => {
+  const r = 36;
+  const circ = 2 * Math.PI * r;
+  const clamped = Math.max(0, Math.min(100, pct));
+  const dash = (clamped / 100) * circ;
+  const color = pct < 10 ? '#ef4444' : pct < 25 ? '#f59e0b' : '#10b981';
+  return (
+    <svg width="100" height="100" viewBox="0 0 100 100">
+      <circle cx="50" cy="50" r={r} fill="none" stroke="#1e293b" strokeWidth="10" />
+      <circle
+        cx="50" cy="50" r={r} fill="none"
+        stroke={color} strokeWidth="10"
+        strokeDasharray={`${dash} ${circ}`}
+        strokeLinecap="round"
+        transform="rotate(-90 50 50)"
+      />
+      <text x="50" y="54" textAnchor="middle" fill={color} fontSize="16" fontWeight="bold">
+        {pct.toFixed(1)}%
+      </text>
+    </svg>
+  );
+};
+
+// ─── Main Component ───────────────────────────────────────────────────────────
+
+const MONTH_NAMES = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
+
+export const AnalyticsPage: React.FC = () => {
+  const today = nowYM();
+
+  const [selectedYM, setSelectedYM] = useState(today);
+  const [timeFilter, setTimeFilter] = useState<'3m' | '6m' | '12m'>('6m');
+  const [showPicker, setShowPicker] = useState(false);
+  const [pickerYear, setPickerYear] = useState(new Date().getFullYear());
+
+  const [chartOrders, setChartOrders] = useState<Order[]>([]);
+  const [chartExpenses, setChartExpenses] = useState<Expense[]>([]);
+  const [currencyMap, setCurrencyMap] = useState<Record<string, 'USD' | 'MXN'>>({});
+  const [loading, setLoading] = useState(false);
+
   const [newConcept, setNewConcept] = useState('');
   const [newAmount, setNewAmount] = useState('');
+  const [newPeriod, setNewPeriod] = useState('Mensual');
+  const [saving, setSaving] = useState(false);
 
-  // Table State
   const [searchQuery, setSearchQuery] = useState('');
-  const [roiFilter, setRoiFilter] = useState('all');
+  const [roiFilter, setRoiFilter] = useState<'all' | 'positive' | 'negative'>('all');
+  const [rentableFilter, setRentableFilter] = useState<'all' | 'yes' | 'no'>('all');
 
-  const productsProfitData: ProductProfit[] = [
-    { id: '1', name: 'Nike Air Max Red - Size 10', asin: 'B08XYZ1234', cost: 1200, shipping: 150, package: 25, sale: 2100, image: 'https://picsum.photos/100/100?random=50' },
-    { id: '2', name: 'Sony Wireless Headphones WH-1000XM4', asin: 'B08ABC9876', cost: 4500, shipping: 200, package: 40, sale: 6800, image: 'https://picsum.photos/100/100?random=51' },
-    { id: '3', name: 'Canon EF 50mm f/1.8 STM Lens', asin: 'B08LENS456', cost: 2800, shipping: 180, package: 30, sale: 3400, image: 'https://picsum.photos/100/100?random=52' },
-    { id: '4', name: 'Keychron K2 Mechanical Keyboard', asin: 'B08KEY7890', cost: 1800, shipping: 160, package: 35, sale: 3200, image: 'https://picsum.photos/100/100?random=53' }
-  ];
+  const exchangeRate = parseFloat(localStorage.getItem('melidrop_exchange_rate') ?? '18.5');
 
-  // Logic: Totals
-  const totalExpenses = useMemo(() => expenses.reduce((acc, curr) => acc + curr.amount, 0), [expenses]);
-  const totalRevenue = 450200; 
-  const grossProfit = 120500; 
-  const netProfit = grossProfit - totalExpenses;
+  // ── Load data ─────────────────────────────────────────────────────────────────
+  useEffect(() => {
+    const count = timeFilter === '3m' ? 3 : timeFilter === '6m' ? 6 : 12;
+    const fromYM = subtractMonths(selectedYM, count - 1);
+    const { from: fromDate } = monthRange(fromYM);
+    const { to: toDate } = monthRange(selectedYM);
 
-  // Handlers
-  const handleAddExpense = () => {
-    if (!newConcept.trim() || !newAmount) return;
-    const expense: Expense = {
-      id: Date.now(),
-      concept: newConcept,
-      amount: parseFloat(newAmount),
-      period: 'Manual'
+    setLoading(true);
+    Promise.all([
+      api.orders.listWithDateRange(fromDate, toDate),
+      api.expenses.listRange(fromYM, selectedYM),
+      api.products.getCurrencyMap(),
+    ])
+      .then(([ord, exp, cmap]) => {
+        setChartOrders(ord);
+        setChartExpenses(exp);
+        setCurrencyMap(cmap);
+      })
+      .catch(console.error)
+      .finally(() => setLoading(false));
+  }, [selectedYM, timeFilter]);
+
+  const prevYM = subtractMonths(selectedYM, 1);
+
+  // ── Derived slices ────────────────────────────────────────────────────────────
+  const orders = useMemo(
+    () => chartOrders.filter(o => o.date?.startsWith(selectedYM)),
+    [chartOrders, selectedYM],
+  );
+  const prevOrders = useMemo(
+    () => chartOrders.filter(o => o.date?.startsWith(prevYM)),
+    [chartOrders, prevYM],
+  );
+  const monthExpenses = useMemo(
+    () => chartExpenses.filter(e => e.year_month === selectedYM),
+    [chartExpenses, selectedYM],
+  );
+
+  // ── Cost helper ───────────────────────────────────────────────────────────────
+  const orderCostMXN = useCallback((o: Order): number => {
+    if (!o.amazonPurchasePrice) return 0;
+    const currency = currencyMap[o.amazonAsin] ?? 'USD';
+    return currency === 'USD' ? o.amazonPurchasePrice * exchangeRate : o.amazonPurchasePrice;
+  }, [currencyMap, exchangeRate]);
+
+  // ── KPIs ──────────────────────────────────────────────────────────────────────
+  const kpis = useMemo(() => {
+    const calc = (ords: Order[], exps: Expense[]) => {
+      const ingresos = ords.reduce((s, o) => s + (o.total ?? 0), 0);
+      const ganBruta = ords.reduce((s, o) => s + (o.netIncome ?? 0) - orderCostMXN(o), 0);
+      const gastos = exps.reduce((s, e) => s + e.amount, 0);
+      return { ingresos, ganBruta, gastos, ganNeta: ganBruta - gastos };
     };
-    setExpenses(prev => [...prev, expense]);
-    setNewConcept('');
-    setNewAmount('');
-  };
 
-  const handleDeleteExpense = (id: number) => {
-    setExpenses(prev => prev.filter(e => e.id !== id));
-  };
+    const curr = calc(orders, monthExpenses);
+    const prev = calc(prevOrders, chartExpenses.filter(e => e.year_month === prevYM));
+    const delta = (c: number, p: number) => p !== 0 ? ((c - p) / Math.abs(p)) * 100 : null;
+    const margen = curr.ingresos > 0 ? (curr.ganNeta / curr.ingresos) * 100 : 0;
 
-  const handleExport = () => {
-    const header = "Balance " + selectedMonth + " 2025\nConcepto,Monto\n";
-    const summary = `Ingresos,${totalRevenue}\nGastos Operativos,${totalExpenses}\nGanancia Neta,${netProfit}\n\n`;
-    const detailsHeader = "Detalle Productos\nNombre,ASIN,Venta,Costo Total,Ganancia\n";
-    const details = productsProfitData.map(p => {
-        const totalC = p.cost + p.shipping + p.package;
-        const prof = p.sale - totalC;
-        return `"${p.name}",${p.asin},${p.sale},${totalC},${prof}`;
-    }).join("\n");
-    
-    const csvContent = "data:text/csv;charset=utf-8," + encodeURIComponent(header + summary + detailsHeader + details);
-    const link = document.createElement("a");
-    link.setAttribute("href", csvContent);
-    link.setAttribute("download", `reporte_melidrop_${selectedMonth.toLowerCase()}.csv`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-  };
+    return {
+      ...curr,
+      margen,
+      ordersCount: orders.length,
+      deltaIngresos: delta(curr.ingresos, prev.ingresos),
+      deltaGanBruta: delta(curr.ganBruta, prev.ganBruta),
+      deltaGastos: delta(curr.gastos, prev.gastos),
+      deltaGanNeta: delta(curr.ganNeta, prev.ganNeta),
+    };
+  }, [orders, prevOrders, monthExpenses, chartExpenses, prevYM, orderCostMXN]);
 
-  // Filter Table
-  const filteredProducts = useMemo(() => {
-    return productsProfitData.filter(p => {
-      const matchesSearch = p.name.toLowerCase().includes(searchQuery.toLowerCase()) || 
-                            p.asin.toLowerCase().includes(searchQuery.toLowerCase());
-      
-      const totalCost = p.cost + p.shipping + p.package;
-      const profit = p.sale - totalCost;
-      const roi = (profit / totalCost) * 100;
-      
-      let matchesRoi = true;
-      if (roiFilter === 'low') matchesRoi = roi < 15;
-      if (roiFilter === 'high') matchesRoi = roi >= 15;
-      
-      return matchesSearch && matchesRoi;
+  // ── Chart data ────────────────────────────────────────────────────────────────
+  const chartData = useMemo(() => {
+    const count = timeFilter === '3m' ? 3 : timeFilter === '6m' ? 6 : 12;
+    const months: string[] = [];
+    for (let i = count - 1; i >= 0; i--) months.push(subtractMonths(selectedYM, i));
+
+    return months.map(ym => {
+      const mOrders = chartOrders.filter(o => o.date?.startsWith(ym));
+      const mExpenses = chartExpenses.filter(e => e.year_month === ym);
+      const ingresos = mOrders.reduce((s, o) => s + (o.total ?? 0), 0);
+      const ganBruta = mOrders.reduce((s, o) => s + (o.netIncome ?? 0) - orderCostMXN(o), 0);
+      const gastos = mExpenses.reduce((s, e) => s + e.amount, 0);
+      return { ym, label: ymLabel(ym), ingresos, ganNeta: ganBruta - gastos };
     });
-  }, [searchQuery, roiFilter]);
+  }, [chartOrders, chartExpenses, selectedYM, timeFilter, orderCostMXN]);
 
-  // Chart Data Simulation with actual month names
-  const chartPoints = useMemo(() => {
-    const pointsMap = { '1m': 4, '3m': 3, '6m': 6, '12m': 12 };
-    const count = pointsMap[timeFilter] || 6;
-    const currentMonthIdx = 9; // Oct
-    
-    return Array.from({ length: count }).map((_, i) => {
-        const mIdx = (currentMonthIdx - (count - 1 - i) + 12) % 12;
-        const rev = Math.floor(Math.random() * 40) + 50;
-        const exp = Math.floor(Math.random() * 20) + 10;
-        const label = count === 4 ? `S${i + 1}` : monthAbbr[mIdx];
-        return { rev, exp, label };
-    });
-  }, [timeFilter]);
+  const chartMax = useMemo(
+    () => Math.max(...chartData.map(d => Math.max(d.ingresos, d.ganNeta, 0)), 1),
+    [chartData],
+  );
 
-  const yAxisLabels = ['$100k', '$75k', '$50k', '$25k', '$0'];
+  // ── Product rows ──────────────────────────────────────────────────────────────
+  const productRows = useMemo(() => {
+    const map = new Map<string, {
+      key: string; name: string;
+      ventaML: number; costoAmazon: number; netoML: number; gananciaNeta: number;
+    }>();
 
+    for (const o of orders) {
+      const key = o.amazonAsin || o.productTitle;
+      const costMXN = orderCostMXN(o);
+      const existing = map.get(key);
+      if (existing) {
+        existing.ventaML += o.total ?? 0;
+        existing.costoAmazon += costMXN;
+        existing.netoML += o.netIncome ?? 0;
+        existing.gananciaNeta += (o.netIncome ?? 0) - costMXN;
+      } else {
+        map.set(key, {
+          key, name: o.productTitle,
+          ventaML: o.total ?? 0,
+          costoAmazon: costMXN,
+          netoML: o.netIncome ?? 0,
+          gananciaNeta: (o.netIncome ?? 0) - costMXN,
+        });
+      }
+    }
+
+    return Array.from(map.values())
+      .map(r => ({
+        ...r,
+        roi: r.costoAmazon > 0 ? (r.gananciaNeta / r.costoAmazon) * 100 : null,
+        margen: r.ventaML > 0 ? (r.gananciaNeta / r.ventaML) * 100 : null,
+        rentable: r.gananciaNeta > 0,
+      }))
+      .sort((a, b) => b.ventaML - a.ventaML);
+  }, [orders, orderCostMXN]);
+
+  const filteredRows = useMemo(() => productRows.filter(r => {
+    if (searchQuery && !r.name.toLowerCase().includes(searchQuery.toLowerCase()) &&
+        !r.key.toLowerCase().includes(searchQuery.toLowerCase())) return false;
+    if (roiFilter === 'positive' && (r.roi === null || r.roi <= 0)) return false;
+    if (roiFilter === 'negative' && (r.roi === null || r.roi > 0)) return false;
+    if (rentableFilter === 'yes' && !r.rentable) return false;
+    if (rentableFilter === 'no' && r.rentable) return false;
+    return true;
+  }), [productRows, searchQuery, roiFilter, rentableFilter]);
+
+  // ── Expense handlers ──────────────────────────────────────────────────────────
+  const handleAddExpense = async () => {
+    if (!newConcept.trim() || !newAmount.trim()) return;
+    setSaving(true);
+    try {
+      const created = await api.expenses.create({
+        concept: newConcept.trim(),
+        amount: parseFloat(newAmount),
+        period: newPeriod,
+        year_month: selectedYM,
+      });
+      setChartExpenses(prev => [...prev, created]);
+      setNewConcept('');
+      setNewAmount('');
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleDeleteExpense = async (id: number) => {
+    setChartExpenses(prev => prev.filter(e => e.id !== id));
+    api.expenses.delete(id).catch(console.error);
+  };
+
+  const deltaArrow = (pct: number | null) => {
+    if (pct === null) return null;
+    const up = pct >= 0;
+    return (
+      <span style={{ color: up ? '#10b981' : '#ef4444', fontSize: '0.75rem' }}>
+        {up ? '▲' : '▼'} {Math.abs(pct).toFixed(1)}%
+      </span>
+    );
+  };
+
+  // ── Shared styles ─────────────────────────────────────────────────────────────
+  const card: React.CSSProperties = {
+    background: '#1e293b', borderRadius: '0.75rem',
+    padding: '1.25rem', border: '1px solid #334155',
+  };
+  const inputStyle: React.CSSProperties = {
+    background: '#0f172a', border: '1px solid #334155',
+    borderRadius: '0.4rem', color: '#f1f5f9',
+    padding: '0.5rem 0.75rem', fontSize: '0.85rem',
+  };
+  const th: React.CSSProperties = {
+    padding: '0.5rem 0.75rem', fontWeight: 500,
+    color: '#64748b', borderBottom: '1px solid #334155',
+    whiteSpace: 'nowrap',
+  };
+  const td: React.CSSProperties = { padding: '0.6rem 0.75rem' };
+
+  // ── Render ────────────────────────────────────────────────────────────────────
   return (
-    <div className="flex-1 overflow-y-auto p-4 md:p-6 lg:p-8 space-y-6 bg-background-light dark:bg-background-dark">
-      <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
+    <div
+      style={{ padding: '1.5rem', background: '#0f172a', minHeight: '100vh', color: '#f1f5f9' }}
+      onClick={() => showPicker && setShowPicker(false)}
+    >
+      {/* Header */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1.5rem', flexWrap: 'wrap', gap: '0.75rem' }}>
         <div>
-          <h1 className="text-2xl md:text-3xl font-black tracking-tight text-slate-900 dark:text-white uppercase">Métricas de Rentabilidad</h1>
-          <p className="text-slate-500 dark:text-slate-400 mt-1 font-medium italic">Balance real considerando gastos operativos y costos de Amazon.</p>
+          <h1 style={{ fontSize: '1.5rem', fontWeight: 700, margin: 0 }}>Analítica</h1>
+          <p style={{ color: '#94a3b8', margin: '0.25rem 0 0', fontSize: '0.875rem' }}>
+            Resultados financieros históricos
+          </p>
         </div>
-        <div className="flex gap-2 relative">
-            <div className="relative">
-                <button 
-                  onClick={() => setShowMonthPicker(!showMonthPicker)}
-                  className="flex items-center gap-2 px-4 h-11 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-sm font-black text-slate-700 dark:text-slate-200 hover:border-primary transition-all shadow-sm"
-                >
-                    <span className="material-symbols-outlined text-[20px] text-primary">calendar_month</span>
-                    <span>{selectedMonth} 2025</span>
-                    <span className="material-symbols-outlined text-[16px]">expand_more</span>
-                </button>
-                {showMonthPicker && (
-                  <div className="absolute top-full right-0 mt-2 w-48 bg-white dark:bg-slate-800 rounded-xl shadow-2xl border border-slate-200 dark:border-slate-700 z-50 overflow-hidden grid grid-cols-1 divide-y divide-slate-50 dark:divide-slate-700 animate-fade-in">
-                    {months.map(m => (
-                      <button 
-                        key={m} 
-                        onClick={() => { setSelectedMonth(m); setShowMonthPicker(false); }} 
-                        className={`px-4 py-2 text-left text-xs font-bold transition-colors ${selectedMonth === m ? 'bg-primary text-white' : 'hover:bg-primary/10 text-slate-600 dark:text-slate-300'}`}
-                      >
-                        {m}
-                      </button>
-                    ))}
-                  </div>
-                )}
-            </div>
-          <button 
-            onClick={handleExport}
-            className="flex items-center gap-2 px-6 py-2 bg-slate-900 dark:bg-white text-white dark:text-slate-900 rounded-xl text-sm font-black hover:opacity-90 transition-all shadow-lg active:scale-95"
+
+        {/* Month picker */}
+        <div style={{ position: 'relative' }} onClick={e => e.stopPropagation()}>
+          <button
+            onClick={() => setShowPicker(!showPicker)}
+            style={{ ...inputStyle, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.5rem' }}
           >
-            <span className="material-symbols-outlined text-[18px]">download</span>
-            Exportar CSV
+            📅 {ymLabel(selectedYM)} <span style={{ color: '#94a3b8' }}>▾</span>
           </button>
+          {showPicker && (
+            <div style={{ position: 'absolute', right: 0, top: '110%', background: '#1e293b', border: '1px solid #334155', borderRadius: '0.75rem', padding: '1rem', zIndex: 50, width: '240px', boxShadow: '0 10px 40px rgba(0,0,0,0.5)' }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.75rem' }}>
+                <button onClick={() => setPickerYear(y => y - 1)}
+                  style={{ background: 'none', border: 'none', color: '#94a3b8', cursor: 'pointer', fontSize: '1.4rem', lineHeight: 1 }}>‹</button>
+                <span style={{ fontWeight: 600 }}>{pickerYear}</span>
+                <button onClick={() => setPickerYear(y => y + 1)}
+                  disabled={pickerYear >= new Date().getFullYear()}
+                  style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '1.4rem', lineHeight: 1, color: pickerYear >= new Date().getFullYear() ? '#334155' : '#94a3b8' }}>›</button>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '0.4rem' }}>
+                {MONTH_NAMES.map((mn, i) => {
+                  const ym = `${pickerYear}-${String(i + 1).padStart(2, '0')}`;
+                  const isFuture = ym > today;
+                  const isSelected = ym === selectedYM;
+                  return (
+                    <button key={mn} disabled={isFuture}
+                      onClick={() => { setSelectedYM(ym); setShowPicker(false); }}
+                      style={{ padding: '0.4rem', borderRadius: '0.4rem', border: 'none', cursor: isFuture ? 'not-allowed' : 'pointer', fontSize: '0.8rem', fontWeight: isSelected ? 700 : 400, background: isSelected ? '#6366f1' : '#0f172a', color: isSelected ? '#fff' : isFuture ? '#334155' : '#94a3b8' }}>
+                      {mn}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
         </div>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <div className="bg-white dark:bg-slate-800 rounded-2xl p-6 border border-slate-200 dark:border-slate-700 shadow-sm flex flex-col justify-between h-36 border-b-4 border-b-green-500">
-          <p className="text-slate-500 dark:text-slate-400 text-[10px] font-black uppercase tracking-widest">Ingresos Brutos</p>
-          <div>
-            <p className="text-3xl font-black text-slate-900 dark:text-white tracking-tighter">${totalRevenue.toLocaleString()}</p>
-            <div className="flex items-center gap-1 mt-2 text-[10px] font-black text-green-600 uppercase">
-              <span className="material-symbols-outlined text-[14px]">trending_up</span> +12%
-            </div>
+      {loading && (
+        <div style={{ textAlign: 'center', color: '#6366f1', padding: '1rem', fontSize: '0.875rem' }}>
+          Cargando datos...
+        </div>
+      )}
+
+      {/* KPI Cards */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: '1rem', marginBottom: '1.5rem' }}>
+        <div style={card}>
+          <div style={{ color: '#94a3b8', fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.5rem' }}>Ingresos Brutos</div>
+          <div style={{ fontSize: '1.4rem', fontWeight: 700 }}>{fmt(kpis.ingresos)}</div>
+          <div style={{ marginTop: '0.25rem', fontSize: '0.75rem', color: '#64748b' }}>
+            {kpis.ordersCount} órdenes &nbsp;{deltaArrow(kpis.deltaIngresos)}
           </div>
         </div>
-        <div className="bg-white dark:bg-slate-800 rounded-2xl p-6 border border-slate-200 dark:border-slate-700 shadow-sm flex flex-col justify-between h-36 border-b-4 border-b-blue-500">
-          <p className="text-slate-500 dark:text-slate-400 text-[10px] font-black uppercase tracking-widest">Ganancia Bruta</p>
-          <div>
-            <p className="text-3xl font-black text-slate-900 dark:text-white tracking-tighter">${grossProfit.toLocaleString()}</p>
-            <p className="text-slate-400 text-[10px] font-bold mt-2 uppercase">Margen: 34%</p>
+
+        <div style={card}>
+          <div style={{ color: '#94a3b8', fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.5rem' }}>Ganancia Bruta</div>
+          <div style={{ fontSize: '1.4rem', fontWeight: 700, color: kpis.ganBruta >= 0 ? '#10b981' : '#ef4444' }}>{fmt(kpis.ganBruta)}</div>
+          <div style={{ marginTop: '0.25rem', fontSize: '0.75rem', color: '#64748b' }}>
+            Neto ML − Costo Amazon &nbsp;{deltaArrow(kpis.deltaGanBruta)}
           </div>
         </div>
-        <div className="bg-white dark:bg-slate-800 rounded-2xl p-6 border border-slate-200 dark:border-slate-700 shadow-sm flex flex-col justify-between h-36 border-b-4 border-b-red-500">
-          <p className="text-slate-500 dark:text-slate-400 text-[10px] font-black uppercase tracking-widest">Gastos Operativos</p>
-          <div>
-            <p className="text-3xl font-black text-slate-900 dark:text-white tracking-tighter">${totalExpenses.toLocaleString()}</p>
-            <p className="text-red-500 text-[10px] font-bold mt-2 uppercase">{expenses.length} conceptos</p>
+
+        <div style={card}>
+          <div style={{ color: '#94a3b8', fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.5rem' }}>Gastos Operativos</div>
+          <div style={{ fontSize: '1.4rem', fontWeight: 700, color: '#f59e0b' }}>{fmt(kpis.gastos)}</div>
+          <div style={{ marginTop: '0.25rem', fontSize: '0.75rem', color: '#64748b' }}>
+            {monthExpenses.length} conceptos &nbsp;{deltaArrow(kpis.deltaGastos)}
           </div>
         </div>
-        <div className="bg-primary rounded-2xl p-6 shadow-xl shadow-primary/20 flex flex-col justify-between h-36">
-          <p className="text-white/70 text-[10px] font-black uppercase tracking-widest">Ganancia Neta Real</p>
-          <div>
-            <p className="text-3xl font-black text-white tracking-tighter">${netProfit.toLocaleString()}</p>
-            <p className="text-white/50 text-[10px] font-bold mt-2 uppercase italic">Efectivo final</p>
+
+        <div style={card}>
+          <div style={{ color: '#94a3b8', fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.5rem' }}>Ganancia Neta Real</div>
+          <div style={{ fontSize: '1.4rem', fontWeight: 700, color: kpis.ganNeta >= 0 ? '#10b981' : '#ef4444' }}>{fmt(kpis.ganNeta)}</div>
+          <div style={{ marginTop: '0.25rem', fontSize: '0.75rem', color: '#64748b' }}>
+            Gan. Bruta − Gastos &nbsp;{deltaArrow(kpis.deltaGanNeta)}
           </div>
+        </div>
+
+        <div style={{ ...card, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
+          <div style={{ color: '#94a3b8', fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.5rem', textAlign: 'center' }}>Margen Neto</div>
+          <MarginRing pct={kpis.margen} />
         </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* CHART SECTION */}
-        <div className="lg:col-span-2 bg-white dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 shadow-sm p-8">
-          <div className="flex flex-col md:flex-row md:items-center justify-between mb-8 gap-4">
-            <div>
-              <h3 className="text-lg font-black text-slate-900 dark:text-white uppercase tracking-tighter">Tendencia de Ganancias</h3>
-              <p className="text-xs text-slate-500 font-bold">Histórico comparativo de salud financiera</p>
-            </div>
-            <div className="flex bg-slate-100 dark:bg-slate-900 p-1 rounded-xl">
-              {(['1m', '3m', '6m', '12m'] as const).map(f => (
-                <button 
-                  key={f} 
-                  onClick={() => setTimeFilter(f)} 
-                  className={`px-4 py-1.5 text-[10px] font-black rounded-lg transition-all ${timeFilter === f ? 'bg-primary text-white shadow-md' : 'text-slate-500 hover:text-slate-700'}`}
-                >
-                  {f.toUpperCase()}
-                </button>
-              ))}
-            </div>
-          </div>
-          
-          <div className="flex w-full">
-            {/* Y-Axis Labels */}
-            <div className="flex flex-col justify-between items-end pr-4 pb-8 h-64 text-[10px] font-black text-slate-400 uppercase tracking-tighter w-14">
-              {yAxisLabels.map(label => <span key={label}>{label}</span>)}
-            </div>
-            
-            {/* Chart Plot Area */}
-            <div className="flex-1">
-              <div className="h-64 flex items-end justify-between relative px-2">
-                <div className="absolute inset-0 flex flex-col justify-between pointer-events-none pb-0.5">
-                  {[0,1,2,3,4].map(i => <div key={i} className="w-full border-t border-slate-100 dark:border-slate-700/50"></div>)}
-                </div>
-
-                {chartPoints.map((p, i) => (
-                  <div key={i} className="flex-1 flex flex-col items-center group relative h-full justify-end z-10">
-                    <div className="flex gap-1 items-end h-full w-full justify-center px-1">
-                      <div className="w-2.5 bg-green-500 rounded-t-md shadow-sm transition-all group-hover:brightness-110" style={{ height: `${p.rev}%` }}></div>
-                      <div className="w-2.5 bg-red-500 rounded-t-md shadow-sm transition-all group-hover:brightness-110" style={{ height: `${p.exp}%` }}></div>
-                      <div className="w-2.5 bg-primary rounded-t-md shadow-sm transition-all group-hover:brightness-110" style={{ height: `${Math.max(5, p.rev - p.exp)}%` }}></div>
-                    </div>
-                    
-                    <div className="absolute -top-16 opacity-0 group-hover:opacity-100 transition-all scale-95 group-hover:scale-100 bg-slate-900 text-white text-[10px] p-3 rounded-xl shadow-2xl z-20 w-32 font-bold pointer-events-none">
-                        <div className="flex justify-between"><span>Ventas:</span> <span>${p.rev}k</span></div>
-                        <div className="flex justify-between text-red-400"><span>Gastos:</span> <span>${p.exp}k</span></div>
-                        <div className="h-px bg-slate-700/50 my-1"></div>
-                        <div className="flex justify-between text-green-400"><span>Neto:</span> <span>${p.rev - p.exp}k</span></div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-              
-              <div className="flex justify-between items-start mt-3 px-2">
-                {chartPoints.map((p, i) => (
-                  <span key={i} className="flex-1 text-center text-[10px] font-black text-slate-500 uppercase tracking-widest">{p.label}</span>
-                ))}
-              </div>
-            </div>
-          </div>
-
-          <div className="flex flex-wrap gap-6 mt-10 justify-center border-t border-slate-100 dark:border-slate-700/50 pt-6">
-              <div className="flex items-center gap-2"><div className="size-3 rounded-sm bg-green-500 shadow-sm"></div><span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Ingresos</span></div>
-              <div className="flex items-center gap-2"><div className="size-3 rounded-sm bg-red-500 shadow-sm"></div><span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Gastos</span></div>
-              <div className="flex items-center gap-2"><div className="size-3 rounded-sm bg-primary shadow-sm"></div><span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Ganancia Real</span></div>
-          </div>
-        </div>
-
-        {/* Expenses Management */}
-        <div className="bg-white dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 shadow-sm flex flex-col overflow-hidden">
-          <div className="p-6 border-b border-slate-100 dark:border-slate-700 bg-slate-50/50 dark:bg-slate-900/50">
-            <h3 className="text-base font-black text-slate-900 dark:text-white uppercase tracking-tighter">Gastos Operativos</h3>
-            <p className="text-xs text-slate-500 font-bold">Ingresar nuevos costos fijos</p>
-          </div>
-          
-          <div className="p-6 space-y-4">
-            <div className="flex flex-col gap-2">
-              <input 
-                value={newConcept}
-                onChange={(e) => setNewConcept(e.target.value)}
-                className="w-full text-xs font-bold rounded-xl border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 p-3 focus:ring-primary" 
-                placeholder="Concepto..." 
-                type="text" 
-              />
-              <div className="flex gap-2">
-                <input 
-                  value={newAmount}
-                  onChange={(e) => setNewAmount(e.target.value)}
-                  className="w-full text-xs font-bold rounded-xl border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 p-3 focus:ring-primary" 
-                  placeholder="$ Monto" 
-                  type="number" 
-                />
-                <button 
-                  onClick={handleAddExpense}
-                  className="bg-primary hover:bg-primary-dark text-white px-5 rounded-xl text-sm font-bold shadow-lg shadow-primary/20 transition-all active:scale-95"
-                >
-                  <span className="material-symbols-outlined">add</span>
-                </button>
-              </div>
-            </div>
-          </div>
-
-          <div className="flex-1 overflow-y-auto px-6 space-y-2 pb-6">
-            {expenses.map(e => (
-              <div key={e.id} className="flex items-center justify-between p-3 bg-slate-50 dark:bg-slate-900/50 rounded-xl group border border-transparent hover:border-slate-200 transition-all">
-                <div className="flex flex-col">
-                  <p className="text-xs font-black text-slate-900 dark:text-white uppercase">{e.concept}</p>
-                  <p className="text-[9px] text-slate-400 font-bold uppercase">{e.period}</p>
-                </div>
-                <div className="flex items-center gap-3">
-                  <span className="text-sm font-black text-slate-900 dark:text-white">${e.amount.toLocaleString()}</span>
-                  <button onClick={() => handleDeleteExpense(e.id)} className="text-slate-300 hover:text-red-500 transition-colors opacity-0 group-hover:opacity-100">
-                    <span className="material-symbols-outlined text-[18px]">delete</span>
-                  </button>
-                </div>
-              </div>
+      {/* Chart */}
+      <div style={{ ...card, marginBottom: '1.5rem' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1rem', flexWrap: 'wrap', gap: '0.5rem' }}>
+          <h2 style={{ margin: 0, fontSize: '1rem', fontWeight: 600 }}>Evolución Mensual</h2>
+          <div style={{ display: 'flex', gap: '0.5rem' }}>
+            {(['3m', '6m', '12m'] as const).map(f => (
+              <button key={f} onClick={() => setTimeFilter(f)}
+                style={{ padding: '0.25rem 0.75rem', borderRadius: '0.4rem', border: 'none', cursor: 'pointer', fontSize: '0.8rem', background: timeFilter === f ? '#6366f1' : '#0f172a', color: timeFilter === f ? '#fff' : '#94a3b8' }}>
+                {f}
+              </button>
             ))}
           </div>
-          <div className="p-5 bg-primary/5 dark:bg-primary/10 border-t border-primary/10 flex justify-between items-center px-6">
-              <span className="text-xs font-black text-slate-500 uppercase tracking-widest">Total Gastos</span>
-              <span className="text-xl font-black text-primary">${totalExpenses.toLocaleString()}</span>
+        </div>
+
+        <div style={{ display: 'flex', gap: '1.5rem', marginBottom: '0.75rem', fontSize: '0.75rem', color: '#94a3b8' }}>
+          <span>
+            <span style={{ display: 'inline-block', width: '10px', height: '10px', background: '#10b981', borderRadius: '2px', marginRight: '4px' }} />
+            Ingresos Brutos
+          </span>
+          <span>
+            <span style={{ display: 'inline-block', width: '10px', height: '10px', background: '#6366f1', borderRadius: '2px', marginRight: '4px' }} />
+            Ganancia Neta
+          </span>
+        </div>
+
+        <div style={{ display: 'flex', alignItems: 'flex-end', gap: '0.4rem', height: '200px' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'space-between', height: '180px', color: '#64748b', fontSize: '0.68rem', textAlign: 'right', minWidth: '38px' }}>
+            <span>{fmtShort(chartMax)}</span>
+            <span>{fmtShort(chartMax / 2)}</span>
+            <span>$0</span>
           </div>
+          {chartData.map(d => {
+            const ingH = chartMax > 0 ? (d.ingresos / chartMax) * 180 : 0;
+            const netH = chartMax > 0 ? (Math.max(0, d.ganNeta) / chartMax) * 180 : 0;
+            const isSelected = d.ym === selectedYM;
+            return (
+              <div key={d.ym} onClick={() => setSelectedYM(d.ym)}
+                style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', cursor: 'pointer', justifyContent: 'flex-end', height: '200px' }}
+                title={`${d.label}\nIngresos: ${fmt(d.ingresos)}\nGan. Neta: ${fmt(d.ganNeta)}`}>
+                <div style={{ display: 'flex', gap: '2px', alignItems: 'flex-end', height: '180px' }}>
+                  <div style={{ width: '12px', height: `${ingH}px`, background: isSelected ? '#34d399' : '#10b981', borderRadius: '3px 3px 0 0', transition: 'height 0.3s' }} />
+                  <div style={{ width: '12px', height: `${netH}px`, background: isSelected ? '#818cf8' : '#6366f1', borderRadius: '3px 3px 0 0', transition: 'height 0.3s' }} />
+                </div>
+                <span style={{ fontSize: '0.62rem', color: isSelected ? '#f1f5f9' : '#64748b', marginTop: '4px', whiteSpace: 'nowrap' }}>
+                  {d.label}
+                </span>
+              </div>
+            );
+          })}
         </div>
       </div>
 
-      <div className="bg-white dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 shadow-xl flex flex-col overflow-hidden">
-        <div className="p-6 border-b border-slate-100 dark:border-slate-800 flex flex-col lg:flex-row lg:items-center justify-between gap-4 bg-slate-50/30 dark:bg-slate-900/50">
-          <div>
-            <h3 className="text-lg font-black text-slate-900 dark:text-white uppercase tracking-tighter">Rentabilidad por Producto</h3>
-            <p className="text-xs text-slate-500 font-bold">Rendimiento neto por cada ASIN.</p>
-          </div>
-          <div className="flex flex-wrap gap-2 w-full lg:w-auto">
-            <div className="relative flex-1 lg:flex-none">
-              <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-[20px]">search</span>
-              <input 
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="pl-10 pr-4 py-2 w-full lg:w-64 rounded-xl border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-bold focus:ring-primary shadow-sm" 
-                placeholder="Buscar ASIN o Nombre..." 
-                type="text" 
-              />
+      {/* Bottom grid */}
+      <div style={{ display: 'grid', gridTemplateColumns: '320px 1fr', gap: '1.5rem', alignItems: 'start' }}>
+
+        {/* Gastos Operativos Panel */}
+        <div style={card}>
+          <h2 style={{ margin: '0 0 1rem', fontSize: '1rem', fontWeight: 600 }}>
+            Gastos — {ymLabel(selectedYM)}
+          </h2>
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginBottom: '1rem' }}>
+            <input placeholder="Concepto" value={newConcept}
+              onChange={e => setNewConcept(e.target.value)}
+              style={{ ...inputStyle, width: '100%', boxSizing: 'border-box' }} />
+            <div style={{ display: 'flex', gap: '0.5rem' }}>
+              <input placeholder="Monto (MXN)" type="number" value={newAmount}
+                onChange={e => setNewAmount(e.target.value)}
+                style={{ ...inputStyle, flex: 1 }} />
+              <select value={newPeriod} onChange={e => setNewPeriod(e.target.value)}
+                style={{ ...inputStyle, cursor: 'pointer' }}>
+                <option>Mensual</option>
+                <option>Semanal</option>
+                <option>Anual</option>
+                <option>Único</option>
+              </select>
             </div>
-            <select 
-              value={roiFilter}
-              onChange={(e) => setRoiFilter(e.target.value)}
-              className="px-4 py-2 rounded-xl border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-[11px] font-black focus:ring-primary uppercase shadow-sm"
-            >
-              <option value="all">Filtro ROI: Todos</option>
-              <option value="low">Bajo ROI (&lt; 15%)</option>
-              <option value="high">Alto ROI (&gt;= 15%)</option>
-            </select>
+            <button onClick={handleAddExpense}
+              disabled={saving || !newConcept.trim() || !newAmount.trim()}
+              style={{ background: saving || !newConcept.trim() || !newAmount.trim() ? '#334155' : '#6366f1', border: 'none', borderRadius: '0.4rem', color: '#fff', padding: '0.5rem', cursor: 'pointer', fontSize: '0.85rem', fontWeight: 600 }}>
+              {saving ? 'Guardando...' : '+ Agregar gasto'}
+            </button>
           </div>
+
+          {monthExpenses.length === 0 ? (
+            <p style={{ color: '#64748b', fontSize: '0.85rem', textAlign: 'center', padding: '1rem 0' }}>
+              Sin gastos registrados este mes
+            </p>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+              {monthExpenses.map(e => (
+                <div key={e.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.6rem 0.75rem', background: '#0f172a', borderRadius: '0.4rem', gap: '0.5rem' }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: '0.85rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{e.concept}</div>
+                    <div style={{ fontSize: '0.7rem', color: '#64748b' }}>{e.period}</div>
+                  </div>
+                  <span style={{ color: '#f59e0b', fontWeight: 600, fontSize: '0.9rem', whiteSpace: 'nowrap' }}>{fmt(e.amount)}</span>
+                  <button onClick={() => handleDeleteExpense(e.id)}
+                    style={{ background: 'none', border: 'none', color: '#ef4444', cursor: 'pointer', fontSize: '1.1rem', padding: '0 0.2rem', lineHeight: 1 }}>×</button>
+                </div>
+              ))}
+              <div style={{ borderTop: '1px solid #334155', paddingTop: '0.5rem', display: 'flex', justifyContent: 'space-between', fontSize: '0.875rem', fontWeight: 700 }}>
+                <span style={{ color: '#94a3b8' }}>Total</span>
+                <span style={{ color: '#f59e0b' }}>{fmt(kpis.gastos)}</span>
+              </div>
+            </div>
+          )}
         </div>
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-sm">
-            <thead className="bg-slate-50/50 dark:bg-slate-900 text-slate-400 uppercase text-[10px] font-black tracking-widest border-b border-slate-100 dark:border-slate-700">
-              <tr>
-                <th className="px-6 py-4">Producto</th>
-                <th className="px-6 py-4 text-right">Costo Amz</th>
-                <th className="px-6 py-4 text-right">Logística</th>
-                <th className="px-6 py-4 text-right">Venta ML</th>
-                <th className="px-6 py-4 text-right">Ganancia</th>
-                <th className="px-6 py-4 text-center">ROI %</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-              {filteredProducts.map(p => {
-                const totalCost = p.cost + p.shipping + p.package;
-                const profit = p.sale - totalCost;
-                const roi = (profit / totalCost) * 100;
-                return (
-                  <tr key={p.id} className="hover:bg-slate-50 dark:hover:bg-slate-900/30 transition-colors">
-                    <td className="px-6 py-4">
-                      <div className="flex items-center gap-3">
-                        <div className="size-10 bg-slate-100 dark:bg-slate-800 rounded border border-slate-200 dark:border-slate-700 overflow-hidden"><img src={p.image} className="w-full h-full object-cover" /></div>
-                        <div>
-                          <p className="font-black text-slate-900 dark:text-white text-xs line-clamp-1 uppercase tracking-tighter">{p.name}</p>
-                          <span className="text-[10px] text-primary font-bold">ASIN: {p.asin}</span>
-                        </div>
-                      </div>
+
+        {/* Product Profitability Table */}
+        <div style={{ ...card, overflowX: 'auto' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1rem', flexWrap: 'wrap', gap: '0.5rem' }}>
+            <h2 style={{ margin: 0, fontSize: '1rem', fontWeight: 600 }}>Rentabilidad por Producto</h2>
+            <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+              <input placeholder="Buscar producto / ASIN" value={searchQuery}
+                onChange={e => setSearchQuery(e.target.value)}
+                style={{ ...inputStyle, width: '180px' }} />
+              <select value={roiFilter} onChange={e => setRoiFilter(e.target.value as any)}
+                style={{ ...inputStyle, cursor: 'pointer' }}>
+                <option value="all">Todo ROI</option>
+                <option value="positive">ROI positivo</option>
+                <option value="negative">ROI negativo</option>
+              </select>
+              <select value={rentableFilter} onChange={e => setRentableFilter(e.target.value as any)}
+                style={{ ...inputStyle, cursor: 'pointer' }}>
+                <option value="all">Todos</option>
+                <option value="yes">Rentables</option>
+                <option value="no">No rentables</option>
+              </select>
+            </div>
+          </div>
+
+          {filteredRows.length === 0 ? (
+            <p style={{ color: '#64748b', fontSize: '0.875rem', textAlign: 'center', padding: '2rem 0' }}>
+              {orders.length === 0 ? 'Sin órdenes en este período' : 'Sin resultados para los filtros aplicados'}
+            </p>
+          ) : (
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.8rem' }}>
+              <thead>
+                <tr>
+                  <th style={{ ...th, textAlign: 'left' }}>Producto</th>
+                  <th style={{ ...th, textAlign: 'right' }}>Venta ML</th>
+                  <th style={{ ...th, textAlign: 'right' }}>Costo Amazon</th>
+                  <th style={{ ...th, textAlign: 'right' }}>Neto ML</th>
+                  <th style={{ ...th, textAlign: 'right' }}>Gan. Neta</th>
+                  <th style={{ ...th, textAlign: 'right' }}>ROI%</th>
+                  <th style={{ ...th, textAlign: 'right' }}>Margen%</th>
+                  <th style={{ ...th, textAlign: 'center' }}>¿Rentable?</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredRows.map(r => (
+                  <tr key={r.key} style={{ borderBottom: '1px solid #0f172a' }}>
+                    <td style={{ ...td, maxWidth: '220px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={r.name}>{r.name}</td>
+                    <td style={{ ...td, textAlign: 'right' }}>{fmt(r.ventaML)}</td>
+                    <td style={{ ...td, textAlign: 'right', color: '#94a3b8' }}>{fmt(r.costoAmazon)}</td>
+                    <td style={{ ...td, textAlign: 'right' }}>{fmt(r.netoML)}</td>
+                    <td style={{ ...td, textAlign: 'right', fontWeight: 600, color: r.gananciaNeta >= 0 ? '#10b981' : '#ef4444' }}>{fmt(r.gananciaNeta)}</td>
+                    <td style={{ ...td, textAlign: 'right', color: r.roi === null ? '#64748b' : r.roi >= 0 ? '#10b981' : '#ef4444' }}>
+                      {r.roi !== null ? `${r.roi.toFixed(1)}%` : '—'}
                     </td>
-                    <td className="px-6 py-4 text-right font-bold text-slate-500">${p.cost.toLocaleString()}</td>
-                    <td className="px-6 py-4 text-right font-bold text-slate-500">${(p.shipping + p.package).toLocaleString()}</td>
-                    <td className="px-6 py-4 text-right font-black text-slate-900 dark:text-white">${p.sale.toLocaleString()}</td>
-                    <td className={`px-6 py-4 text-right font-black ${profit > 500 ? 'text-green-600' : 'text-orange-500'}`}>+${profit.toLocaleString()}</td>
-                    <td className="px-6 py-4 text-center">
-                      <span className={`px-2 py-1 rounded text-[10px] font-black uppercase border ${roi > 20 ? 'bg-green-100 text-green-700 border-green-200' : 'bg-orange-100 text-orange-700 border-orange-200'}`}>
-                        {roi.toFixed(1)}%
+                    <td style={{ ...td, textAlign: 'right', color: r.margen === null ? '#64748b' : r.margen >= 0 ? '#10b981' : '#ef4444' }}>
+                      {r.margen !== null ? `${r.margen.toFixed(1)}%` : '—'}
+                    </td>
+                    <td style={{ ...td, textAlign: 'center' }}>
+                      <span style={{ background: r.rentable ? '#064e3b' : '#450a0a', color: r.rentable ? '#34d399' : '#f87171', borderRadius: '999px', padding: '0.2rem 0.6rem', fontSize: '0.7rem', fontWeight: 600 }}>
+                        {r.rentable ? 'Sí' : 'No'}
                       </span>
                     </td>
                   </tr>
-                );
-              })}
-            </tbody>
-          </table>
+                ))}
+              </tbody>
+              <tfoot>
+                <tr style={{ borderTop: '2px solid #334155', fontWeight: 700 }}>
+                  <td style={{ ...td, color: '#94a3b8' }}>Totales ({filteredRows.length})</td>
+                  <td style={{ ...td, textAlign: 'right' }}>{fmt(filteredRows.reduce((s, r) => s + r.ventaML, 0))}</td>
+                  <td style={{ ...td, textAlign: 'right', color: '#94a3b8' }}>{fmt(filteredRows.reduce((s, r) => s + r.costoAmazon, 0))}</td>
+                  <td style={{ ...td, textAlign: 'right' }}>{fmt(filteredRows.reduce((s, r) => s + r.netoML, 0))}</td>
+                  <td style={{ ...td, textAlign: 'right', color: '#10b981' }}>{fmt(filteredRows.reduce((s, r) => s + r.gananciaNeta, 0))}</td>
+                  <td colSpan={3} />
+                </tr>
+              </tfoot>
+            </table>
+          )}
         </div>
       </div>
     </div>
