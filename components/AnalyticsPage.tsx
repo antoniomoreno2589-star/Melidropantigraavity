@@ -168,13 +168,21 @@ export const AnalyticsPage: React.FC = () => {
     const months: string[] = [];
     for (let i = count - 1; i >= 0; i--) months.push(subtractMonths(selectedYM, i));
 
-    return months.map(ym => {
+    const entries = months.map(ym => {
       const mOrders = chartOrders.filter(o => o.date?.startsWith(ym));
       const mExpenses = chartExpenses.filter(e => e.year_month === ym);
       const ingresos = mOrders.reduce((s, o) => s + (o.total ?? 0), 0);
       const ganBruta = mOrders.reduce((s, o) => s + (o.netIncome ?? 0) - orderCostMXN(o), 0);
       const gastos = mExpenses.reduce((s, e) => s + e.amount, 0);
       return { ym, label: ymLabel(ym), ingresos, ganNeta: ganBruta - gastos };
+    });
+
+    return entries.map((d, i) => {
+      const prev = i > 0 ? entries[i - 1] : null;
+      const deltaVsPrev = prev && prev.ingresos > 0
+        ? ((d.ingresos - prev.ingresos) / prev.ingresos) * 100
+        : null;
+      return { ...d, deltaVsPrev };
     });
   }, [chartOrders, chartExpenses, selectedYM, timeFilter, orderCostMXN]);
 
@@ -406,8 +414,8 @@ export const AnalyticsPage: React.FC = () => {
           </span>
         </div>
 
-        <div style={{ display: 'flex', alignItems: 'flex-end', gap: '0.4rem', height: '200px' }}>
-          <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'space-between', height: '180px', color: '#64748b', fontSize: '0.68rem', textAlign: 'right', minWidth: '38px' }}>
+        <div style={{ display: 'flex', alignItems: 'flex-end', gap: '0.4rem', height: '230px' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'space-between', height: '180px', color: '#64748b', fontSize: '0.68rem', textAlign: 'right', minWidth: '38px', marginBottom: '30px' }}>
             <span>{fmtShort(chartMax)}</span>
             <span>{fmtShort(chartMax / 2)}</span>
             <span>$0</span>
@@ -416,10 +424,19 @@ export const AnalyticsPage: React.FC = () => {
             const ingH = chartMax > 0 ? (d.ingresos / chartMax) * 180 : 0;
             const netH = chartMax > 0 ? (Math.max(0, d.ganNeta) / chartMax) * 180 : 0;
             const isSelected = d.ym === selectedYM;
+            const up = d.deltaVsPrev !== null && d.deltaVsPrev >= 0;
             return (
               <div key={d.ym} onClick={() => setSelectedYM(d.ym)}
-                style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', cursor: 'pointer', justifyContent: 'flex-end', height: '200px' }}
-                title={`${d.label}\nIngresos: ${fmt(d.ingresos)}\nGan. Neta: ${fmt(d.ganNeta)}`}>
+                style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', cursor: 'pointer', justifyContent: 'flex-end', height: '230px' }}
+                title={`${d.label}\nIngresos: ${fmt(d.ingresos)}\nGan. Neta: ${fmt(d.ganNeta)}${d.deltaVsPrev !== null ? `\nvs anterior: ${d.deltaVsPrev > 0 ? '+' : ''}${d.deltaVsPrev.toFixed(1)}%` : ''}`}>
+                {/* delta badge */}
+                <div style={{ height: '18px', display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: '2px' }}>
+                  {d.deltaVsPrev !== null && (
+                    <span style={{ fontSize: '0.58rem', fontWeight: 700, color: up ? '#10b981' : '#ef4444', background: up ? '#064e3b' : '#450a0a', borderRadius: '999px', padding: '1px 5px', whiteSpace: 'nowrap' }}>
+                      {up ? '▲' : '▼'}{Math.abs(d.deltaVsPrev).toFixed(0)}%
+                    </span>
+                  )}
+                </div>
                 <div style={{ display: 'flex', gap: '2px', alignItems: 'flex-end', height: '180px' }}>
                   <div style={{ width: '12px', height: `${ingH}px`, background: isSelected ? '#34d399' : '#10b981', borderRadius: '3px 3px 0 0', transition: 'height 0.3s' }} />
                   <div style={{ width: '12px', height: `${netH}px`, background: isSelected ? '#818cf8' : '#6366f1', borderRadius: '3px 3px 0 0', transition: 'height 0.3s' }} />
