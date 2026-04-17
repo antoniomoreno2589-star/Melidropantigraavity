@@ -494,7 +494,7 @@ export const OrdersPage = () => {
                                     </tr>
                                 ) : filteredOrders.map(order => {
                                     const cost     = costMXN(order);
-                                    const ganancia = order.amazonPurchasePrice != null ? order.netIncome - cost : null;
+                                    const ganancia = order.status !== 'cancelled' && order.amazonPurchasePrice != null ? order.netIncome - cost : null;
                                     const isUS     = currencyMap[order.amazonAsin] === 'USD';
                                     const sb       = statusBadge[order.status] ?? { label: order.status, cls: 'bg-slate-100 text-slate-500' };
 
