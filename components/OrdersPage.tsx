@@ -1,6 +1,7 @@
 import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import { api } from '../services/api';
 import { meliService } from '../services/meliService';
+import { amazonService } from '../services/amazonService';
 import { supabase } from '../services/supabase';
 import { Order } from '../types';
 
@@ -51,6 +52,8 @@ export const OrdersPage = () => {
     const [mlStatusFilter, setMlStatusFilter] = useState('all');
     const [amazonFilter, setAmazonFilter] = useState('all');
     const [selectedIds, setSelectedIds] = useState<string[]>([]);
+    const [detailOrderId, setDetailOrderId] = useState<string | null>(null);
+    const [buyLoading, setBuyLoading] = useState<Set<string>>(new Set());
 
     // ── date range ─────────────────────────────────────────────────────
     const range = useMemo(
@@ -132,7 +135,26 @@ export const OrdersPage = () => {
             window.open(`https://www.${getAmazonDomain(order.amazonAsin)}/dp/${order.amazonAsin}`, '_blank', 'noreferrer');
         }
         if (order.amazonStatus !== 'pending') return;
-        const updated = { ...order, amazonStatus: 'purchased' as const };
+
+        setBuyLoading(prev => new Set([...prev, order.id]));
+        let autoCostMXN: number | undefined;
+        try {
+            if (order.amazonAsin && amazonService.isAuthenticated()) {
+                const product = await amazonService.getProduct(order.amazonAsin);
+                if (product.price > 0) {
+                    autoCostMXN = product.currency === 'USD'
+                        ? Math.round(product.price * exchangeRate * 100) / 100
+                        : product.price;
+                }
+            }
+        } catch { /* price fetch failed — user can fill manually */ }
+        setBuyLoading(prev => { const s = new Set(prev); s.delete(order.id); return s; });
+
+        const updated = {
+            ...order,
+            amazonStatus: 'purchased' as const,
+            ...(autoCostMXN != null ? { amazonPurchasePrice: autoCostMXN } : {})
+        };
         setOrders(prev => prev.map(o => o.id === order.id ? updated : o));
         try { await api.orders.update(updated); }
         catch { setOrders(prev => prev.map(o => o.id === order.id ? order : o)); }
@@ -147,12 +169,18 @@ export const OrdersPage = () => {
         catch (e) { console.error('Error saving cost', e); }
     };
 
-    // ── cost in MXN (for profit calc) ──────────────────────────────────
-    const costMXN = (order: Order) => {
-        if (!order.amazonPurchasePrice) return 0;
-        return currencyMap[order.amazonAsin] === 'USD'
-            ? order.amazonPurchasePrice * exchangeRate
-            : order.amazonPurchasePrice;
+    // amazonPurchasePrice is always stored in MXN (auto-filled or typed by user)
+    const costMXN = (order: Order) => order.amazonPurchasePrice ?? 0;
+
+    // Shipping cost implied by ML payment breakdown
+    const shippingCost = (order: Order) =>
+        Math.max(0, order.total - order.netIncome - (order.mlCommission ?? 0));
+
+    // Days until shipping deadline (negative = overdue)
+    const daysUntil = (deadline: string): number => {
+        if (!deadline) return 999;
+        const diff = new Date(deadline + 'T12:00:00').getTime() - new Date(todayStr + 'T12:00:00').getTime();
+        return Math.round(diff / 86400000);
     };
 
     // ── filtered list & stats ──────────────────────────────────────────
@@ -412,11 +440,29 @@ export const OrdersPage = () => {
                                         </td>
                                     </tr>
                                 ) : filteredOrders.map(order => {
-                                    const cost      = costMXN(order);
-                                    const ganancia  = order.amazonPurchasePrice != null ? order.netIncome - cost : null;
-                                    const asinCur   = currencyMap[order.amazonAsin] ?? 'USD';
-                                    const isToday   = order.shippingDeadline === todayStr;
-                                    const sb        = statusBadge[order.status] ?? { label: order.status, cls: 'bg-slate-100 text-slate-500' };
+                                    const cost     = costMXN(order);
+                                    const ganancia = order.amazonPurchasePrice != null ? order.netIncome - cost : null;
+                                    const isUS     = currencyMap[order.amazonAsin] === 'USD';
+                                    const sb       = statusBadge[order.status] ?? { label: order.status, cls: 'bg-slate-100 text-slate-500' };
+
+                                    // Shipping deadline display
+                                    const days = daysUntil(order.shippingDeadline ?? '');
+                                    const isActive = !['delivered', 'cancelled', 'shipped'].includes(order.status);
+                                    const deadlineBadge = !order.shippingDeadline ? null
+                                        : isActive && days < 0  ? { label: 'Vencido',  cls: 'bg-red-100 text-red-600 dark:bg-red-900/30 dark:text-red-400' }
+                                        : isActive && days === 0 ? { label: 'HOY',      cls: 'bg-orange-500 text-white animate-pulse' }
+                                        : isActive && days === 1 ? { label: 'Mañana',   cls: 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400' }
+                                        : isActive && days <= 3  ? { label: `En ${days}d`, cls: 'bg-blue-50 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400' }
+                                        : null;
+                                    const fmtDate = (d: string) => {
+                                        const [, m, day] = d.split('-');
+                                        return `${parseInt(day)} ${['','Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'][parseInt(m)]}`;
+                                    };
+
+                                    // ML breakdown
+                                    const shipping = shippingCost(order);
+                                    const showDetail = detailOrderId === order.id;
+
                                     return (
                                         <tr
                                             key={order.id}
@@ -446,16 +492,27 @@ export const OrdersPage = () => {
                                             <td className="px-4 py-3.5 max-w-[200px]">
                                                 <p className="text-xs font-bold text-slate-700 dark:text-slate-300 line-clamp-2 leading-snug">{order.productTitle}</p>
                                                 {order.amazonAsin && (
-                                                    <span className="inline-block mt-1 text-[9px] font-mono text-slate-400 bg-slate-100 dark:bg-slate-700 px-1.5 py-0.5 rounded">{order.amazonAsin}</span>
+                                                    <span className="inline-block mt-1 text-xs font-mono font-bold text-primary bg-primary/10 px-2 py-0.5 rounded tracking-wider">{order.amazonAsin}</span>
                                                 )}
                                                 <span className={`inline-block mt-1 ml-1 text-[9px] font-black px-1.5 py-0.5 rounded ${sb.cls}`}>{sb.label}</span>
                                             </td>
 
                                             {/* Shipping deadline */}
                                             <td className="px-4 py-3.5 text-center">
-                                                <span className={`text-[11px] font-black px-2 py-1 rounded-lg whitespace-nowrap ${isToday ? 'bg-orange-500 text-white' : 'bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300'}`}>
-                                                    {order.shippingDeadline || '—'}
-                                                </span>
+                                                {order.shippingDeadline ? (
+                                                    <div className="flex flex-col items-center gap-0.5">
+                                                        {deadlineBadge && (
+                                                            <span className={`text-[10px] font-black px-2 py-0.5 rounded-full whitespace-nowrap ${deadlineBadge.cls}`}>
+                                                                {deadlineBadge.label}
+                                                            </span>
+                                                        )}
+                                                        <span className="text-[11px] text-slate-500 dark:text-slate-400 font-medium">
+                                                            {fmtDate(order.shippingDeadline)}
+                                                        </span>
+                                                    </div>
+                                                ) : (
+                                                    <span className="text-slate-300 dark:text-slate-600">—</span>
+                                                )}
                                             </td>
 
                                             {/* Gross sale */}
@@ -463,11 +520,37 @@ export const OrdersPage = () => {
                                                 <span className="font-black text-slate-900 dark:text-white">${fmt(order.total)}</span>
                                             </td>
 
-                                            {/* Net income */}
-                                            <td className="px-4 py-3.5 text-right">
+                                            {/* Net income + detail */}
+                                            <td className="px-4 py-3.5 text-right relative">
                                                 <span className="font-bold text-slate-700 dark:text-slate-300">${fmt(order.netIncome)}</span>
-                                                {order.mlCommission > 0 && (
-                                                    <span className="block text-[9px] text-red-400 font-bold">-${fmt(order.mlCommission)}</span>
+                                                <button
+                                                    onClick={() => setDetailOrderId(showDetail ? null : order.id)}
+                                                    className="block ml-auto text-[9px] text-primary hover:underline font-bold mt-0.5"
+                                                >
+                                                    {showDetail ? 'Ocultar' : 'Ver detalle'}
+                                                </button>
+                                                {showDetail && (
+                                                    <div className="absolute right-2 top-full mt-1 z-20 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-600 rounded-xl shadow-xl p-3 text-left w-56">
+                                                        <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2">Desglose ML</p>
+                                                        <div className="flex justify-between text-xs py-1 border-b border-slate-100 dark:border-slate-700">
+                                                            <span className="text-slate-600 dark:text-slate-300">Valor de venta</span>
+                                                            <span className="font-bold text-slate-800 dark:text-white">${fmt(order.total)}</span>
+                                                        </div>
+                                                        {shipping > 0 && (
+                                                            <div className="flex justify-between text-xs py-1 border-b border-slate-100 dark:border-slate-700">
+                                                                <span className="text-slate-600 dark:text-slate-300">Costo de envío</span>
+                                                                <span className="font-bold text-red-500">-${fmt(shipping)}</span>
+                                                            </div>
+                                                        )}
+                                                        <div className="flex justify-between text-xs py-1 border-b border-slate-100 dark:border-slate-700">
+                                                            <span className="text-slate-600 dark:text-slate-300">Comisión ML</span>
+                                                            <span className="font-bold text-red-500">-${fmt(order.mlCommission ?? 0)}</span>
+                                                        </div>
+                                                        <div className="flex justify-between text-xs pt-2 mt-1">
+                                                            <span className="font-black text-slate-800 dark:text-white">Te queda</span>
+                                                            <span className="font-black text-green-600 dark:text-green-400">${fmt(order.netIncome)}</span>
+                                                        </div>
+                                                    </div>
                                                 )}
                                             </td>
 
@@ -481,18 +564,21 @@ export const OrdersPage = () => {
                                                 ) : order.amazonAsin ? (
                                                     <button
                                                         onClick={() => handleBuyClick(order)}
+                                                        disabled={buyLoading.has(order.id)}
                                                         title={`Abrir en ${getAmazonDomain(order.amazonAsin)} y marcar como comprado`}
-                                                        className="inline-flex items-center gap-1 bg-slate-900 dark:bg-slate-200 text-white dark:text-slate-900 px-2.5 py-1.5 rounded-lg text-[10px] font-black hover:bg-slate-700 dark:hover:bg-white transition-colors"
+                                                        className="inline-flex items-center gap-1 bg-slate-900 dark:bg-slate-200 text-white dark:text-slate-900 px-2.5 py-1.5 rounded-lg text-[10px] font-black hover:bg-slate-700 dark:hover:bg-white transition-colors disabled:opacity-50"
                                                     >
-                                                        <span className="material-symbols-outlined text-[12px]">open_in_new</span>
-                                                        {asinCur === 'USD' ? 'amazon.com' : 'amazon.mx'}
+                                                        <span className={`material-symbols-outlined text-[12px] ${buyLoading.has(order.id) ? 'animate-spin' : ''}`}>
+                                                            {buyLoading.has(order.id) ? 'progress_activity' : 'open_in_new'}
+                                                        </span>
+                                                        {isUS ? 'amazon.com' : 'amazon.mx'}
                                                     </button>
                                                 ) : (
                                                     <span className="text-[10px] text-slate-300 dark:text-slate-600 italic">Sin ASIN</span>
                                                 )}
                                             </td>
 
-                                            {/* Real cost (inline editable) */}
+                                            {/* Real cost in MXN (inline editable) */}
                                             <td className="px-4 py-3.5 text-right">
                                                 {order.amazonStatus === 'purchased' ? (
                                                     <div className="flex flex-col items-end gap-0.5">
@@ -506,10 +592,10 @@ export const OrdersPage = () => {
                                                                 key={`${order.id}-${order.amazonPurchasePrice ?? 'empty'}`}
                                                                 onBlur={e => handleCostBlur(order, e.target.value)}
                                                                 placeholder="0.00"
-                                                                className="w-20 pr-1 py-1 text-xs text-right border border-slate-200 dark:border-slate-600 rounded-lg bg-slate-50 dark:bg-slate-900 text-slate-800 dark:text-slate-200 focus:border-primary outline-none font-bold"
+                                                                className="w-24 pr-1 py-1 text-xs text-right border border-slate-200 dark:border-slate-600 rounded-lg bg-slate-50 dark:bg-slate-900 text-slate-800 dark:text-slate-200 focus:border-primary outline-none font-bold"
                                                             />
                                                         </div>
-                                                        <span className="text-[9px] text-slate-400 font-bold uppercase tracking-wide">{asinCur}</span>
+                                                        <span className="text-[9px] text-slate-400 font-bold uppercase tracking-wide">MXN</span>
                                                     </div>
                                                 ) : (
                                                     <span className="text-xs text-slate-300 dark:text-slate-600">—</span>
