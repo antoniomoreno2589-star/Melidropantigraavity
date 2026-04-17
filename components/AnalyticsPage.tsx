@@ -42,22 +42,22 @@ function fmtShort(n: number): string {
 // ─── MarginRing ───────────────────────────────────────────────────────────────
 
 const MarginRing: React.FC<{ pct: number }> = ({ pct }) => {
-  const r = 36;
+  const r = 32;
   const circ = 2 * Math.PI * r;
   const clamped = Math.max(0, Math.min(100, pct));
   const dash = (clamped / 100) * circ;
-  const color = pct < 10 ? '#ef4444' : pct < 25 ? '#f59e0b' : '#10b981';
+  const color = pct < 10 ? '#dc2626' : pct < 25 ? '#f59e0b' : '#10b981';
   return (
-    <svg width="100" height="100" viewBox="0 0 100 100">
-      <circle cx="50" cy="50" r={r} fill="none" stroke="#1e293b" strokeWidth="10" />
+    <svg width="80" height="80" viewBox="0 0 80 80" className="flex-shrink-0">
+      <circle cx="40" cy="40" r={r} fill="none" stroke="#e5e7eb" strokeWidth="8" />
       <circle
-        cx="50" cy="50" r={r} fill="none"
-        stroke={color} strokeWidth="10"
+        cx="40" cy="40" r={r} fill="none"
+        stroke={color} strokeWidth="8"
         strokeDasharray={`${dash} ${circ}`}
         strokeLinecap="round"
-        transform="rotate(-90 50 50)"
+        transform="rotate(-90 40 40)"
       />
-      <text x="50" y="54" textAnchor="middle" fill={color} fontSize="16" fontWeight="bold">
+      <text x="40" y="45" textAnchor="middle" fill={color} fontSize="14" fontWeight="bold">
         {pct.toFixed(1)}%
       </text>
     </svg>
@@ -72,7 +72,7 @@ export const AnalyticsPage: React.FC = () => {
   const today = nowYM();
 
   const [selectedYM, setSelectedYM] = useState(today);
-  const [timeFilter, setTimeFilter] = useState<'3m' | '6m' | '12m'>('6m');
+  const [timeFilter, setTimeFilter] = useState<'1m' | '3m' | '6m' | '12m'>('6m');
   const [showPicker, setShowPicker] = useState(false);
   const [pickerYear, setPickerYear] = useState(new Date().getFullYear());
 
@@ -94,7 +94,8 @@ export const AnalyticsPage: React.FC = () => {
 
   // ── Load data ─────────────────────────────────────────────────────────────────
   useEffect(() => {
-    const count = timeFilter === '3m' ? 3 : timeFilter === '6m' ? 6 : 12;
+    const countMap = { '1m': 1, '3m': 3, '6m': 6, '12m': 12 };
+    const count = countMap[timeFilter];
     const fromYM = subtractMonths(selectedYM, count - 1);
     const { from: fromDate } = monthRange(fromYM);
     const { to: toDate } = monthRange(selectedYM);
@@ -116,7 +117,6 @@ export const AnalyticsPage: React.FC = () => {
 
   const prevYM = subtractMonths(selectedYM, 1);
 
-  // ── Derived slices ────────────────────────────────────────────────────────────
   const orders = useMemo(
     () => chartOrders.filter(o => o.date?.startsWith(selectedYM)),
     [chartOrders, selectedYM],
@@ -130,14 +130,12 @@ export const AnalyticsPage: React.FC = () => {
     [chartExpenses, selectedYM],
   );
 
-  // ── Cost helper ───────────────────────────────────────────────────────────────
   const orderCostMXN = useCallback((o: Order): number => {
     if (!o.amazonPurchasePrice) return 0;
     const currency = currencyMap[o.amazonAsin] ?? 'USD';
     return currency === 'USD' ? o.amazonPurchasePrice * exchangeRate : o.amazonPurchasePrice;
   }, [currencyMap, exchangeRate]);
 
-  // ── KPIs ──────────────────────────────────────────────────────────────────────
   const kpis = useMemo(() => {
     const calc = (ords: Order[], exps: Expense[]) => {
       const ingresos = ords.reduce((s, o) => s + (o.total ?? 0), 0);
@@ -162,9 +160,9 @@ export const AnalyticsPage: React.FC = () => {
     };
   }, [orders, prevOrders, monthExpenses, chartExpenses, prevYM, orderCostMXN]);
 
-  // ── Chart data ────────────────────────────────────────────────────────────────
   const chartData = useMemo(() => {
-    const count = timeFilter === '3m' ? 3 : timeFilter === '6m' ? 6 : 12;
+    const countMap = { '1m': 1, '3m': 3, '6m': 6, '12m': 12 };
+    const count = countMap[timeFilter];
     const months: string[] = [];
     for (let i = count - 1; i >= 0; i--) months.push(subtractMonths(selectedYM, i));
 
@@ -191,7 +189,6 @@ export const AnalyticsPage: React.FC = () => {
     [chartData],
   );
 
-  // ── Product rows ──────────────────────────────────────────────────────────────
   const productRows = useMemo(() => {
     const map = new Map<string, {
       key: string; name: string;
@@ -238,7 +235,6 @@ export const AnalyticsPage: React.FC = () => {
     return true;
   }), [productRows, searchQuery, roiFilter, rentableFilter]);
 
-  // ── Expense handlers ──────────────────────────────────────────────────────────
   const handleAddExpense = async () => {
     if (!newConcept.trim() || !newAmount.trim()) return;
     setSaving(true);
@@ -264,324 +260,401 @@ export const AnalyticsPage: React.FC = () => {
     api.expenses.delete(id).catch(console.error);
   };
 
+  const handleExport = () => {
+    const header = 'Producto,Venta ML,Costo Amazon,Neto ML,Ganancia Neta,ROI%,Margen%,Rentable\n';
+    const rows = filteredRows.map(r =>
+      `"${r.name}",${r.ventaML},${r.costoAmazon},${r.netoML},${r.gananciaNeta},${r.roi?.toFixed(1) ?? 'N/A'},${r.margen?.toFixed(1) ?? 'N/A'},${r.rentable ? 'Sí' : 'No'}`
+    ).join('\n');
+    const blob = new Blob([header + rows], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `rentabilidad_${selectedYM}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
   const deltaArrow = (pct: number | null) => {
     if (pct === null) return null;
     const up = pct >= 0;
     return (
-      <span style={{ color: up ? '#10b981' : '#ef4444', fontSize: '0.75rem' }}>
+      <span className={up ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}>
         {up ? '▲' : '▼'} {Math.abs(pct).toFixed(1)}%
       </span>
     );
   };
 
-  // ── Shared styles ─────────────────────────────────────────────────────────────
-  const card: React.CSSProperties = {
-    background: '#1e293b', borderRadius: '0.75rem',
-    padding: '1.25rem', border: '1px solid #334155',
-  };
-  const inputStyle: React.CSSProperties = {
-    background: '#0f172a', border: '1px solid #334155',
-    borderRadius: '0.4rem', color: '#f1f5f9',
-    padding: '0.5rem 0.75rem', fontSize: '0.85rem',
-  };
-  const th: React.CSSProperties = {
-    padding: '0.5rem 0.75rem', fontWeight: 500,
-    color: '#64748b', borderBottom: '1px solid #334155',
-    whiteSpace: 'nowrap',
-  };
-  const td: React.CSSProperties = { padding: '0.6rem 0.75rem' };
-
-  // ── Render ────────────────────────────────────────────────────────────────────
   return (
-    <div
-      style={{ padding: '1.5rem', background: '#0f172a', minHeight: '100vh', color: '#f1f5f9' }}
-      onClick={() => showPicker && setShowPicker(false)}
-    >
-      {/* Header */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1.5rem', flexWrap: 'wrap', gap: '0.75rem' }}>
-        <div>
-          <h1 style={{ fontSize: '1.5rem', fontWeight: 700, margin: 0 }}>Analítica</h1>
-          <p style={{ color: '#94a3b8', margin: '0.25rem 0 0', fontSize: '0.875rem' }}>
-            Resultados financieros históricos
-          </p>
-        </div>
+    <div className="flex-1 overflow-y-auto p-4 md:p-6 lg:p-8 scroll-smooth bg-background-light dark:bg-background-dark">
+      <div className="max-w-7xl mx-auto flex flex-col gap-6 pb-20">
 
-        {/* Month picker */}
-        <div style={{ position: 'relative' }} onClick={e => e.stopPropagation()}>
-          <button
-            onClick={() => setShowPicker(!showPicker)}
-            style={{ ...inputStyle, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.5rem' }}
-          >
-            📅 {ymLabel(selectedYM)} <span style={{ color: '#94a3b8' }}>▾</span>
-          </button>
-          {showPicker && (
-            <div style={{ position: 'absolute', right: 0, top: '110%', background: '#1e293b', border: '1px solid #334155', borderRadius: '0.75rem', padding: '1rem', zIndex: 50, width: '240px', boxShadow: '0 10px 40px rgba(0,0,0,0.5)' }}>
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.75rem' }}>
-                <button onClick={() => setPickerYear(y => y - 1)}
-                  style={{ background: 'none', border: 'none', color: '#94a3b8', cursor: 'pointer', fontSize: '1.4rem', lineHeight: 1 }}>‹</button>
-                <span style={{ fontWeight: 600 }}>{pickerYear}</span>
-                <button onClick={() => setPickerYear(y => y + 1)}
-                  disabled={pickerYear >= new Date().getFullYear()}
-                  style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '1.4rem', lineHeight: 1, color: pickerYear >= new Date().getFullYear() ? '#334155' : '#94a3b8' }}>›</button>
-              </div>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '0.4rem' }}>
-                {MONTH_NAMES.map((mn, i) => {
-                  const ym = `${pickerYear}-${String(i + 1).padStart(2, '0')}`;
-                  const isFuture = ym > today;
-                  const isSelected = ym === selectedYM;
-                  return (
-                    <button key={mn} disabled={isFuture}
-                      onClick={() => { setSelectedYM(ym); setShowPicker(false); }}
-                      style={{ padding: '0.4rem', borderRadius: '0.4rem', border: 'none', cursor: isFuture ? 'not-allowed' : 'pointer', fontSize: '0.8rem', fontWeight: isSelected ? 700 : 400, background: isSelected ? '#6366f1' : '#0f172a', color: isSelected ? '#fff' : isFuture ? '#334155' : '#94a3b8' }}>
-                      {mn}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          )}
-        </div>
-      </div>
-
-      {loading && (
-        <div style={{ textAlign: 'center', color: '#6366f1', padding: '1rem', fontSize: '0.875rem' }}>
-          Cargando datos...
-        </div>
-      )}
-
-      {/* KPI Cards */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: '1rem', marginBottom: '1.5rem' }}>
-        <div style={card}>
-          <div style={{ color: '#94a3b8', fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.5rem' }}>Ingresos Brutos</div>
-          <div style={{ fontSize: '1.4rem', fontWeight: 700 }}>{fmt(kpis.ingresos)}</div>
-          <div style={{ marginTop: '0.25rem', fontSize: '0.75rem', color: '#64748b' }}>
-            {kpis.ordersCount} órdenes &nbsp;{deltaArrow(kpis.deltaIngresos)}
+        {/* Header */}
+        <div className="flex flex-col lg:flex-row lg:items-end justify-between gap-4">
+          <div>
+            <h1 className="text-3xl font-black text-text-main-light dark:text-white tracking-tight uppercase">
+              Métricas de Rentabilidad
+            </h1>
+            <p className="text-text-secondary-light dark:text-text-secondary-dark mt-2 font-medium italic">
+              Balance real considerando gastos operativos y costos de Amazon.
+            </p>
           </div>
-        </div>
 
-        <div style={card}>
-          <div style={{ color: '#94a3b8', fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.5rem' }}>Ganancia Bruta</div>
-          <div style={{ fontSize: '1.4rem', fontWeight: 700, color: kpis.ganBruta >= 0 ? '#10b981' : '#ef4444' }}>{fmt(kpis.ganBruta)}</div>
-          <div style={{ marginTop: '0.25rem', fontSize: '0.75rem', color: '#64748b' }}>
-            Neto ML − Costo Amazon &nbsp;{deltaArrow(kpis.deltaGanBruta)}
-          </div>
-        </div>
-
-        <div style={card}>
-          <div style={{ color: '#94a3b8', fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.5rem' }}>Gastos Operativos</div>
-          <div style={{ fontSize: '1.4rem', fontWeight: 700, color: '#f59e0b' }}>{fmt(kpis.gastos)}</div>
-          <div style={{ marginTop: '0.25rem', fontSize: '0.75rem', color: '#64748b' }}>
-            {monthExpenses.length} conceptos &nbsp;{deltaArrow(kpis.deltaGastos)}
-          </div>
-        </div>
-
-        <div style={card}>
-          <div style={{ color: '#94a3b8', fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.5rem' }}>Ganancia Neta Real</div>
-          <div style={{ fontSize: '1.4rem', fontWeight: 700, color: kpis.ganNeta >= 0 ? '#10b981' : '#ef4444' }}>{fmt(kpis.ganNeta)}</div>
-          <div style={{ marginTop: '0.25rem', fontSize: '0.75rem', color: '#64748b' }}>
-            Gan. Bruta − Gastos &nbsp;{deltaArrow(kpis.deltaGanNeta)}
-          </div>
-        </div>
-
-        <div style={{ ...card, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
-          <div style={{ color: '#94a3b8', fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.5rem', textAlign: 'center' }}>Margen Neto</div>
-          <MarginRing pct={kpis.margen} />
-        </div>
-      </div>
-
-      {/* Chart */}
-      <div style={{ ...card, marginBottom: '1.5rem' }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1rem', flexWrap: 'wrap', gap: '0.5rem' }}>
-          <h2 style={{ margin: 0, fontSize: '1rem', fontWeight: 600 }}>Evolución Mensual</h2>
-          <div style={{ display: 'flex', gap: '0.5rem' }}>
-            {(['3m', '6m', '12m'] as const).map(f => (
-              <button key={f} onClick={() => setTimeFilter(f)}
-                style={{ padding: '0.25rem 0.75rem', borderRadius: '0.4rem', border: 'none', cursor: 'pointer', fontSize: '0.8rem', background: timeFilter === f ? '#6366f1' : '#0f172a', color: timeFilter === f ? '#fff' : '#94a3b8' }}>
-                {f}
+          <div className="flex items-center gap-3">
+            {/* Month picker */}
+            <div className="relative">
+              <button
+                onClick={() => setShowPicker(!showPicker)}
+                className="px-4 py-2.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-sm font-semibold text-text-main-light dark:text-white hover:shadow-sm transition-all flex items-center gap-2"
+              >
+                📅 {ymLabel(selectedYM)} ▾
               </button>
-            ))}
-          </div>
-        </div>
-
-        <div style={{ display: 'flex', gap: '1.5rem', marginBottom: '0.75rem', fontSize: '0.75rem', color: '#94a3b8' }}>
-          <span>
-            <span style={{ display: 'inline-block', width: '10px', height: '10px', background: '#10b981', borderRadius: '2px', marginRight: '4px' }} />
-            Ingresos Brutos
-          </span>
-          <span>
-            <span style={{ display: 'inline-block', width: '10px', height: '10px', background: '#6366f1', borderRadius: '2px', marginRight: '4px' }} />
-            Ganancia Neta
-          </span>
-        </div>
-
-        <div style={{ display: 'flex', alignItems: 'flex-end', gap: '0.4rem', height: '230px' }}>
-          <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'space-between', height: '180px', color: '#64748b', fontSize: '0.68rem', textAlign: 'right', minWidth: '38px', marginBottom: '30px' }}>
-            <span>{fmtShort(chartMax)}</span>
-            <span>{fmtShort(chartMax / 2)}</span>
-            <span>$0</span>
-          </div>
-          {chartData.map(d => {
-            const ingH = chartMax > 0 ? (d.ingresos / chartMax) * 180 : 0;
-            const netH = chartMax > 0 ? (Math.max(0, d.ganNeta) / chartMax) * 180 : 0;
-            const isSelected = d.ym === selectedYM;
-            const up = d.deltaVsPrev !== null && d.deltaVsPrev >= 0;
-            return (
-              <div key={d.ym} onClick={() => setSelectedYM(d.ym)}
-                style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', cursor: 'pointer', justifyContent: 'flex-end', height: '230px' }}
-                title={`${d.label}\nIngresos: ${fmt(d.ingresos)}\nGan. Neta: ${fmt(d.ganNeta)}${d.deltaVsPrev !== null ? `\nvs anterior: ${d.deltaVsPrev > 0 ? '+' : ''}${d.deltaVsPrev.toFixed(1)}%` : ''}`}>
-                {/* delta badge */}
-                <div style={{ height: '18px', display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: '2px' }}>
-                  {d.deltaVsPrev !== null && (
-                    <span style={{ fontSize: '0.58rem', fontWeight: 700, color: up ? '#10b981' : '#ef4444', background: up ? '#064e3b' : '#450a0a', borderRadius: '999px', padding: '1px 5px', whiteSpace: 'nowrap' }}>
-                      {up ? '▲' : '▼'}{Math.abs(d.deltaVsPrev).toFixed(0)}%
-                    </span>
-                  )}
+              {showPicker && (
+                <div className="absolute right-0 top-12 z-50 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-2xl p-4 shadow-xl">
+                  <div className="flex items-center justify-between gap-3 mb-3">
+                    <button onClick={() => setPickerYear(y => y - 1)}
+                      className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 text-xl">‹</button>
+                    <span className="font-bold text-sm text-text-main-light dark:text-white">{pickerYear}</span>
+                    <button onClick={() => setPickerYear(y => y + 1)}
+                      disabled={pickerYear >= new Date().getFullYear()}
+                      className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 text-xl disabled:opacity-30">›</button>
+                  </div>
+                  <div className="grid grid-cols-3 gap-2">
+                    {MONTH_NAMES.map((mn, i) => {
+                      const ym = `${pickerYear}-${String(i + 1).padStart(2, '0')}`;
+                      const isFuture = ym > today;
+                      const isSelected = ym === selectedYM;
+                      return (
+                        <button key={mn} disabled={isFuture}
+                          onClick={() => { setSelectedYM(ym); setShowPicker(false); }}
+                          className={`px-3 py-2 text-xs font-semibold rounded-lg transition-all ${
+                            isSelected ? 'bg-primary text-white' : isFuture ? 'bg-slate-100 dark:bg-slate-700 text-slate-300 cursor-not-allowed' : 'bg-slate-100 dark:bg-slate-700 text-text-main-light dark:text-white hover:bg-slate-200 dark:hover:bg-slate-600'
+                          }`}>
+                          {mn}
+                        </button>
+                      );
+                    })}
+                  </div>
                 </div>
-                <div style={{ display: 'flex', gap: '2px', alignItems: 'flex-end', height: '180px' }}>
-                  <div style={{ width: '12px', height: `${ingH}px`, background: isSelected ? '#34d399' : '#10b981', borderRadius: '3px 3px 0 0', transition: 'height 0.3s' }} />
-                  <div style={{ width: '12px', height: `${netH}px`, background: isSelected ? '#818cf8' : '#6366f1', borderRadius: '3px 3px 0 0', transition: 'height 0.3s' }} />
-                </div>
-                <span style={{ fontSize: '0.62rem', color: isSelected ? '#f1f5f9' : '#64748b', marginTop: '4px', whiteSpace: 'nowrap' }}>
-                  {d.label}
-                </span>
-              </div>
-            );
-          })}
-        </div>
-      </div>
-
-      {/* Bottom grid */}
-      <div style={{ display: 'grid', gridTemplateColumns: '320px 1fr', gap: '1.5rem', alignItems: 'start' }}>
-
-        {/* Gastos Operativos Panel */}
-        <div style={card}>
-          <h2 style={{ margin: '0 0 1rem', fontSize: '1rem', fontWeight: 600 }}>
-            Gastos — {ymLabel(selectedYM)}
-          </h2>
-
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginBottom: '1rem' }}>
-            <input placeholder="Concepto" value={newConcept}
-              onChange={e => setNewConcept(e.target.value)}
-              style={{ ...inputStyle, width: '100%', boxSizing: 'border-box' }} />
-            <div style={{ display: 'flex', gap: '0.5rem' }}>
-              <input placeholder="Monto (MXN)" type="number" value={newAmount}
-                onChange={e => setNewAmount(e.target.value)}
-                style={{ ...inputStyle, flex: 1 }} />
-              <select value={newPeriod} onChange={e => setNewPeriod(e.target.value)}
-                style={{ ...inputStyle, cursor: 'pointer' }}>
-                <option>Mensual</option>
-                <option>Semanal</option>
-                <option>Anual</option>
-                <option>Único</option>
-              </select>
+              )}
             </div>
-            <button onClick={handleAddExpense}
-              disabled={saving || !newConcept.trim() || !newAmount.trim()}
-              style={{ background: saving || !newConcept.trim() || !newAmount.trim() ? '#334155' : '#6366f1', border: 'none', borderRadius: '0.4rem', color: '#fff', padding: '0.5rem', cursor: 'pointer', fontSize: '0.85rem', fontWeight: 600 }}>
-              {saving ? 'Guardando...' : '+ Agregar gasto'}
+
+            {/* Export CSV button */}
+            <button
+              onClick={handleExport}
+              className="px-4 py-2.5 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-sm font-semibold flex items-center gap-2 transition-all shadow-md hover:shadow-lg"
+            >
+              <span className="material-symbols-outlined text-[18px]">download</span>
+              Exportar CSV
             </button>
           </div>
-
-          {monthExpenses.length === 0 ? (
-            <p style={{ color: '#64748b', fontSize: '0.85rem', textAlign: 'center', padding: '1rem 0' }}>
-              Sin gastos registrados este mes
-            </p>
-          ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
-              {monthExpenses.map(e => (
-                <div key={e.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.6rem 0.75rem', background: '#0f172a', borderRadius: '0.4rem', gap: '0.5rem' }}>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontSize: '0.85rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{e.concept}</div>
-                    <div style={{ fontSize: '0.7rem', color: '#64748b' }}>{e.period}</div>
-                  </div>
-                  <span style={{ color: '#f59e0b', fontWeight: 600, fontSize: '0.9rem', whiteSpace: 'nowrap' }}>{fmt(e.amount)}</span>
-                  <button onClick={() => handleDeleteExpense(e.id)}
-                    style={{ background: 'none', border: 'none', color: '#ef4444', cursor: 'pointer', fontSize: '1.1rem', padding: '0 0.2rem', lineHeight: 1 }}>×</button>
-                </div>
-              ))}
-              <div style={{ borderTop: '1px solid #334155', paddingTop: '0.5rem', display: 'flex', justifyContent: 'space-between', fontSize: '0.875rem', fontWeight: 700 }}>
-                <span style={{ color: '#94a3b8' }}>Total</span>
-                <span style={{ color: '#f59e0b' }}>{fmt(kpis.gastos)}</span>
-              </div>
-            </div>
-          )}
         </div>
 
-        {/* Product Profitability Table */}
-        <div style={{ ...card, overflowX: 'auto' }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1rem', flexWrap: 'wrap', gap: '0.5rem' }}>
-            <h2 style={{ margin: 0, fontSize: '1rem', fontWeight: 600 }}>Rentabilidad por Producto</h2>
-            <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
-              <input placeholder="Buscar producto / ASIN" value={searchQuery}
-                onChange={e => setSearchQuery(e.target.value)}
-                style={{ ...inputStyle, width: '180px' }} />
-              <select value={roiFilter} onChange={e => setRoiFilter(e.target.value as any)}
-                style={{ ...inputStyle, cursor: 'pointer' }}>
-                <option value="all">Todo ROI</option>
-                <option value="positive">ROI positivo</option>
-                <option value="negative">ROI negativo</option>
-              </select>
-              <select value={rentableFilter} onChange={e => setRentableFilter(e.target.value as any)}
-                style={{ ...inputStyle, cursor: 'pointer' }}>
-                <option value="all">Todos</option>
-                <option value="yes">Rentables</option>
-                <option value="no">No rentables</option>
-              </select>
+        {loading && (
+          <div className="text-center text-primary font-semibold py-4">Cargando datos...</div>
+        )}
+
+        {/* KPI Cards - 4 cards */}
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+          {/* Ingresos Brutos */}
+          <div className="bg-white dark:bg-slate-800 rounded-2xl p-6 border border-slate-200 dark:border-slate-700 border-b-4 border-b-green-500 shadow-sm">
+            <div className="text-xs font-semibold uppercase tracking-widest text-text-secondary-light dark:text-text-secondary-dark mb-2">
+              Ingresos Brutos
+            </div>
+            <div className="text-3xl font-black text-text-main-light dark:text-white mb-2">
+              {fmt(kpis.ingresos)}
+            </div>
+            <div className="text-xs text-text-secondary-light dark:text-text-secondary-dark">
+              {kpis.ordersCount} órdenes · {deltaArrow(kpis.deltaIngresos)}
             </div>
           </div>
 
-          {filteredRows.length === 0 ? (
-            <p style={{ color: '#64748b', fontSize: '0.875rem', textAlign: 'center', padding: '2rem 0' }}>
-              {orders.length === 0 ? 'Sin órdenes en este período' : 'Sin resultados para los filtros aplicados'}
-            </p>
-          ) : (
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.8rem' }}>
-              <thead>
-                <tr>
-                  <th style={{ ...th, textAlign: 'left' }}>Producto</th>
-                  <th style={{ ...th, textAlign: 'right' }}>Venta ML</th>
-                  <th style={{ ...th, textAlign: 'right' }}>Costo Amazon</th>
-                  <th style={{ ...th, textAlign: 'right' }}>Neto ML</th>
-                  <th style={{ ...th, textAlign: 'right' }}>Gan. Neta</th>
-                  <th style={{ ...th, textAlign: 'right' }}>ROI%</th>
-                  <th style={{ ...th, textAlign: 'right' }}>Margen%</th>
-                  <th style={{ ...th, textAlign: 'center' }}>¿Rentable?</th>
-                </tr>
-              </thead>
-              <tbody>
-                {filteredRows.map(r => (
-                  <tr key={r.key} style={{ borderBottom: '1px solid #0f172a' }}>
-                    <td style={{ ...td, maxWidth: '220px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={r.name}>{r.name}</td>
-                    <td style={{ ...td, textAlign: 'right' }}>{fmt(r.ventaML)}</td>
-                    <td style={{ ...td, textAlign: 'right', color: '#94a3b8' }}>{fmt(r.costoAmazon)}</td>
-                    <td style={{ ...td, textAlign: 'right' }}>{fmt(r.netoML)}</td>
-                    <td style={{ ...td, textAlign: 'right', fontWeight: 600, color: r.gananciaNeta >= 0 ? '#10b981' : '#ef4444' }}>{fmt(r.gananciaNeta)}</td>
-                    <td style={{ ...td, textAlign: 'right', color: r.roi === null ? '#64748b' : r.roi >= 0 ? '#10b981' : '#ef4444' }}>
-                      {r.roi !== null ? `${r.roi.toFixed(1)}%` : '—'}
-                    </td>
-                    <td style={{ ...td, textAlign: 'right', color: r.margen === null ? '#64748b' : r.margen >= 0 ? '#10b981' : '#ef4444' }}>
-                      {r.margen !== null ? `${r.margen.toFixed(1)}%` : '—'}
-                    </td>
-                    <td style={{ ...td, textAlign: 'center' }}>
-                      <span style={{ background: r.rentable ? '#064e3b' : '#450a0a', color: r.rentable ? '#34d399' : '#f87171', borderRadius: '999px', padding: '0.2rem 0.6rem', fontSize: '0.7rem', fontWeight: 600 }}>
-                        {r.rentable ? 'Sí' : 'No'}
+          {/* Ganancia Bruta */}
+          <div className="bg-white dark:bg-slate-800 rounded-2xl p-6 border border-slate-200 dark:border-slate-700 border-b-4 border-b-blue-500 shadow-sm">
+            <div className="text-xs font-semibold uppercase tracking-widest text-text-secondary-light dark:text-text-secondary-dark mb-2">
+              Ganancia Bruta
+            </div>
+            <div className={`text-3xl font-black mb-2 ${kpis.ganBruta >= 0 ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>
+              {fmt(kpis.ganBruta)}
+            </div>
+            <div className="text-xs text-text-secondary-light dark:text-text-secondary-dark">
+              Neto ML − Costo Amazon · {deltaArrow(kpis.deltaGanBruta)}
+            </div>
+          </div>
+
+          {/* Gastos Operativos */}
+          <div className="bg-white dark:bg-slate-800 rounded-2xl p-6 border border-slate-200 dark:border-slate-700 border-b-4 border-b-red-500 shadow-sm">
+            <div className="text-xs font-semibold uppercase tracking-widest text-text-secondary-light dark:text-text-secondary-dark mb-2">
+              Gastos Operativos
+            </div>
+            <div className="text-3xl font-black text-text-main-light dark:text-white mb-2">
+              {fmt(kpis.gastos)}
+            </div>
+            <div className="text-xs text-text-secondary-light dark:text-text-secondary-dark">
+              {monthExpenses.length} conceptos · {deltaArrow(kpis.deltaGastos)}
+            </div>
+          </div>
+
+          {/* Ganancia Neta Real - BLUE CARD with Margen Ring */}
+          <div className="bg-primary text-white rounded-2xl p-6 shadow-xl shadow-primary/20 flex flex-col justify-between">
+            <div>
+              <div className="text-xs font-semibold uppercase tracking-widest text-blue-100 mb-2">
+                Ganancia Neta Real
+              </div>
+              <div className={`text-3xl font-black mb-2 ${kpis.ganNeta >= 0 ? 'text-white' : 'text-blue-100'}`}>
+                {fmt(kpis.ganNeta)}
+              </div>
+              <div className="text-xs text-blue-100">
+                Gan. Bruta − Gastos · {deltaArrow(kpis.deltaGanNeta)}
+              </div>
+            </div>
+            <div className="flex justify-end mt-4">
+              <MarginRing pct={kpis.margen} />
+            </div>
+          </div>
+        </div>
+
+        {/* Chart Section */}
+        <div className="bg-white dark:bg-slate-800 rounded-2xl p-6 border border-slate-200 dark:border-slate-700 shadow-sm">
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
+            <div>
+              <h2 className="text-xl font-black text-text-main-light dark:text-white uppercase">
+                Tendencia de Ganancias
+              </h2>
+              <p className="text-sm text-text-secondary-light dark:text-text-secondary-dark mt-1">
+                Histórico comparativo de salud financiera
+              </p>
+            </div>
+            <div className="flex gap-2">
+              {(['1m', '3m', '6m', '12m'] as const).map((f) => {
+                const label = f.toUpperCase();
+                return (
+                  <button key={f} onClick={() => setTimeFilter(f)}
+                    className={`px-3 py-2 text-xs font-bold rounded-lg transition-all ${
+                      timeFilter === f
+                        ? 'bg-primary text-white'
+                        : 'bg-slate-100 dark:bg-slate-700 text-text-main-light dark:text-white hover:bg-slate-200 dark:hover:bg-slate-600'
+                    }`}>
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="mb-4 flex gap-4 text-xs">
+            <span className="flex items-center gap-2">
+              <span className="w-3 h-3 bg-green-500 rounded"></span>
+              Ingresos Brutos
+            </span>
+            <span className="flex items-center gap-2">
+              <span className="w-3 h-3 bg-primary rounded"></span>
+              Ganancia Neta
+            </span>
+          </div>
+
+          <div className="flex items-end gap-2 h-64 overflow-x-auto pb-2">
+            <div className="flex flex-col justify-between h-48 text-xs text-text-secondary-light dark:text-text-secondary-dark pr-2">
+              <span>{fmtShort(chartMax)}</span>
+              <span>{fmtShort(chartMax / 2)}</span>
+              <span>$0</span>
+            </div>
+            {chartData.map(d => {
+              const ingH = chartMax > 0 ? (d.ingresos / chartMax) * 180 : 0;
+              const netH = chartMax > 0 ? (Math.max(0, d.ganNeta) / chartMax) * 180 : 0;
+              const isSelected = d.ym === selectedYM;
+              const up = d.deltaVsPrev !== null && d.deltaVsPrev >= 0;
+              return (
+                <div key={d.ym} onClick={() => setSelectedYM(d.ym)}
+                  className="flex flex-col items-center flex-1 cursor-pointer group"
+                  title={`${d.label}\nIngresos: ${fmt(d.ingresos)}\nGan. Neta: ${fmt(d.ganNeta)}${d.deltaVsPrev !== null ? `\nvs anterior: ${d.deltaVsPrev > 0 ? '+' : ''}${d.deltaVsPrev.toFixed(1)}%` : ''}`}>
+                  {d.deltaVsPrev !== null && (
+                    <div className="h-5 flex items-center justify-center mb-1">
+                      <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${
+                        up ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400' : 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400'
+                      }`}>
+                        {up ? '▲' : '▼'}{Math.abs(d.deltaVsPrev).toFixed(0)}%
                       </span>
-                    </td>
-                  </tr>
+                    </div>
+                  )}
+                  <div className="flex gap-1 items-end h-48">
+                    <div className={`w-3 transition-all ${ingH}px rounded-t-sm ${isSelected ? 'bg-green-400' : 'bg-green-500'}`} />
+                    <div className={`w-3 transition-all ${netH}px rounded-t-sm ${isSelected ? 'bg-blue-400' : 'bg-primary'}`} />
+                  </div>
+                  <span className={`text-xs font-semibold mt-2 whitespace-nowrap ${isSelected ? 'text-text-main-light dark:text-white' : 'text-text-secondary-light dark:text-text-secondary-dark'}`}>
+                    {d.label}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Bottom Grid */}
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+
+          {/* Gastos Operativos Panel */}
+          <div className="bg-white dark:bg-slate-800 rounded-2xl p-6 border border-slate-200 dark:border-slate-700 shadow-sm">
+            <h2 className="text-lg font-black text-text-main-light dark:text-white mb-4 uppercase">
+              Gastos — {ymLabel(selectedYM)}
+            </h2>
+
+            <div className="space-y-3 mb-4">
+              <input
+                placeholder="Concepto"
+                value={newConcept}
+                onChange={e => setNewConcept(e.target.value)}
+                className="w-full px-3 py-2 border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-700 rounded-lg text-sm text-text-main-light dark:text-white placeholder-text-secondary-light dark:placeholder-text-secondary-dark focus:outline-none focus:ring-2 focus:ring-primary"
+              />
+              <div className="flex gap-2">
+                <input
+                  placeholder="Monto (MXN)"
+                  type="number"
+                  value={newAmount}
+                  onChange={e => setNewAmount(e.target.value)}
+                  className="flex-1 px-3 py-2 border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-700 rounded-lg text-sm text-text-main-light dark:text-white placeholder-text-secondary-light dark:placeholder-text-secondary-dark focus:outline-none focus:ring-2 focus:ring-primary"
+                />
+                <select
+                  value={newPeriod}
+                  onChange={e => setNewPeriod(e.target.value)}
+                  className="px-3 py-2 border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-700 rounded-lg text-sm text-text-main-light dark:text-white focus:outline-none focus:ring-2 focus:ring-primary"
+                >
+                  <option>Mensual</option>
+                  <option>Semanal</option>
+                  <option>Anual</option>
+                  <option>Único</option>
+                </select>
+              </div>
+              <button
+                onClick={handleAddExpense}
+                disabled={saving || !newConcept.trim() || !newAmount.trim()}
+                className="w-full px-3 py-2 bg-primary hover:bg-primary-dark disabled:opacity-50 text-white rounded-lg text-sm font-semibold transition-all"
+              >
+                {saving ? 'Guardando...' : '+ Agregar gasto'}
+              </button>
+            </div>
+
+            {monthExpenses.length === 0 ? (
+              <p className="text-center text-text-secondary-light dark:text-text-secondary-dark text-sm py-4">
+                Sin gastos registrados este mes
+              </p>
+            ) : (
+              <div className="space-y-2">
+                {monthExpenses.map(e => (
+                  <div key={e.id} className="flex items-center justify-between p-3 bg-slate-50 dark:bg-slate-700/50 rounded-lg gap-2">
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm font-medium text-text-main-light dark:text-white truncate">{e.concept}</div>
+                      <div className="text-xs text-text-secondary-light dark:text-text-secondary-dark">{e.period}</div>
+                    </div>
+                    <span className="font-semibold text-primary text-sm whitespace-nowrap">{fmt(e.amount)}</span>
+                    <button
+                      onClick={() => handleDeleteExpense(e.id)}
+                      className="text-red-500 hover:text-red-700 text-lg leading-none"
+                    >
+                      ×
+                    </button>
+                  </div>
                 ))}
-              </tbody>
-              <tfoot>
-                <tr style={{ borderTop: '2px solid #334155', fontWeight: 700 }}>
-                  <td style={{ ...td, color: '#94a3b8' }}>Totales ({filteredRows.length})</td>
-                  <td style={{ ...td, textAlign: 'right' }}>{fmt(filteredRows.reduce((s, r) => s + r.ventaML, 0))}</td>
-                  <td style={{ ...td, textAlign: 'right', color: '#94a3b8' }}>{fmt(filteredRows.reduce((s, r) => s + r.costoAmazon, 0))}</td>
-                  <td style={{ ...td, textAlign: 'right' }}>{fmt(filteredRows.reduce((s, r) => s + r.netoML, 0))}</td>
-                  <td style={{ ...td, textAlign: 'right', color: '#10b981' }}>{fmt(filteredRows.reduce((s, r) => s + r.gananciaNeta, 0))}</td>
-                  <td colSpan={3} />
-                </tr>
-              </tfoot>
-            </table>
-          )}
+                <div className="border-t border-slate-200 dark:border-slate-700 pt-2 mt-2 flex justify-between font-semibold text-sm">
+                  <span className="text-text-secondary-light dark:text-text-secondary-dark">Total</span>
+                  <span className="text-primary">{fmt(kpis.gastos)}</span>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Product Profitability Table */}
+          <div className="lg:col-span-2 bg-white dark:bg-slate-800 rounded-2xl p-6 border border-slate-200 dark:border-slate-700 shadow-sm">
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-4">
+              <h2 className="text-lg font-black text-text-main-light dark:text-white uppercase">
+                Rentabilidad por Producto
+              </h2>
+              <div className="flex gap-2 flex-wrap">
+                <input
+                  placeholder="Buscar..."
+                  value={searchQuery}
+                  onChange={e => setSearchQuery(e.target.value)}
+                  className="px-3 py-2 border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-700 rounded-lg text-sm text-text-main-light dark:text-white placeholder-text-secondary-light focus:outline-none focus:ring-2 focus:ring-primary"
+                />
+                <select
+                  value={roiFilter}
+                  onChange={e => setRoiFilter(e.target.value as any)}
+                  className="px-3 py-2 border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-700 rounded-lg text-sm text-text-main-light dark:text-white focus:outline-none focus:ring-2 focus:ring-primary"
+                >
+                  <option value="all">Todo ROI</option>
+                  <option value="positive">ROI +</option>
+                  <option value="negative">ROI -</option>
+                </select>
+                <select
+                  value={rentableFilter}
+                  onChange={e => setRentableFilter(e.target.value as any)}
+                  className="px-3 py-2 border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-700 rounded-lg text-sm text-text-main-light dark:text-white focus:outline-none focus:ring-2 focus:ring-primary"
+                >
+                  <option value="all">Todos</option>
+                  <option value="yes">Rentables</option>
+                  <option value="no">No rentables</option>
+                </select>
+              </div>
+            </div>
+
+            {filteredRows.length === 0 ? (
+              <p className="text-center text-text-secondary-light dark:text-text-secondary-dark text-sm py-8">
+                {orders.length === 0 ? 'Sin órdenes en este período' : 'Sin resultados para los filtros aplicados'}
+              </p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-slate-200 dark:border-slate-700">
+                      <th className="text-left px-3 py-2 font-bold text-text-secondary-light dark:text-text-secondary-dark text-xs uppercase">Producto</th>
+                      <th className="text-right px-3 py-2 font-bold text-text-secondary-light dark:text-text-secondary-dark text-xs uppercase">Venta ML</th>
+                      <th className="text-right px-3 py-2 font-bold text-text-secondary-light dark:text-text-secondary-dark text-xs uppercase">Costo Amazon</th>
+                      <th className="text-right px-3 py-2 font-bold text-text-secondary-light dark:text-text-secondary-dark text-xs uppercase">Neto ML</th>
+                      <th className="text-right px-3 py-2 font-bold text-text-secondary-light dark:text-text-secondary-dark text-xs uppercase">Gan. Neta</th>
+                      <th className="text-right px-3 py-2 font-bold text-text-secondary-light dark:text-text-secondary-dark text-xs uppercase">ROI%</th>
+                      <th className="text-right px-3 py-2 font-bold text-text-secondary-light dark:text-text-secondary-dark text-xs uppercase">Margen%</th>
+                      <th className="text-center px-3 py-2 font-bold text-text-secondary-light dark:text-text-secondary-dark text-xs uppercase">¿Rentable?</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredRows.map(r => (
+                      <tr key={r.key} className="border-b border-slate-100 dark:border-slate-700/50 hover:bg-slate-50 dark:hover:bg-slate-700/30">
+                        <td className="px-3 py-3 text-text-main-light dark:text-white truncate max-w-xs" title={r.name}>{r.name}</td>
+                        <td className="text-right px-3 py-3 text-text-main-light dark:text-white font-medium">{fmt(r.ventaML)}</td>
+                        <td className="text-right px-3 py-3 text-text-secondary-light dark:text-text-secondary-dark">{fmt(r.costoAmazon)}</td>
+                        <td className="text-right px-3 py-3 text-text-main-light dark:text-white font-medium">{fmt(r.netoML)}</td>
+                        <td className={`text-right px-3 py-3 font-bold ${r.gananciaNeta >= 0 ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>{fmt(r.gananciaNeta)}</td>
+                        <td className={`text-right px-3 py-3 ${r.roi === null ? 'text-text-secondary-light dark:text-text-secondary-dark' : r.roi >= 0 ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>
+                          {r.roi !== null ? `${r.roi.toFixed(1)}%` : '—'}
+                        </td>
+                        <td className={`text-right px-3 py-3 ${r.margen === null ? 'text-text-secondary-light dark:text-text-secondary-dark' : r.margen >= 0 ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>
+                          {r.margen !== null ? `${r.margen.toFixed(1)}%` : '—'}
+                        </td>
+                        <td className="text-center px-3 py-3">
+                          <span className={`px-2 py-1 rounded-full text-xs font-semibold ${
+                            r.rentable ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400' : 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400'
+                          }`}>
+                            {r.rentable ? 'Sí' : 'No'}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                  <tfoot>
+                    <tr className="border-t-2 border-slate-200 dark:border-slate-700 font-bold text-text-main-light dark:text-white">
+                      <td className="px-3 py-3">Totales ({filteredRows.length})</td>
+                      <td className="text-right px-3 py-3">{fmt(filteredRows.reduce((s, r) => s + r.ventaML, 0))}</td>
+                      <td className="text-right px-3 py-3 text-text-secondary-light dark:text-text-secondary-dark">{fmt(filteredRows.reduce((s, r) => s + r.costoAmazon, 0))}</td>
+                      <td className="text-right px-3 py-3">{fmt(filteredRows.reduce((s, r) => s + r.netoML, 0))}</td>
+                      <td className="text-right px-3 py-3 text-green-600 dark:text-green-400">{fmt(filteredRows.reduce((s, r) => s + r.gananciaNeta, 0))}</td>
+                      <td colSpan={3} />
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
+            )}
+          </div>
         </div>
       </div>
     </div>
