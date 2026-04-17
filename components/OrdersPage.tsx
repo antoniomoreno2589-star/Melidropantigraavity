@@ -112,9 +112,7 @@ export const OrdersPage = () => {
                     const fee = pmt?.marketplace_fee ?? pmt?.commission_amount ?? null;
                     const shipping = pmt?.shipping_cost ?? pmt?.shipping_amount ?? null;
                     const netIncome = netReceived != null ? netReceived
-                        : (fee != null || shipping != null)
-                            ? totalAmt - (fee ?? 0) - (shipping ?? 0)
-                            : null;
+                        : totalAmt - (fee ?? 0) - (shipping ?? 0);
                     // amazon_status intentionally excluded so existing 'purchased' marks
                     // are never overwritten on re-sync (DB DEFAULT 'pending' covers new rows)
                     return {
@@ -125,6 +123,7 @@ export const OrdersPage = () => {
                         total:         totalAmt,
                         net_income:    netIncome,
                         ml_commission: fee,
+                        shipping_cost: shipping,
                         meli_item_id:  o.order_items?.[0]?.item?.id ?? null,
                         status: mapMlStatus(o),
                         date: dateCreated,
@@ -191,9 +190,7 @@ export const OrdersPage = () => {
     // amazonPurchasePrice is always stored in MXN (auto-filled or typed by user)
     const costMXN = (order: Order) => order.amazonPurchasePrice ?? 0;
 
-    // Shipping cost implied by ML payment breakdown
-    const shippingCost = (order: Order) =>
-        Math.max(0, order.total - order.netIncome - (order.mlCommission ?? 0));
+    const shippingCost = (order: Order) => order.shippingCost ?? 0;
 
     // Days until shipping deadline (negative = overdue)
     const daysUntil = (deadline: string): number => {
@@ -223,8 +220,9 @@ export const OrdersPage = () => {
     const stats = useMemo(() => {
         const shipToday    = filteredOrders.filter(o => o.shippingDeadline === todayStr && !['shipped','delivered','cancelled'].includes(o.status)).length;
         const pendingBuy   = filteredOrders.filter(o => o.amazonStatus === 'pending' && o.status !== 'cancelled').length;
-        const totalNet     = filteredOrders.reduce((s, o) => s + o.netIncome, 0);
-        const totalCost    = filteredOrders.reduce((s, o) => s + costMXN(o), 0);
+        const activeOrders = filteredOrders.filter(o => o.status !== 'cancelled');
+        const totalNet     = activeOrders.reduce((s, o) => s + o.netIncome, 0);
+        const totalCost    = activeOrders.reduce((s, o) => s + costMXN(o), 0);
         const purchased    = filteredOrders.filter(o => o.amazonStatus === 'purchased').length;
         return { shipToday, pendingBuy, totalNet, projectedProfit: totalNet - totalCost, purchased };
     }, [filteredOrders, todayStr, exchangeRate, currencyMap]);
@@ -585,15 +583,13 @@ export const OrdersPage = () => {
                                                             <span className="text-slate-600 dark:text-slate-300">Valor de venta</span>
                                                             <span className="font-bold text-slate-800 dark:text-white">${fmt(order.total)}</span>
                                                         </div>
-                                                        {shipping > 0 && (
-                                                            <div className="flex justify-between text-xs py-1 border-b border-slate-100 dark:border-slate-700">
-                                                                <span className="text-slate-600 dark:text-slate-300">Costo de envío</span>
-                                                                <span className="font-bold text-red-500">-${fmt(shipping)}</span>
-                                                            </div>
-                                                        )}
                                                         <div className="flex justify-between text-xs py-1 border-b border-slate-100 dark:border-slate-700">
                                                             <span className="text-slate-600 dark:text-slate-300">Comisión ML</span>
                                                             <span className="font-bold text-red-500">-${fmt(order.mlCommission ?? 0)}</span>
+                                                        </div>
+                                                        <div className="flex justify-between text-xs py-1 border-b border-slate-100 dark:border-slate-700">
+                                                            <span className="text-slate-600 dark:text-slate-300">Costo de envío</span>
+                                                            <span className="font-bold text-red-500">-${fmt(shipping)}</span>
                                                         </div>
                                                         <div className="flex justify-between text-xs pt-2 mt-1">
                                                             <span className="font-black text-slate-800 dark:text-white">Te queda</span>

@@ -20,6 +20,7 @@ export interface Order {
   total: number;          // Gross ML sale amount
   netIncome: number;      // After ML commission + shipping (net_received_amount)
   mlCommission: number;   // ML marketplace fee
+  shippingCost: number;   // Shipping cost charged to seller by ML
   meliItemId: string;     // ML item ID (for catalog cross-reference)
   status: 'pending' | 'paid' | 'shipped' | 'delivered' | 'cancelled';
   date: string;           // YYYY-MM-DD
