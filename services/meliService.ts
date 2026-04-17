@@ -442,6 +442,39 @@ class MeliService {
                 );
                 enriched.push(...details);
             }
+
+            // For orders where shipping is still 0, ML bills it via the shipment record.
+            // Fetch /shipments/{id} to get base_cost (the real charge to the seller).
+            const needsShipment = enriched.filter(o =>
+                !(o.payments?.[0]?.shipping_cost > 0) &&
+                !(o.shipping?.base_cost > 0) &&
+                o.shipping?.id &&
+                o.status !== 'cancelled'
+            );
+            if (needsShipment.length > 0) {
+                const costMap: Record<string, number> = {};
+                for (let i = 0; i < needsShipment.length; i += BATCH) {
+                    const batch = needsShipment.slice(i, i + BATCH);
+                    const results = await Promise.allSettled(
+                        batch.map(async o => {
+                            const r = await this.fetchWithAuth(`/shipments/${o.shipping.id}`);
+                            if (!r.ok) return null;
+                            const d = await r.json();
+                            return { id: o.id, cost: d.base_cost ?? d.cost ?? 0 };
+                        })
+                    );
+                    for (const r of results) {
+                        if (r.status === 'fulfilled' && r.value) costMap[r.value.id] = r.value.cost;
+                    }
+                }
+                for (const o of enriched) {
+                    if (costMap[o.id] != null) {
+                        if (!o.shipping) o.shipping = {};
+                        o.shipping.base_cost = costMap[o.id];
+                    }
+                }
+            }
+
             return enriched;
         } catch (e) {
             console.error('meliService.getOrdersFiltered error:', e);
