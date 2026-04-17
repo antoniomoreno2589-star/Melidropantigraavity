@@ -54,6 +54,7 @@ export const OrdersPage = () => {
     const [selectedIds, setSelectedIds] = useState<string[]>([]);
     const [detailOrderId, setDetailOrderId] = useState<string | null>(null);
     const [buyLoading, setBuyLoading] = useState<Set<string>>(new Set());
+    const [quickFilter, setQuickFilter] = useState<'shipToday' | 'pendingAmazon' | null>(null);
 
     // ── date range ─────────────────────────────────────────────────────
     const range = useMemo(
@@ -93,16 +94,24 @@ export const OrdersPage = () => {
             const raw = await meliService.getOrdersFiltered(dateFrom, dateTo);
 
             if (raw.length > 0) {
+                // Log first order's payment object so we can verify ML field names
+                console.log('[Melidrop] Sample order payment data:', JSON.stringify(raw[0]?.payments?.[0] ?? null, null, 2));
+                console.log('[Melidrop] Sample order keys:', Object.keys(raw[0] ?? {}));
+
                 const { data: { user } } = await supabase.auth.getUser();
                 const payloads = raw.map((o: any) => {
                     const dateCreated = o.date_created?.split('T')[0] ?? todayStr;
                     const asin = o.order_items?.[0]?.item?.seller_custom_field ?? '';
-                    const pmt         = o.payments?.[0];
-                    const totalAmt    = o.total_amount ?? 0;
-                    const netReceived = pmt?.net_received_amount ?? null;
-                    const fee         = pmt?.marketplace_fee     ?? null;
-                    const shipping    = pmt?.shipping_cost        ?? null;
-                    const netIncome   = netReceived != null ? netReceived
+                    const pmt = o.payments?.[0];
+                    const totalAmt = o.total_amount ?? 0;
+                    // ML may return the amount under different keys depending on version
+                    const netReceived = pmt?.net_received_amount
+                        ?? pmt?.amount_received
+                        ?? pmt?.net_amount
+                        ?? null;
+                    const fee = pmt?.marketplace_fee ?? pmt?.commission_amount ?? null;
+                    const shipping = pmt?.shipping_cost ?? pmt?.shipping_amount ?? null;
+                    const netIncome = netReceived != null ? netReceived
                         : (fee != null || shipping != null)
                             ? totalAmt - (fee ?? 0) - (shipping ?? 0)
                             : null;
@@ -195,6 +204,10 @@ export const OrdersPage = () => {
 
     // ── filtered list & stats ──────────────────────────────────────────
     const filteredOrders = useMemo(() => orders.filter(o => {
+        if (quickFilter === 'shipToday')
+            return o.shippingDeadline === todayStr && !['shipped', 'delivered', 'cancelled'].includes(o.status);
+        if (quickFilter === 'pendingAmazon')
+            return o.amazonStatus === 'pending' && o.status !== 'cancelled';
         if (search) {
             const q = search.toLowerCase();
             if (!o.id.toLowerCase().includes(q) &&
@@ -205,7 +218,7 @@ export const OrdersPage = () => {
         if (mlStatusFilter !== 'all' && o.status !== mlStatusFilter) return false;
         if (amazonFilter !== 'all' && o.amazonStatus !== amazonFilter) return false;
         return true;
-    }), [orders, search, mlStatusFilter, amazonFilter]);
+    }), [orders, search, mlStatusFilter, amazonFilter, quickFilter, todayStr]);
 
     const stats = useMemo(() => {
         const shipToday    = filteredOrders.filter(o => o.shippingDeadline === todayStr && !['shipped','delivered','cancelled'].includes(o.status)).length;
@@ -315,7 +328,14 @@ export const OrdersPage = () => {
 
                 {/* ── Stats cards ── */}
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                    <div className="bg-white dark:bg-slate-800 p-6 rounded-2xl border border-slate-200 dark:border-slate-700 shadow-sm relative overflow-hidden group">
+                    <button
+                        onClick={() => setQuickFilter(qf => qf === 'shipToday' ? null : 'shipToday')}
+                        className={`text-left p-6 rounded-2xl border shadow-sm relative overflow-hidden group transition-all cursor-pointer ${
+                            quickFilter === 'shipToday'
+                                ? 'bg-orange-50 dark:bg-orange-900/20 border-orange-400 ring-2 ring-orange-400'
+                                : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 hover:border-orange-300'
+                        }`}
+                    >
                         <div className="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity">
                             <span className="material-symbols-outlined text-6xl text-orange-500">local_shipping</span>
                         </div>
@@ -326,9 +346,22 @@ export const OrdersPage = () => {
                                 {stats.shipToday > 0 ? 'URGENTE' : 'Al día'}
                             </span>
                         </div>
-                    </div>
+                        {quickFilter === 'shipToday' && (
+                            <p className="text-[10px] text-orange-500 font-bold mt-2 flex items-center gap-1">
+                                <span className="material-symbols-outlined text-[12px]">filter_alt</span>
+                                Filtro activo — clic para quitar
+                            </p>
+                        )}
+                    </button>
 
-                    <div className="bg-white dark:bg-slate-800 p-6 rounded-2xl border border-slate-200 dark:border-slate-700 shadow-sm relative overflow-hidden group">
+                    <button
+                        onClick={() => setQuickFilter(qf => qf === 'pendingAmazon' ? null : 'pendingAmazon')}
+                        className={`text-left p-6 rounded-2xl border shadow-sm relative overflow-hidden group transition-all cursor-pointer ${
+                            quickFilter === 'pendingAmazon'
+                                ? 'bg-blue-50 dark:bg-blue-900/20 border-blue-400 ring-2 ring-blue-400'
+                                : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 hover:border-blue-300'
+                        }`}
+                    >
                         <div className="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity">
                             <span className="material-symbols-outlined text-6xl text-blue-500">shopping_cart</span>
                         </div>
@@ -337,7 +370,13 @@ export const OrdersPage = () => {
                             <p className="text-4xl font-black text-slate-900 dark:text-white">{stats.pendingBuy}</p>
                             <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400">Por Comprar</span>
                         </div>
-                    </div>
+                        {quickFilter === 'pendingAmazon' && (
+                            <p className="text-[10px] text-blue-500 font-bold mt-2 flex items-center gap-1">
+                                <span className="material-symbols-outlined text-[12px]">filter_alt</span>
+                                Filtro activo — clic para quitar
+                            </p>
+                        )}
+                    </button>
 
                     <div className="bg-white dark:bg-slate-800 p-6 rounded-2xl border border-slate-200 dark:border-slate-700 shadow-sm flex flex-col justify-between">
                         <div>
