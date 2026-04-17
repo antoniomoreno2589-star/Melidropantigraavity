@@ -117,18 +117,6 @@ export const OrdersPage = () => {
                     const shippingFromPmt = pmt?.shipping_cost > 0 ? pmt.shipping_cost : null;
                     const shippingFromOrder = o.shipping?.base_cost > 0 ? o.shipping.base_cost : null;
                     const shipping = shippingFromPmt ?? shippingFromOrder ?? 0;
-
-                    // Trace shipping source per order so we can verify in console
-                    console.log(`[Melidrop] Order ${o.id} shipping debug:`, {
-                        total: totalAmt,
-                        net_received_amount: pmt?.net_received_amount,
-                        marketplace_fee: pmt?.marketplace_fee,
-                        pmt_shipping_cost: pmt?.shipping_cost,
-                        shipping_base_cost: o.shipping?.base_cost,
-                        shipping_cost_used: shipping,
-                        'shipping.id': o.shipping?.id,
-                        shipping_option: o.shipping?.shipping_option,
-                    });
                     const netIncome = netReceived != null ? netReceived
                         : totalAmt - (fee ?? 0) - shipping;
                     // amazon_status intentionally excluded so existing 'purchased' marks

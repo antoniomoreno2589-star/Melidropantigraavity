@@ -443,12 +443,6 @@ class MeliService {
                 enriched.push(...details);
             }
 
-            // Log enriched order shipping + payment to identify correct seller cost field
-            if (enriched.length > 0) {
-                console.log('[Melidrop DEBUG] Enriched order[0] shipping obj:', JSON.stringify(enriched[0]?.shipping, null, 2));
-                console.log('[Melidrop DEBUG] Enriched order[0] payment obj:', JSON.stringify(enriched[0]?.payments?.[0], null, 2));
-            }
-
             // For orders where shipping is still 0, ML bills it via the shipment record.
             const needsShipment = enriched.filter(o =>
                 !(o.payments?.[0]?.shipping_cost > 0) &&
@@ -465,9 +459,16 @@ class MeliService {
                             const r = await this.fetchWithAuth(`/shipments/${o.shipping.id}`);
                             if (!r.ok) return null;
                             const d = await r.json();
-                            // Log full shipment response to find correct seller cost field
-                            if (o.id === needsShipment[0].id) console.log('[Melidrop DEBUG] Shipment[0] full response:', JSON.stringify(d, null, 2));
-                            return { id: o.id, cost: d.base_cost ?? d.cost ?? 0 };
+                            // Net seller shipping = base_cost minus ML loyalty/special discounts
+                            const cc = d.cost_components ?? {};
+                            const netCost = Math.max(0,
+                                (d.base_cost ?? 0)
+                                - (cc.loyal_discount ?? 0)
+                                - (cc.special_discount ?? 0)
+                                - (cc.gap_discount ?? 0)
+                                + (cc.compensation ?? 0)
+                            );
+                            return { id: o.id, cost: netCost };
                         })
                     );
                     for (const r of results) {
