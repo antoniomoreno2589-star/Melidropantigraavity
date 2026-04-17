@@ -425,7 +425,24 @@ class MeliService {
                 if (results.length < limit) break;
                 offset += limit;
             }
-            return allOrders;
+
+            // orders/search omits marketplace_fee and shipping_cost from payments.
+            // Fetch individual order detail (8 concurrent) to get complete fee data.
+            const BATCH = 8;
+            const enriched: any[] = [];
+            for (let i = 0; i < allOrders.length; i += BATCH) {
+                const slice = allOrders.slice(i, i + BATCH);
+                const details = await Promise.all(
+                    slice.map(async o => {
+                        try {
+                            const r = await this.fetchWithAuth(`/orders/${o.id}`);
+                            return r.ok ? await r.json() : o;
+                        } catch { return o; }
+                    })
+                );
+                enriched.push(...details);
+            }
+            return enriched;
         } catch (e) {
             console.error('meliService.getOrdersFiltered error:', e);
             return [];
