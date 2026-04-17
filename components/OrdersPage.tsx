@@ -103,27 +103,32 @@ export const OrdersPage = () => {
             const raw = await meliService.getOrdersFiltered(dateFrom, dateTo);
 
             if (raw.length > 0) {
-                // Log first order's payment object so we can verify ML field names
-                console.log('[Melidrop] Sample order payment data:', JSON.stringify(raw[0]?.payments?.[0] ?? null, null, 2));
-                console.log('[Melidrop] Sample order keys:', Object.keys(raw[0] ?? {}));
-
                 const { data: { user } } = await supabase.auth.getUser();
                 const payloads = raw.map((o: any) => {
                     const dateCreated = o.date_created?.split('T')[0] ?? todayStr;
                     const asin = o.order_items?.[0]?.item?.seller_custom_field ?? '';
                     const pmt = o.payments?.[0];
                     const totalAmt = o.total_amount ?? 0;
-                    // ML may return the amount under different keys depending on version
                     const netReceived = pmt?.net_received_amount
                         ?? pmt?.amount_received
                         ?? pmt?.net_amount
                         ?? null;
                     const fee = pmt?.marketplace_fee ?? pmt?.commission_amount ?? null;
-                    // payments[0].shipping_cost is 0 when ML bills shipping separately;
-                    // fall back to order.shipping.base_cost which always reflects the real charge
                     const shippingFromPmt = pmt?.shipping_cost > 0 ? pmt.shipping_cost : null;
                     const shippingFromOrder = o.shipping?.base_cost > 0 ? o.shipping.base_cost : null;
                     const shipping = shippingFromPmt ?? shippingFromOrder ?? 0;
+
+                    // Trace shipping source per order so we can verify in console
+                    console.log(`[Melidrop] Order ${o.id} shipping debug:`, {
+                        total: totalAmt,
+                        net_received_amount: pmt?.net_received_amount,
+                        marketplace_fee: pmt?.marketplace_fee,
+                        pmt_shipping_cost: pmt?.shipping_cost,
+                        shipping_base_cost: o.shipping?.base_cost,
+                        shipping_cost_used: shipping,
+                        'shipping.id': o.shipping?.id,
+                        shipping_option: o.shipping?.shipping_option,
+                    });
                     const netIncome = netReceived != null ? netReceived
                         : totalAmt - (fee ?? 0) - shipping;
                     // amazon_status intentionally excluded so existing 'purchased' marks
