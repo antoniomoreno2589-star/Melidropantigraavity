@@ -117,7 +117,14 @@ export const SettingsPage = () => {
 
     useEffect(() => {
         const fetchTestUser = async () => {
-            const { data } = await supabase.from('user_connections').select('meli_test_user').maybeSingle();
+            const { data: { user } } = await supabase.auth.getUser();
+            if (!user) return;
+            const { data } = await supabase
+                .from('user_connections')
+                .select('meli_test_user')
+                .eq('user_id', user.id)
+                .limit(1)
+                .maybeSingle();
             if (data?.meli_test_user) setTestUser(data.meli_test_user);
         };
         fetchTestUser();
@@ -154,7 +161,7 @@ export const SettingsPage = () => {
                 await supabase.from('user_connections').upsert({
                     user_id: user.id,
                     meli_test_user: testUserData
-                });
+                }, { onConflict: 'user_id' });
             }
             setTestUser(testUserData);
             setTestUserStatus('✅ Usuario de prueba conectado correctamente. Ya puedes usar "Probar (Sandbox)" en el importador.');
@@ -169,7 +176,7 @@ export const SettingsPage = () => {
     const handleDisconnectTestUser = async () => {
         const { data: { user } } = await supabase.auth.getUser();
         if (user) {
-            await supabase.from('user_connections').upsert({ user_id: user.id, meli_test_user: null });
+            await supabase.from('user_connections').upsert({ user_id: user.id, meli_test_user: null }, { onConflict: 'user_id' });
         }
         setTestUser(null);
         setTestUserStatus('Usuario de prueba desconectado.');
@@ -326,7 +333,7 @@ export const SettingsPage = () => {
                     sync_params: syncParams, auto_promos: autoPromos,
                     allow_price_decrease: allowPriceDecrease, sync_frequency_hours: syncFrequencyHours
                 }
-            });
+            }, { onConflict: 'user_id' });
         }
 
         alert(`Configuración de ${section} guardada exitosamente en el sistema.`);

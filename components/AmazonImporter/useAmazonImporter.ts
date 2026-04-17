@@ -48,7 +48,14 @@ export function useAmazonImporter() {
 
     useEffect(() => {
         const fetchTestUser = async () => {
-            const { data } = await supabase.from('user_connections').select('meli_test_user').maybeSingle();
+            const { data: { user } } = await supabase.auth.getUser();
+            if (!user) return;
+            const { data } = await supabase
+                .from('user_connections')
+                .select('meli_test_user')
+                .eq('user_id', user.id)
+                .limit(1)
+                .maybeSingle();
             if (data?.meli_test_user) setTestUserCreds(data.meli_test_user);
         };
         fetchTestUser();
@@ -414,13 +421,14 @@ export function useAmazonImporter() {
                 const causes: string[] = [];
                 if (result.cause && Array.isArray(result.cause)) {
                     result.cause.forEach((c: any) => {
-                        if (c.message) causes.push(c.message);
-                        else if (c.code) causes.push(`[${c.code}] ${c.description || ''}`);
-                        else causes.push(JSON.stringify(c));
+                        const field = c.field ? `[${c.field}] ` : '';
+                        if (c.message) causes.push(`${field}${c.message}`);
+                        else if (c.code || c.description) causes.push(`${field}${c.code ? `[${c.code}] ` : ''}${c.description || ''}`);
+                        else causes.push(field + JSON.stringify(c));
                     });
                 }
                 const msg = causes.length > 0 ? `${result.error}\n• ${causes.join('\n• ')}` : result.error;
-                setPublishResults(prev => ({ ...prev, [asin]: { error: msg } }));
+                setPublishResults(prev => ({ ...prev, [asin]: { error: msg, raw: result } }));
                 setPublishingStatus(prev => ({ ...prev, [asin]: 'error' }));
             } else {
                 setPublishResults(prev => ({ ...prev, [asin]: result }));
