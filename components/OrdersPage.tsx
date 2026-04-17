@@ -97,19 +97,29 @@ export const OrdersPage = () => {
                 const payloads = raw.map((o: any) => {
                     const dateCreated = o.date_created?.split('T')[0] ?? todayStr;
                     const asin = o.order_items?.[0]?.item?.seller_custom_field ?? '';
+                    const pmt         = o.payments?.[0];
+                    const totalAmt    = o.total_amount ?? 0;
+                    const netReceived = pmt?.net_received_amount ?? null;
+                    const fee         = pmt?.marketplace_fee     ?? null;
+                    const shipping    = pmt?.shipping_cost        ?? null;
+                    const netIncome   = netReceived != null ? netReceived
+                        : (fee != null || shipping != null)
+                            ? totalAmt - (fee ?? 0) - (shipping ?? 0)
+                            : null;
+                    // amazon_status intentionally excluded so existing 'purchased' marks
+                    // are never overwritten on re-sync (DB DEFAULT 'pending' covers new rows)
                     return {
                         id: o.id.toString(),
                         user_id: user?.id,
                         product_title: o.order_items?.[0]?.item?.title ?? 'Producto',
                         buyer_name: o.buyer?.nickname ?? 'Comprador',
-                        total: o.total_amount ?? 0,
-                        net_income: o.payments?.[0]?.net_received_amount ?? null,
-                        ml_commission: o.payments?.[0]?.marketplace_fee ?? null,
-                        meli_item_id: o.order_items?.[0]?.item?.id ?? null,
+                        total:         totalAmt,
+                        net_income:    netIncome,
+                        ml_commission: fee,
+                        meli_item_id:  o.order_items?.[0]?.item?.id ?? null,
                         status: mapMlStatus(o),
                         date: dateCreated,
                         shipping_deadline: addDays(dateCreated, 3),
-                        amazon_status: 'pending',
                         amazon_asin: asin,
                         amazon_marketplace: currencyMap[asin] === 'USD' ? 'US' : 'MX',
                     };

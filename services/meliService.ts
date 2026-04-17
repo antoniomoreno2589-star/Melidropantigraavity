@@ -359,18 +359,32 @@ class MeliService {
 
             // Sync orders to Supabase for persistence and analytics
             if (results.length > 0) {
-                const ordersToSync = results.map((o: any) => ({
-                    id: o.id.toString(),
-                    user_id: supabaseUserId,
-                    product_title: o.order_items?.[0]?.item?.title || 'Producto',
-                    buyer_name: o.buyer?.nickname || 'Comprador',
-                    total: o.payments?.[0]?.net_received_amount || o.total_amount || 0,
-                    status: mapMlStatus(o),
-                    date: o.date_created ? o.date_created.split('T')[0] : null,
-                    amazon_status: 'pending',
-                    amazon_asin: o.order_items?.[0]?.item?.seller_custom_field || '',
-                    amazon_marketplace: 'MX'
-                }));
+                const ordersToSync = results.map((o: any) => {
+                    const pmt = o.payments?.[0];
+                    const totalAmt    = o.total_amount ?? 0;
+                    const netReceived = pmt?.net_received_amount ?? null;
+                    const fee         = pmt?.marketplace_fee     ?? null;
+                    const shipping    = pmt?.shipping_cost        ?? null;
+                    // Compute net_income from breakdown when field is absent
+                    const netIncome   = netReceived != null ? netReceived
+                        : (fee != null || shipping != null)
+                            ? totalAmt - (fee ?? 0) - (shipping ?? 0)
+                            : null;
+                    return {
+                        id: o.id.toString(),
+                        user_id: supabaseUserId,
+                        product_title: o.order_items?.[0]?.item?.title || 'Producto',
+                        buyer_name: o.buyer?.nickname || 'Comprador',
+                        total:         totalAmt,
+                        net_income:    netIncome,
+                        ml_commission: fee,
+                        meli_item_id:  o.order_items?.[0]?.item?.id ?? null,
+                        status: mapMlStatus(o),
+                        date: o.date_created ? o.date_created.split('T')[0] : null,
+                        amazon_asin: o.order_items?.[0]?.item?.seller_custom_field || '',
+                        amazon_marketplace: 'MX'
+                    };
+                });
 
                 try {
                     await api.orders.bulkUpsert(ordersToSync);

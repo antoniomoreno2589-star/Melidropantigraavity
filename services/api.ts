@@ -240,11 +240,12 @@ export const api = {
                 ...o
             }));
 
-            // ignoreDuplicates: true preserves existing amazon_status / amazon_purchase_price
-            // for orders the user has already marked as purchased.
+            // ignoreDuplicates: false so ML financial fields (net_income, ml_commission)
+            // update on re-sync. amazon_status / amazon_purchase_price are excluded from
+            // sync payloads so they are never touched by the ON CONFLICT SET clause.
             const { error } = await supabase
                 .from('orders')
-                .upsert(payloads, { onConflict: 'id', ignoreDuplicates: true });
+                .upsert(payloads, { onConflict: 'id', ignoreDuplicates: false });
 
             if (error) throw error;
         }
