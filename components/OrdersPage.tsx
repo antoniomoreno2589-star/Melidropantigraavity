@@ -84,6 +84,15 @@ export const OrdersPage = () => {
 
     useEffect(() => { loadOrders(); }, [loadOrders]);
 
+    // ── auto-sync on mount when last sync is stale (> 2 h) ────────────
+    useEffect(() => {
+        api.sync.getLastSync().then(s => {
+            const stale = !s || Date.now() - new Date(s.finished_at).getTime() > 2 * 3600 * 1000;
+            if (stale) handleSync();
+        }).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+
     // ── sync from ML ───────────────────────────────────────────────────
     const handleSync = async () => {
         setSyncing(true);
@@ -110,9 +119,13 @@ export const OrdersPage = () => {
                         ?? pmt?.net_amount
                         ?? null;
                     const fee = pmt?.marketplace_fee ?? pmt?.commission_amount ?? null;
-                    const shipping = pmt?.shipping_cost ?? pmt?.shipping_amount ?? null;
+                    // payments[0].shipping_cost is 0 when ML bills shipping separately;
+                    // fall back to order.shipping.base_cost which always reflects the real charge
+                    const shippingFromPmt = pmt?.shipping_cost > 0 ? pmt.shipping_cost : null;
+                    const shippingFromOrder = o.shipping?.base_cost > 0 ? o.shipping.base_cost : null;
+                    const shipping = shippingFromPmt ?? shippingFromOrder ?? 0;
                     const netIncome = netReceived != null ? netReceived
-                        : totalAmt - (fee ?? 0) - (shipping ?? 0);
+                        : totalAmt - (fee ?? 0) - shipping;
                     // amazon_status intentionally excluded so existing 'purchased' marks
                     // are never overwritten on re-sync (DB DEFAULT 'pending' covers new rows)
                     return {

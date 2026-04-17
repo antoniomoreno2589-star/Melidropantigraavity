@@ -363,13 +363,12 @@ class MeliService {
                     const pmt = o.payments?.[0];
                     const totalAmt    = o.total_amount ?? 0;
                     const netReceived = pmt?.net_received_amount ?? null;
-                    const fee         = pmt?.marketplace_fee     ?? null;
-                    const shipping    = pmt?.shipping_cost        ?? null;
-                    // Compute net_income from breakdown when field is absent
+                    const fee         = pmt?.marketplace_fee ?? null;
+                    const shipping    = (pmt?.shipping_cost > 0 ? pmt.shipping_cost : null)
+                                        ?? (o.shipping?.base_cost > 0 ? o.shipping.base_cost : null)
+                                        ?? 0;
                     const netIncome   = netReceived != null ? netReceived
-                        : (fee != null || shipping != null)
-                            ? totalAmt - (fee ?? 0) - (shipping ?? 0)
-                            : null;
+                        : totalAmt - (fee ?? 0) - shipping;
                     return {
                         id: o.id.toString(),
                         user_id: supabaseUserId,
@@ -378,6 +377,7 @@ class MeliService {
                         total:         totalAmt,
                         net_income:    netIncome,
                         ml_commission: fee,
+                        shipping_cost: shipping,
                         meli_item_id:  o.order_items?.[0]?.item?.id ?? null,
                         status: mapMlStatus(o),
                         date: o.date_created ? o.date_created.split('T')[0] : null,
