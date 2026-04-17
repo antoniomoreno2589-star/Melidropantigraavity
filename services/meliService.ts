@@ -459,10 +459,11 @@ class MeliService {
                             const r = await this.fetchWithAuth(`/shipments/${o.shipping.id}`);
                             if (!r.ok) return null;
                             const d = await r.json();
-                            // Net seller shipping = base_cost minus ML loyalty/special discounts
+                            // shipping_option.list_cost is the actual seller charge;
+                            // base_cost is gross before ML's internal adjustments
                             const cc = d.cost_components ?? {};
                             const netCost = Math.max(0,
-                                (d.base_cost ?? 0)
+                                (d.shipping_option?.list_cost ?? d.base_cost ?? 0)
                                 - (cc.loyal_discount ?? 0)
                                 - (cc.special_discount ?? 0)
                                 - (cc.gap_discount ?? 0)
