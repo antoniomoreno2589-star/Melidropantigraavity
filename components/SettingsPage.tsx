@@ -155,7 +155,7 @@ export const SettingsPage = () => {
         try {
             const accessToken = await meliService.loginTestUser(testUserEmail, testUserPassword);
             if (!accessToken) throw new Error('No se obtuvo token de acceso');
-            const testUserData = { email: testUserEmail, access_token: accessToken, connected_at: new Date().toISOString() };
+            const testUserData = { email: testUserEmail, password: testUserPassword, access_token: accessToken, connected_at: new Date().toISOString() };
             const { data: { user } } = await supabase.auth.getUser();
             if (user) {
                 await supabase.from('user_connections').upsert({

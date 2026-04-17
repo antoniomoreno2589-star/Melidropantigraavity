@@ -144,6 +144,9 @@ class MeliService {
         await new Promise(r => setTimeout(r, 100));
 
         if (response.status === 401) {
+            // If a customToken was provided it belongs to a different account (e.g. test user).
+            // Refreshing the real user's token and retrying would publish to the wrong account.
+            if (customToken) throw new Error('Token de usuario de prueba expirado. Reconecta el usuario en Configuración.');
             console.warn("MeliService: Token expired (401), refreshing...");
             const newToken = await this.refreshToken();
             if (newToken) {
@@ -848,7 +851,8 @@ class MeliService {
         }, customToken);
         const data = await response.json();
         if (!response.ok) {
-            console.error('ML publish error raw response:', JSON.stringify(data, null, 2));
+            console.error('[Melidrop] ML publish error:', JSON.stringify(data, null, 2));
+            console.error('[Melidrop] ML publish payload:', JSON.stringify(body, null, 2));
             return { error: data.message || "Error al publicar", cause: data.cause, raw: data };
         }
         return data;

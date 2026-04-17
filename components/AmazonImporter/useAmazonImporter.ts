@@ -350,16 +350,35 @@ export function useAmazonImporter() {
 
             if (testUserCreds?.access_token) {
                 try {
+                    // ML tokens expire in 6h — always refresh before using test user token
+                    let testToken = testUserCreds.access_token;
+                    if (testUserCreds.email && testUserCreds.password) {
+                        try {
+                            const fresh = await meliService.loginTestUser(testUserCreds.email, testUserCreds.password);
+                            if (fresh) {
+                                testToken = fresh;
+                                const { data: { user } } = await supabase.auth.getUser();
+                                if (user) {
+                                    const updated = { ...testUserCreds, access_token: fresh };
+                                    await supabase.from('user_connections').upsert(
+                                        { user_id: user.id, meli_test_user: updated },
+                                        { onConflict: 'user_id' }
+                                    );
+                                    setTestUserCreds(updated);
+                                }
+                            }
+                        } catch { /* use existing token */ }
+                    }
                     const imageIds: string[] = [];
                     for (const img of processed.images.slice(0, 10)) {
-                        const id = await meliService.uploadImage(img.url, testUserCreds.access_token);
+                        const id = await meliService.uploadImage(img.url, testToken);
                         if (id) imageIds.push(id);
                     }
                     const testPayload = { ...payload };
                     if (imageIds.length > 0) {
                         (testPayload as any).pictures = imageIds.map((id: string) => ({ id }));
                     }
-                    publishResult = await meliService.publishItem(testPayload, false, testUserCreds.access_token);
+                    publishResult = await meliService.publishItem(testPayload, false, testToken);
                     if (publishResult?.id) {
                         testMeliId = publishResult.id;
                     }
