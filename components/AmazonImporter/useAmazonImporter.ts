@@ -382,8 +382,8 @@ export function useAmazonImporter() {
             const msg = testMeliId
                 ? `✅ Publicado en cuenta de prueba de ML (ID: ${testMeliId}) y guardado en el catálogo de pruebas.`
                 : testUserCreds?.access_token
-                    ? `⚠️ Error al publicar en ML de pruebas. Guardado en catálogo de pruebas de la app.`
-                    : `📋 Guardado en catálogo de pruebas de la app. Para publicar en cuenta test de ML, configura el usuario de prueba en Configuración.`;
+                    ? `⚠️ Error al publicar en ML de pruebas:\n${publishResult?.error ?? 'desconocido'}\n\nGuardado solo en el catálogo de pruebas local.`
+                    : `📋 Guardado solo en el catálogo de pruebas local de la app.\n\nPara publicar realmente en ML sandbox:\n1. Ve a Configuración → "Usuario de prueba de Mercado Libre"\n2. Crea o conecta un test user\n3. Vuelve aquí y presiona "Probar (Sandbox)" otra vez.`;
             alert(msg);
         } catch (err: any) {
             setPublishResults(prev => ({ ...prev, [asin]: { error: `Error en prueba: ${err.message}` } }));

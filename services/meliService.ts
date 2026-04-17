@@ -2,6 +2,17 @@ import { api } from './api';
 import { supabase } from './supabase';
 import { Product } from '../types';
 
+// Map raw ML order statuses to the narrower set allowed by the DB CHECK
+// constraint on orders.status: pending | paid | shipped | delivered | cancelled.
+function mapMlStatus(o: any): 'pending' | 'paid' | 'shipped' | 'delivered' | 'cancelled' {
+    if (o.status === 'cancelled') return 'cancelled';
+    const ss = o.shipping?.status ?? '';
+    if (ss === 'delivered') return 'delivered';
+    if (['shipped', 'me2', 'in_transit', 'almost_there'].includes(ss)) return 'shipped';
+    if (o.status === 'paid') return 'paid';
+    return 'pending';
+}
+
 export interface MeliCredentials {
     appId: string;
     secret: string;
@@ -354,7 +365,7 @@ class MeliService {
                     product_title: o.order_items?.[0]?.item?.title || 'Producto',
                     buyer_name: o.buyer?.nickname || 'Comprador',
                     total: o.payments?.[0]?.net_received_amount || o.total_amount || 0,
-                    status: o.status,
+                    status: mapMlStatus(o),
                     date: o.date_created ? o.date_created.split('T')[0] : null,
                     amazon_status: 'pending',
                     amazon_asin: o.order_items?.[0]?.item?.seller_custom_field || '',
