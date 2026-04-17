@@ -71,11 +71,13 @@ const App = () => {
 
       // 2. Sync credentials and settings from Supabase FIRST
       try {
-        const { data } = await supabase
+        const { data: rows } = await supabase
           .from('user_connections')
           .select('*')
           .eq('user_id', session.user.id)
-          .single();
+          .order('updated_at', { ascending: false })
+          .limit(1);
+        const data = rows?.[0] ?? null;
 
         if (data) {
           console.log('App: Sincronizando configuraciones desde la nube...');
