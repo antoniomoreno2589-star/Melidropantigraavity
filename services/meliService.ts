@@ -443,8 +443,13 @@ class MeliService {
                 enriched.push(...details);
             }
 
+            // Log enriched order shipping + payment to identify correct seller cost field
+            if (enriched.length > 0) {
+                console.log('[Melidrop DEBUG] Enriched order[0] shipping obj:', JSON.stringify(enriched[0]?.shipping, null, 2));
+                console.log('[Melidrop DEBUG] Enriched order[0] payment obj:', JSON.stringify(enriched[0]?.payments?.[0], null, 2));
+            }
+
             // For orders where shipping is still 0, ML bills it via the shipment record.
-            // Fetch /shipments/{id} to get base_cost (the real charge to the seller).
             const needsShipment = enriched.filter(o =>
                 !(o.payments?.[0]?.shipping_cost > 0) &&
                 !(o.shipping?.base_cost > 0) &&
@@ -460,6 +465,8 @@ class MeliService {
                             const r = await this.fetchWithAuth(`/shipments/${o.shipping.id}`);
                             if (!r.ok) return null;
                             const d = await r.json();
+                            // Log full shipment response to find correct seller cost field
+                            if (o.id === needsShipment[0].id) console.log('[Melidrop DEBUG] Shipment[0] full response:', JSON.stringify(d, null, 2));
                             return { id: o.id, cost: d.base_cost ?? d.cost ?? 0 };
                         })
                     );
