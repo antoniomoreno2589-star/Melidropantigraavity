@@ -90,13 +90,15 @@ class MeliService {
                 refresh_token: creds.refreshToken
             });
 
-            const response = await fetch(`${this.baseUrl}/oauth/token`, {
+            const response = await fetch('/api/proxy', {
                 method: 'POST',
-                headers: {
-                    'Content-Type': 'application/x-www-form-urlencoded',
-                    'Accept': 'application/json'
-                },
-                body
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    url: `${this.baseUrl}/oauth/token`,
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Accept': 'application/json' },
+                    body: body.toString()
+                })
             });
 
             if (!response.ok) throw new Error('Failed to refresh token');
@@ -908,10 +910,15 @@ class MeliService {
                 username: testUserEmail,
                 password: testUserPassword
             });
-            const response = await fetch(`${this.baseUrl}/oauth/token`, {
+            const response = await fetch('/api/proxy', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Accept': 'application/json' },
-                body
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    url: `${this.baseUrl}/oauth/token`,
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Accept': 'application/json' },
+                    body: body.toString()
+                })
             });
             if (!response.ok) {
                 const err = await response.text();
