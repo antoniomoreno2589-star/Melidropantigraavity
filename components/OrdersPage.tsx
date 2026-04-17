@@ -115,7 +115,9 @@ export const OrdersPage = () => {
             }
             await loadOrders();
         } catch (e: any) {
-            setSyncError(e.message ?? 'Error al sincronizar');
+            const msg = [e.message, e.code && `[${e.code}]`, e.details, e.hint]
+                .filter(Boolean).join(' — ');
+            setSyncError(msg || 'Error al sincronizar');
         } finally {
             setSyncing(false);
         }

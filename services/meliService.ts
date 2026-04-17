@@ -35,15 +35,13 @@ class MeliService {
 
     private async saveCredentials(creds: MeliCredentials) {
         localStorage.setItem('melidrop_meli_credentials', JSON.stringify(creds));
-        
-        // Sync to Supabase
+
         const { data: { user } } = await supabase.auth.getUser();
         if (user) {
-            await supabase.from('user_connections').upsert({
-                user_id: user.id,
-                meli_credentials: creds,
-                updated_at: new Error().stack?.includes('refreshToken') ? undefined : new Date().toISOString()
-            });
+            await supabase.from('user_connections').upsert(
+                { user_id: user.id, meli_credentials: creds, updated_at: new Date().toISOString() },
+                { onConflict: 'user_id' }
+            );
         }
     }
 
@@ -55,7 +53,7 @@ class MeliService {
             .from('user_connections')
             .select('meli_credentials')
             .eq('user_id', user.id)
-            .single();
+            .maybeSingle();
 
         if (data?.meli_credentials) {
             localStorage.setItem('melidrop_meli_credentials', JSON.stringify(data.meli_credentials));
@@ -374,8 +372,8 @@ class MeliService {
 
                 try {
                     await api.orders.bulkUpsert(ordersToSync);
-                } catch (e) {
-                    console.warn("MeliService: Could not sync orders to Supabase:", e);
+                } catch (e: any) {
+                    console.warn("MeliService: Could not sync orders to Supabase:", e?.message, e);
                 }
             }
 
@@ -775,7 +773,8 @@ class MeliService {
         }, customToken);
         const data = await response.json();
         if (!response.ok) {
-            return { error: data.message || "Error al publicar", cause: data.cause };
+            console.error('ML publish error raw response:', JSON.stringify(data, null, 2));
+            return { error: data.message || "Error al publicar", cause: data.cause, raw: data };
         }
         return data;
     }
