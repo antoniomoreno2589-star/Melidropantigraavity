@@ -316,9 +316,17 @@ export function useAmazonImporter() {
         const availableQty = parseInt(localStorage.getItem('melidrop_default_stock') || '3');
         const warrantyMonths = parseInt(localStorage.getItem('melidrop_warranty_months') || '1');
 
+        // Sanitize title: remove ML-forbidden chars, strip trailing punctuation from truncation
+        const safeTitle = title
+            .replace(/[<>|\\]/g, '')
+            .replace(/\s+/g, ' ')
+            .trim()
+            .replace(/[,;:\-]+$/, '')
+            .substring(0, 60)
+            .trim();
+
         return {
-            title,
-            family_name: processed.asin,
+            title: safeTitle,
             category_id: catId,
             price: priceMXN,
             currency_id: marketplace === 'MLM' ? 'MXN' : 'USD',
@@ -326,7 +334,10 @@ export function useAmazonImporter() {
             buying_mode: 'buy_it_now',
             listing_type_id: listingType,
             condition: 'new',
-            handling_time: handlingTime,
+            // handling_time as a direct field is deprecated — use sale_terms
+            sale_terms: [
+                { id: 'HANDLING_TIME', value_name: String(Math.min(Math.max(1, handlingTime), 30)) }
+            ],
             warranty: warrantyMonths > 0 ? `Garantía del vendedor: ${warrantyMonths} ${warrantyMonths === 1 ? 'mes' : 'meses'}` : undefined,
             description: { plain_text: descriptionText },
             seller_custom_field: processed.asin,
