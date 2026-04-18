@@ -56,7 +56,7 @@ export const Step1Config: React.FC<Props> = ({
             <label className="flex items-center justify-between cursor-pointer">
                 <div>
                     <p className="text-sm font-bold text-slate-900 dark:text-white">🤖 Detectar categoría automáticamente</p>
-                    <p className="text-xs text-slate-500">Gemini analiza el producto y elige la categoría correcta de ML</p>
+                    <p className="text-xs text-slate-500">Claude analiza el producto y elige la categoría correcta de ML</p>
                 </div>
                 <div onClick={() => setAutoCategory(!autoCategory)}
                     className={`w-12 h-6 rounded-full transition-all cursor-pointer relative ${autoCategory ? 'bg-primary' : 'bg-slate-200 dark:bg-slate-700'}`}>
@@ -67,7 +67,7 @@ export const Step1Config: React.FC<Props> = ({
                 <label className="flex items-center justify-between cursor-pointer">
                     <div>
                         <p className="text-sm font-bold text-slate-900 dark:text-white">🖼️ Limpiar imágenes con IA</p>
-                        <p className="text-xs text-slate-500">Detecta datos de contacto en fotos • ~$0.01 USD por producto</p>
+                        <p className="text-xs text-slate-500">Elimina texto de contacto en fotos con Clipdrop • ~$0.01 USD por imagen</p>
                     </div>
                     <div onClick={() => setCleanImages(!cleanImages)}
                         className={`w-12 h-6 rounded-full transition-all cursor-pointer relative flex-shrink-0 ml-4 ${cleanImages ? 'bg-primary' : 'bg-slate-200 dark:bg-slate-700'}`}>
@@ -195,7 +195,7 @@ export const Step3AI: React.FC<Props> = ({
             <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-2xl p-6 flex items-center gap-4">
                 <div className="w-8 h-8 rounded-full border-4 border-blue-200 border-t-blue-500 animate-spin flex-shrink-0" />
                 <div>
-                    <p className="font-black text-blue-900 dark:text-blue-100">Gemini está analizando tus productos...</p>
+                    <p className="font-black text-blue-900 dark:text-blue-100">Claude está analizando tus productos...</p>
                     <p className="text-sm text-blue-600 dark:text-blue-400 mt-0.5">{processingStage}</p>
                 </div>
             </div>
@@ -264,10 +264,10 @@ export const Step3AI: React.FC<Props> = ({
                                 <div className="mt-1 flex gap-2 flex-wrap">
                                     {processed.images.slice(0, 6).map((img, i) => (
                                         <div key={i} className="relative">
-                                            <img src={img.url} alt={`img-${i}`} className="w-12 h-12 object-cover rounded-lg border border-slate-200 dark:border-slate-700" />
+                                            <img src={img.cleanedUrl || img.url} alt={`img-${i}`} className="w-12 h-12 object-cover rounded-lg border border-slate-200 dark:border-slate-700" />
                                             {img.checked && img.hasContactInfo && (
-                                                <div className="absolute -top-1 -right-1 w-4 h-4 bg-red-500 rounded-full flex items-center justify-center">
-                                                    <span className="material-symbols-outlined text-white text-[10px]">warning</span>
+                                                <div className="absolute -top-1 -right-1 w-4 h-4 bg-green-500 rounded-full flex items-center justify-center" title="Limpiada con IA">
+                                                    <span className="material-symbols-outlined text-white text-[10px]">auto_fix_high</span>
                                                 </div>
                                             )}
                                         </div>

@@ -8,6 +8,7 @@ const corsHeaders = {
 const ANTHROPIC_API_KEY = Deno.env.get('ANTHROPIC_API_KEY') || '';
 const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
 const MODEL = 'claude-haiku-4-5-20251001';
+const CLIPDROP_API_KEY = Deno.env.get('CLIPDROP_API_KEY') || '';
 
 async function callClaude(prompt: string, imageUrl?: string): Promise<string> {
   const content: any[] = [];
@@ -110,6 +111,39 @@ IMPORTANTE: Antes de responder, cuenta los caracteres. Si son menos de 55, agreg
   return result.replace(/^["']|["']$/g, '').replace(/^[\s\-–—,.:;|]+/, '').substring(0, 60).trim();
 }
 
+async function cleanImage(imageUrl: string): Promise<{ hadContactInfo: boolean; cleanedImageBase64: string; mimeType: string }> {
+  const checkPrompt = `Does this image contain contact information such as phone numbers, email addresses, WhatsApp numbers, website URLs, social media usernames, QR codes, or text watermarks with seller contact details? Reply with only YES or NO.`;
+  const answer = await callClaude(checkPrompt, imageUrl);
+  const hadContactInfo = answer.toUpperCase().includes('YES');
+
+  if (!hadContactInfo) return { hadContactInfo: false, cleanedImageBase64: '', mimeType: '' };
+
+  const imgRes = await fetch(imageUrl);
+  if (!imgRes.ok) throw new Error('Failed to fetch image');
+  const imgBuffer = await imgRes.arrayBuffer();
+  const mimeType = (imgRes.headers.get('content-type') || 'image/jpeg').split(';')[0];
+
+  const formData = new FormData();
+  formData.append('image_file', new Blob([imgBuffer], { type: mimeType }), 'image.jpg');
+
+  const clipdropRes = await fetch('https://clipdrop-api.co/remove-text/v1', {
+    method: 'POST',
+    headers: { 'x-api-key': CLIPDROP_API_KEY },
+    body: formData
+  });
+
+  if (!clipdropRes.ok) {
+    const err = await clipdropRes.text();
+    throw new Error(`Clipdrop error ${clipdropRes.status}: ${err}`);
+  }
+
+  const cleanedBuffer = await clipdropRes.arrayBuffer();
+  const base64 = btoa(String.fromCharCode(...new Uint8Array(cleanedBuffer)));
+  const cleanedMime = clipdropRes.headers.get('content-type') || 'image/png';
+
+  return { hadContactInfo: true, cleanedImageBase64: base64, mimeType: cleanedMime };
+}
+
 async function detectCategory(title: string, description: string, productType: string, siteId: string): Promise<any> {
   const prompt = `Categoria ML para: "${title}". Responde solo JSON: {"category_name": "...", "search_term": "...", "confidence": 0.9}`;
   const raw = await callClaude(prompt);
@@ -124,6 +158,7 @@ serve(async (req) => {
     if (action === 'optimizeTitle') result = await optimizeTitle(params.title, params.description, params.brand);
     else if (action === 'detectCategory') result = await detectCategory(params.title, params.description, params.productType, params.siteId || 'MLM');
     else if (action === 'mapAttributes') result = await mapAttributes(params.title, params.description, params.amazonAttrs, params.requiredAttrs);
+    else if (action === 'cleanImage') result = await cleanImage(params.imageUrl);
     return new Response(JSON.stringify({ success: true, data: result }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
   } catch (e) { return new Response(JSON.stringify({ success: false, error: e.message }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 500 }); }
 });

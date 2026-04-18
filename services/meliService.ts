@@ -955,6 +955,25 @@ class MeliService {
         }
     }
 
+    async uploadImageBinary(dataUrl: string, customToken?: string): Promise<string | null> {
+        try {
+            const [header, base64] = dataUrl.split(',');
+            const mimeType = header.match(/data:([^;]+)/)?.[1] || 'image/png';
+            const binary = Uint8Array.from(atob(base64), c => c.charCodeAt(0));
+            const formData = new FormData();
+            formData.append('file', new Blob([binary], { type: mimeType }), 'image.png');
+            const response = await this.fetchWithAuth('/pictures/items/upload', {
+                method: 'POST',
+                body: formData
+            }, customToken);
+            if (!response.ok) return null;
+            const data = await response.json();
+            return data.id || null;
+        } catch {
+            return null;
+        }
+    }
+
     async createTestUser(siteId: string = 'MLM'): Promise<any> {
         try {
             const response = await this.fetchWithAuth('/users/test_user', {

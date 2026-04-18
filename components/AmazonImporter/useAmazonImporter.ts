@@ -382,7 +382,9 @@ export function useAmazonImporter() {
                     }
                     const imageIds: string[] = [];
                     for (const img of processed.images.slice(0, 10)) {
-                        const id = await meliService.uploadImage(img.url, testToken);
+                        const id = img.cleanedUrl
+                            ? await meliService.uploadImageBinary(img.cleanedUrl, testToken)
+                            : await meliService.uploadImage(img.url, testToken);
                         if (id) imageIds.push(id);
                     }
                     const testPayload = { ...payload };
@@ -436,7 +438,9 @@ export function useAmazonImporter() {
         try {
             const imageIds: string[] = [];
             for (const img of processed.images.slice(0, 10)) {
-                const id = await meliService.uploadImage(img.url);
+                const id = img.cleanedUrl
+                    ? await meliService.uploadImageBinary(img.cleanedUrl)
+                    : await meliService.uploadImage(img.url);
                 if (id) imageIds.push(id);
             }
 
