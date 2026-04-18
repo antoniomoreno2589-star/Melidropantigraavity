@@ -238,6 +238,30 @@ export const SettingsPage = () => {
         }, 1000);
     };
 
+    const handleVerifyTestUser = async () => {
+        if (!testUser?.access_token) return;
+        setTestUserStatus('Verificando token...');
+        try {
+            const res = await fetch('/api/proxy', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    url: 'https://api.mercadolibre.com/users/me',
+                    method: 'GET',
+                    headers: { 'Authorization': `Bearer ${testUser.access_token}` }
+                })
+            });
+            const data = await res.json();
+            if (res.ok && data.id) {
+                setTestUserStatus(`✅ Token válido — Usuario: ${data.nickname} (ID: ${data.id})`);
+            } else {
+                setTestUserStatus(`❌ Token inválido o expirado — ${data.message || res.status}. Usa "Renovar token".`);
+            }
+        } catch (e: any) {
+            setTestUserStatus(`❌ Error al verificar: ${e.message}`);
+        }
+    };
+
     const handleDisconnectTestUser = async () => {
         const { data: { user } } = await supabase.auth.getUser();
         if (user) {
@@ -611,9 +635,14 @@ export const SettingsPage = () => {
                                         {testUser.password && <p className="text-xs text-green-600 mt-0.5 font-mono">Contraseña: {testUser.password}</p>}
                                         <p className="text-xs text-green-600 mt-0.5">Conectado: {new Date(testUser.connected_at).toLocaleDateString('es-MX')}</p>
                                     </div>
-                                    <button onClick={handleConnectTestUser} disabled={testUserLoading} className="w-fit text-xs text-blue-500 hover:text-blue-700 font-bold flex items-center gap-1">
+                                    <div className="flex gap-3">
+                                    <button onClick={handleVerifyTestUser} className="text-xs text-green-600 hover:text-green-800 font-bold flex items-center gap-1">
+                                        <span className="material-symbols-outlined text-[14px]">check_circle</span>Verificar token
+                                    </button>
+                                    <button onClick={handleConnectTestUser} disabled={testUserLoading} className="text-xs text-blue-500 hover:text-blue-700 font-bold flex items-center gap-1">
                                         <span className="material-symbols-outlined text-[14px]">refresh</span>Renovar token
                                     </button>
+                                    </div>
                                     <button onClick={handleDisconnectTestUser} className="w-fit text-xs text-red-500 hover:text-red-700 font-bold flex items-center gap-1">
                                         <span className="material-symbols-outlined text-[14px]">link_off</span>Desconectar usuario de prueba
                                     </button>
