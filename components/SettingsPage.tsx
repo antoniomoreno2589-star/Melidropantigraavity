@@ -217,7 +217,7 @@ export const SettingsPage = () => {
 
                 const testUserData = { email, access_token: data.access_token, connected_at: new Date().toISOString() };
                 const { data: { user } } = await supabase.auth.getUser();
-                if (user) await supabase.from('user_connections').update({ meli_test_user: testUserData }).eq('user_id', user.id);
+                if (user) await supabase.from('user_connections').upsert({ user_id: user.id, meli_test_user: testUserData }, { onConflict: 'user_id' });
                 setTestUser(testUserData);
                 setTestUserStatus('✅ Usuario de prueba conectado. Ya puedes usar "Probar (Sandbox)" en el importador.');
             } catch (e: any) {
