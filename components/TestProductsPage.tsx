@@ -32,9 +32,10 @@ export const TestProductsPage = () => {
                 setTestProducts(data);
                 
                 // Fetch test user from Supabase
-                const { data: userData } = await supabase.from('user_connections').select('meli_test_user').maybeSingle();
-                if (userData?.meli_test_user) {
-                    setTestUser(userData.meli_test_user);
+                const { data: { user: authUser } } = await supabase.auth.getUser();
+                if (authUser) {
+                    const { data: userData } = await supabase.from('user_connections').select('meli_test_user').eq('user_id', authUser.id).maybeSingle();
+                    if (userData?.meli_test_user) setTestUser(userData.meli_test_user);
                 }
             } catch (err) {
                 console.error("Error fetching data:", err);
