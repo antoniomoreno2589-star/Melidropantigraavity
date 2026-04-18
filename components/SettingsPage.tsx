@@ -162,7 +162,7 @@ export const SettingsPage = () => {
 
         const redirectUri = encodeURIComponent(`${window.location.origin}/perfil`);
         const site = localStorage.getItem('meli_auth_site_domain') || 'com.mx';
-        const authUrl = `https://auth.mercadolibre.${site}/authorization?response_type=code&client_id=${creds.appId}&redirect_uri=${redirectUri}&code_challenge=${challenge}&code_challenge_method=S256&scope=read:items write:items offline_access&state=test_user`;
+        const authUrl = `https://auth.mercadolibre.${site}/authorization?response_type=code&client_id=${creds.appId}&redirect_uri=${redirectUri}&code_challenge=${challenge}&code_challenge_method=S256&scope=read:items write:items read:orders write:orders read:questions write:questions read:messages write:messages read:accounts read:payments offline_access&state=test_user`;
 
         const popup = window.open(authUrl, 'ml_test_oauth', 'width=520,height=720,left=200,top=100');
         if (!popup) {
