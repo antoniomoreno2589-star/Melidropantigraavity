@@ -152,17 +152,9 @@ export const SettingsPage = () => {
             return;
         }
 
-        // Generate PKCE
-        const array = new Uint8Array(32);
-        window.crypto.getRandomValues(array);
-        const verifier = btoa(String.fromCharCode(...Array.from(array))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
-        const hashBuf = await window.crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier));
-        const challenge = btoa(String.fromCharCode(...new Uint8Array(hashBuf))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
-        sessionStorage.setItem('test_oauth_verifier', verifier);
-
         const redirectUri = encodeURIComponent(`${window.location.origin}/perfil`);
         const site = localStorage.getItem('meli_auth_site_domain') || 'mx';
-        const authUrl = `https://auth.mercadolibre.com.${site}/authorization?response_type=code&client_id=${creds.appId}&redirect_uri=${redirectUri}&code_challenge=${challenge}&code_challenge_method=S256&scope=read:items write:items read:orders write:orders read:questions write:questions read:messages write:messages read:accounts read:payments offline_access&state=test_user`;
+        const authUrl = `https://auth.mercadolibre.com.${site}/authorization?response_type=code&client_id=${creds.appId}&redirect_uri=${redirectUri}&scope=read:items write:items read:orders write:orders read:questions write:questions read:messages write:messages read:accounts read:payments offline_access&state=test_user`;
 
         const popup = window.open(authUrl, 'ml_test_oauth', 'width=520,height=720,left=200,top=100');
         if (!popup) {
@@ -181,15 +173,12 @@ export const SettingsPage = () => {
             popup.close();
 
             try {
-                const storedVerifier = sessionStorage.getItem('test_oauth_verifier');
-                sessionStorage.removeItem('test_oauth_verifier');
                 const body = new URLSearchParams({
                     grant_type: 'authorization_code',
                     client_id: creds.appId,
                     client_secret: creds.secret,
                     code: event.data.code,
                     redirect_uri: `${window.location.origin}/perfil`,
-                    ...(storedVerifier ? { code_verifier: storedVerifier } : {})
                 });
                 setTestUserStatus('Obteniendo token...');
                 const response = await fetch('/api/proxy', {
