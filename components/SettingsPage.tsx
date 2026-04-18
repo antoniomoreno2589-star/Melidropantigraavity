@@ -608,8 +608,12 @@ export const SettingsPage = () => {
                                     <div className="bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-xl p-4">
                                         <p className="text-sm font-bold text-green-800 dark:text-green-300">✅ Cuenta de prueba activa</p>
                                         <p className="text-xs text-green-700 dark:text-green-400 mt-1">Email: {testUser.email}</p>
+                                        {testUser.password && <p className="text-xs text-green-600 mt-0.5 font-mono">Contraseña: {testUser.password}</p>}
                                         <p className="text-xs text-green-600 mt-0.5">Conectado: {new Date(testUser.connected_at).toLocaleDateString('es-MX')}</p>
                                     </div>
+                                    <button onClick={handleConnectTestUser} disabled={testUserLoading} className="w-fit text-xs text-blue-500 hover:text-blue-700 font-bold flex items-center gap-1">
+                                        <span className="material-symbols-outlined text-[14px]">refresh</span>Renovar token
+                                    </button>
                                     <button onClick={handleDisconnectTestUser} className="w-fit text-xs text-red-500 hover:text-red-700 font-bold flex items-center gap-1">
                                         <span className="material-symbols-outlined text-[14px]">link_off</span>Desconectar usuario de prueba
                                     </button>
