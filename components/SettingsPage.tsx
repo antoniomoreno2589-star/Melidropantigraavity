@@ -146,31 +146,96 @@ export const SettingsPage = () => {
     };
 
     const handleConnectTestUser = async () => {
-        if (!testUserEmail || !testUserPassword) {
-            setTestUserStatus('❌ Ingresa el email y contraseña del usuario de prueba.');
+        const creds = JSON.parse(localStorage.getItem('melidrop_meli_credentials') || '{}');
+        if (!creds.appId) {
+            setTestUserStatus('❌ Primero conecta tu cuenta real de MercadoLibre en la sección Perfil.');
             return;
         }
-        setTestUserLoading(true);
-        setTestUserStatus('Autenticando usuario de prueba...');
-        try {
-            const accessToken = await meliService.loginTestUser(testUserEmail, testUserPassword);
-            if (!accessToken) throw new Error('No se obtuvo token de acceso');
-            const testUserData = { email: testUserEmail, password: testUserPassword, access_token: accessToken, connected_at: new Date().toISOString() };
-            const { data: { user } } = await supabase.auth.getUser();
-            if (user) {
-                await supabase.from('user_connections').upsert({
-                    user_id: user.id,
-                    meli_test_user: testUserData
-                }, { onConflict: 'user_id' });
-            }
-            setTestUser(testUserData);
-            setTestUserStatus('✅ Usuario de prueba conectado correctamente. Ya puedes usar "Probar (Sandbox)" en el importador.');
-            setTestUserPassword('');
-        } catch (e: any) {
-            setTestUserStatus(`❌ Error de autenticación: ${e.message}`);
-        } finally {
-            setTestUserLoading(false);
+
+        // Generate PKCE
+        const array = new Uint8Array(32);
+        window.crypto.getRandomValues(array);
+        const verifier = btoa(String.fromCharCode(...Array.from(array))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+        const hashBuf = await window.crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier));
+        const challenge = btoa(String.fromCharCode(...new Uint8Array(hashBuf))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+        sessionStorage.setItem('test_oauth_verifier', verifier);
+
+        const redirectUri = encodeURIComponent(`${window.location.origin}/perfil`);
+        const site = localStorage.getItem('meli_auth_site_domain') || 'com.mx';
+        const authUrl = `https://auth.mercadolibre.${site}/authorization?response_type=code&client_id=${creds.appId}&redirect_uri=${redirectUri}&code_challenge=${challenge}&code_challenge_method=S256&scope=read:items write:items offline_access&state=test_user`;
+
+        const popup = window.open(authUrl, 'ml_test_oauth', 'width=520,height=720,left=200,top=100');
+        if (!popup) {
+            setTestUserStatus('❌ Permite las ventanas emergentes en tu navegador e intenta de nuevo.');
+            return;
         }
+
+        setTestUserLoading(true);
+        setTestUserStatus('Iniciá sesión en la ventana emergente con las credenciales del usuario de prueba...');
+
+        const handleMessage = async (event: MessageEvent) => {
+            if (event.origin !== window.location.origin) return;
+            if (event.data?.type !== 'ml_oauth_code' || event.data?.state !== 'test_user') return;
+            window.removeEventListener('message', handleMessage);
+            clearInterval(pollTimer);
+            popup.close();
+
+            try {
+                const storedVerifier = sessionStorage.getItem('test_oauth_verifier');
+                sessionStorage.removeItem('test_oauth_verifier');
+                const body = new URLSearchParams({
+                    grant_type: 'authorization_code',
+                    client_id: creds.appId,
+                    client_secret: creds.secret,
+                    code: event.data.code,
+                    redirect_uri: `${window.location.origin}/perfil`,
+                    ...(storedVerifier ? { code_verifier: storedVerifier } : {})
+                });
+                setTestUserStatus('Obteniendo token...');
+                const response = await fetch('/api/proxy', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        url: 'https://api.mercadolibre.com/oauth/token',
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Accept': 'application/json' },
+                        body: body.toString()
+                    })
+                });
+                if (!response.ok) { const err = await response.json(); throw new Error(err.message || 'Error al obtener token'); }
+                const data = await response.json();
+
+                let email = testUserEmail || 'Usuario de prueba';
+                try {
+                    const userRes = await fetch('/api/proxy', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ url: 'https://api.mercadolibre.com/users/me', method: 'GET', headers: { 'Authorization': `Bearer ${data.access_token}` } })
+                    });
+                    if (userRes.ok) { const info = await userRes.json(); email = info.email || info.nickname || email; }
+                } catch { /* use default */ }
+
+                const testUserData = { email, access_token: data.access_token, connected_at: new Date().toISOString() };
+                const { data: { user } } = await supabase.auth.getUser();
+                if (user) await supabase.from('user_connections').upsert({ user_id: user.id, meli_test_user: testUserData }, { onConflict: 'user_id' });
+                setTestUser(testUserData);
+                setTestUserStatus('✅ Usuario de prueba conectado. Ya puedes usar "Probar (Sandbox)" en el importador.');
+            } catch (e: any) {
+                setTestUserStatus(`❌ Error: ${e.message}`);
+            } finally {
+                setTestUserLoading(false);
+            }
+        };
+
+        window.addEventListener('message', handleMessage);
+        const pollTimer = setInterval(() => {
+            if (popup.closed) {
+                clearInterval(pollTimer);
+                window.removeEventListener('message', handleMessage);
+                setTestUserLoading(false);
+                setTestUserStatus(prev => prev.startsWith('✅') ? prev : 'Ventana cerrada sin autorizar.');
+            }
+        }, 1000);
     };
 
     const handleDisconnectTestUser = async () => {
@@ -554,10 +619,10 @@ export const SettingsPage = () => {
                                     <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-xl p-4 text-sm text-blue-700 dark:text-blue-300">
                                         <p className="font-bold mb-1">¿Cómo funciona?</p>
                                         <ol className="text-xs space-y-1 list-decimal list-inside">
-                                            <li>Crea un usuario de prueba con el botón de abajo (requiere ML conectado)</li>
-                                            <li>Copia el email y contraseña que aparecen</li>
-                                            <li>Pégalos en los campos e ingresa "Conectar"</li>
-                                            <li>Ahora "Probar (Sandbox)" publicará en esa cuenta de prueba</li>
+                                            <li>Crea un usuario de prueba con el botón de abajo</li>
+                                            <li>Anota el email y contraseña que aparecen</li>
+                                            <li>Haz click en "Conectar con OAuth" e inicia sesión con esas credenciales</li>
+                                            <li>"Probar (Sandbox)" publicará en esa cuenta de prueba</li>
                                         </ol>
                                     </div>
                                     <button
@@ -568,35 +633,20 @@ export const SettingsPage = () => {
                                         {testUserLoading ? <span className="w-4 h-4 rounded-full border-2 border-white/30 border-t-white animate-spin" /> : <span className="material-symbols-outlined text-[18px]">person_add</span>}
                                         Crear Usuario de Prueba en ML
                                     </button>
-                                    <div className="grid grid-cols-2 gap-3">
-                                        <div>
-                                            <label className="text-xs font-bold text-slate-500 uppercase">Email del usuario test</label>
-                                            <input
-                                                type="email"
-                                                value={testUserEmail}
-                                                onChange={e => setTestUserEmail(e.target.value)}
-                                                placeholder="test_user@testuser.com"
-                                                className="mt-1 w-full px-3 py-2 border border-slate-300 dark:border-slate-600 rounded-lg text-sm bg-white dark:bg-slate-900 dark:text-white"
-                                            />
+                                    {testUserEmail && (
+                                        <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700 rounded-xl p-3 text-xs font-mono text-amber-800 dark:text-amber-300 space-y-1">
+                                            <p><span className="font-black">Email:</span> {testUserEmail}</p>
+                                            {testUserPassword && <p><span className="font-black">Contraseña:</span> {testUserPassword}</p>}
+                                            <p className="text-amber-600 text-[10px] mt-1">Anota estas credenciales — las necesitarás en el paso siguiente</p>
                                         </div>
-                                        <div>
-                                            <label className="text-xs font-bold text-slate-500 uppercase">Contraseña</label>
-                                            <input
-                                                type="password"
-                                                value={testUserPassword}
-                                                onChange={e => setTestUserPassword(e.target.value)}
-                                                placeholder="qatest1234"
-                                                className="mt-1 w-full px-3 py-2 border border-slate-300 dark:border-slate-600 rounded-lg text-sm bg-white dark:bg-slate-900 dark:text-white"
-                                            />
-                                        </div>
-                                    </div>
+                                    )}
                                     <button
                                         onClick={handleConnectTestUser}
-                                        disabled={testUserLoading || !testUserEmail || !testUserPassword}
+                                        disabled={testUserLoading}
                                         className="w-full py-2.5 bg-slate-900 dark:bg-white dark:text-slate-900 text-white font-black rounded-xl text-sm transition-all disabled:opacity-50 flex items-center justify-center gap-2"
                                     >
-                                        {testUserLoading ? <span className="w-4 h-4 rounded-full border-2 border-white/30 border-t-white animate-spin" /> : <span className="material-symbols-outlined text-[18px]">link</span>}
-                                        Conectar Usuario de Prueba
+                                        {testUserLoading ? <span className="w-4 h-4 rounded-full border-2 border-white/30 border-t-white animate-spin" /> : <span className="material-symbols-outlined text-[18px]">open_in_new</span>}
+                                        Conectar con OAuth
                                     </button>
                                 </div>
                             )}
