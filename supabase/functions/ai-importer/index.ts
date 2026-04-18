@@ -5,37 +5,48 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-const GEMINI_API_KEY = Deno.env.get('GEMINI_API_KEY_IMPORTER') || 'AIzaSyDJI2XuXOnjl6zygz6KsmOrn5HdXlFAu4Q';
-const GEMINI_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent';
+const ANTHROPIC_API_KEY = Deno.env.get('ANTHROPIC_API_KEY') || '';
+const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
+const MODEL = 'claude-haiku-4-5-20251001';
+const CLIPDROP_API_KEY = Deno.env.get('CLIPDROP_API_KEY') || '';
 
-async function callGemini(prompt: string, imageUrl?: string): Promise<string> {
-  const parts: any[] = [{ text: prompt }];
+async function callClaude(prompt: string, imageUrl?: string): Promise<string> {
+  const content: any[] = [];
+
   if (imageUrl) {
     try {
       const imgRes = await fetch(imageUrl);
       const imgBuffer = await imgRes.arrayBuffer();
       const base64 = btoa(String.fromCharCode(...new Uint8Array(imgBuffer)));
-      const mimeType = imgRes.headers.get('content-type') || 'image/jpeg';
-      parts.unshift({ inline_data: { mime_type: mimeType, data: base64 } });
+      const mimeType = (imgRes.headers.get('content-type') || 'image/jpeg').split(';')[0];
+      content.push({ type: 'image', source: { type: 'base64', media_type: mimeType, data: base64 } });
     } catch (e) { console.error("Img error:", e); }
   }
-  const response = await fetch(`${GEMINI_URL}?key=${GEMINI_API_KEY}`, {
+
+  content.push({ type: 'text', text: prompt });
+
+  const response = await fetch(ANTHROPIC_URL, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ contents: [{ parts }], generationConfig: { temperature: 0.1, maxOutputTokens: 1024 } })
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': ANTHROPIC_API_KEY,
+      'anthropic-version': '2023-06-01',
+    },
+    body: JSON.stringify({ model: MODEL, max_tokens: 1024, temperature: 0.1, messages: [{ role: 'user', content }] })
   });
-  if (!response.ok) throw new Error("Gemini error");
+
+  if (!response.ok) {
+    const err = await response.text();
+    throw new Error(`Claude error ${response.status}: ${err}`);
+  }
   const data = await response.json();
-  return data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || '';
+  return data.content?.[0]?.text?.trim() || '';
 }
 
 async function mapAttributes(title: string, description: string, amazonAttrs: any, requiredAttrs: any[]): Promise<any> {
-  // Build a compact representation including allowed values so the AI can pick valid ones
   const attrsForPrompt = requiredAttrs.map(a => {
     const base: any = { id: a.id, name: a.name, required: !!(a.tags?.required || a.tags?.new_required) };
-    if (a.values && a.values.length > 0) {
-      base.allowed_values = a.values.slice(0, 30).map((v: any) => v.name);
-    }
+    if (a.values && a.values.length > 0) base.allowed_values = a.values.slice(0, 30).map((v: any) => v.name);
     if (a.hint) base.hint = a.hint;
     return base;
   });
@@ -72,7 +83,7 @@ INSTRUCCIONES:
 7. NO pongas "N/A", "Desconocido" ni valores inventados para campos de texto libre.
 8. NO expliques nada. Solo el JSON array.`;
 
-  const raw = await callGemini(prompt);
+  const raw = await callClaude(prompt);
   try {
     const jsonMatch = raw.match(/\[[\s\S]*\]/);
     return JSON.parse(jsonMatch?.[0] || '[]');
@@ -95,15 +106,48 @@ Título original: "${title}"
 Descripción/características: "${description.substring(0, 400)}"
 
 IMPORTANTE: Antes de responder, cuenta los caracteres. Si son menos de 55, agrega más detalles del producto. Si son más de 60, recorta. Objetivo: entre 55-60 caracteres.`;
-  const result = await callGemini(prompt);
-  // Trim to 60 chars as hard cap, also clean leading dashes/punctuation
+
+  const result = await callClaude(prompt);
   return result.replace(/^["']|["']$/g, '').replace(/^[\s\-–—,.:;|]+/, '').substring(0, 60).trim();
 }
 
+async function cleanImage(imageUrl: string): Promise<{ hadContactInfo: boolean; cleanedImageBase64: string; mimeType: string }> {
+  const checkPrompt = `Does this image contain contact information such as phone numbers, email addresses, WhatsApp numbers, website URLs, social media usernames, QR codes, or text watermarks with seller contact details? Reply with only YES or NO.`;
+  const answer = await callClaude(checkPrompt, imageUrl);
+  const hadContactInfo = answer.toUpperCase().includes('YES');
+
+  if (!hadContactInfo) return { hadContactInfo: false, cleanedImageBase64: '', mimeType: '' };
+
+  const imgRes = await fetch(imageUrl);
+  if (!imgRes.ok) throw new Error('Failed to fetch image');
+  const imgBuffer = await imgRes.arrayBuffer();
+  const mimeType = (imgRes.headers.get('content-type') || 'image/jpeg').split(';')[0];
+
+  const formData = new FormData();
+  formData.append('image_file', new Blob([imgBuffer], { type: mimeType }), 'image.jpg');
+
+  const clipdropRes = await fetch('https://clipdrop-api.co/remove-text/v1', {
+    method: 'POST',
+    headers: { 'x-api-key': CLIPDROP_API_KEY },
+    body: formData
+  });
+
+  if (!clipdropRes.ok) {
+    const err = await clipdropRes.text();
+    throw new Error(`Clipdrop error ${clipdropRes.status}: ${err}`);
+  }
+
+  const cleanedBuffer = await clipdropRes.arrayBuffer();
+  const base64 = btoa(String.fromCharCode(...new Uint8Array(cleanedBuffer)));
+  const cleanedMime = clipdropRes.headers.get('content-type') || 'image/png';
+
+  return { hadContactInfo: true, cleanedImageBase64: base64, mimeType: cleanedMime };
+}
+
 async function detectCategory(title: string, description: string, productType: string, siteId: string): Promise<any> {
-    const prompt = `Categoria ML para: "${title}". Responde solo JSON: {"category_name": "...", "search_term": "...", "confidence": 0.9}`;
-    const raw = await callGemini(prompt);
-    try { const m = raw.match(/\{[\s\S]*\}/); return JSON.parse(m?.[0] || '{}'); } catch { return {}; }
+  const prompt = `Categoria ML para: "${title}". Responde solo JSON: {"category_name": "...", "search_term": "...", "confidence": 0.9}`;
+  const raw = await callClaude(prompt);
+  try { const m = raw.match(/\{[\s\S]*\}/); return JSON.parse(m?.[0] || '{}'); } catch { return {}; }
 }
 
 serve(async (req) => {
@@ -114,6 +158,7 @@ serve(async (req) => {
     if (action === 'optimizeTitle') result = await optimizeTitle(params.title, params.description, params.brand);
     else if (action === 'detectCategory') result = await detectCategory(params.title, params.description, params.productType, params.siteId || 'MLM');
     else if (action === 'mapAttributes') result = await mapAttributes(params.title, params.description, params.amazonAttrs, params.requiredAttrs);
+    else if (action === 'cleanImage') result = await cleanImage(params.imageUrl);
     return new Response(JSON.stringify({ success: true, data: result }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
   } catch (e) { return new Response(JSON.stringify({ success: false, error: e.message }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 500 }); }
 });

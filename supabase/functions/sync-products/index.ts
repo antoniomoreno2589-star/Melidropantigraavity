@@ -78,6 +78,7 @@ serve(async (req) => {
                             stock_meli: item.available_quantity,
                             status: item.status,
                             image_url: item.thumbnail,
+                            currency: item.currency_id || 'MXN',
                             last_updated: new Date().toISOString()
                         };
                     });

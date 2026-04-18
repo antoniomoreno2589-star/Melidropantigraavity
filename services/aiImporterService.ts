@@ -31,6 +31,7 @@ export interface ProcessedProduct {
 
 export interface ProcessedImage {
     url: string;
+    cleanedUrl?: string;
     hasContactInfo: boolean;
     description: string;
     checked: boolean;
@@ -76,14 +77,20 @@ class AiImporterService {
     }
 
     /**
-     * Check if an image contains contact information or watermarks.
+     * Detect and remove contact info/watermarks from an image using Claude Vision + Clipdrop.
      */
-    async checkImage(imageUrl: string): Promise<ProcessedImage> {
+    async cleanImage(imageUrl: string): Promise<ProcessedImage> {
         try {
-            const result = await callAI('checkImage', { imageUrl });
-            return { url: imageUrl, hasContactInfo: result.hasContactInfo, description: result.description, checked: true };
+            const result = await callAI('cleanImage', { imageUrl });
+            return {
+                url: imageUrl,
+                cleanedUrl: result.hadContactInfo ? `data:${result.mimeType};base64,${result.cleanedImageBase64}` : undefined,
+                hasContactInfo: result.hadContactInfo,
+                description: result.hadContactInfo ? 'Datos de contacto eliminados' : 'Sin datos de contacto',
+                checked: true
+            };
         } catch (e) {
-            console.error('aiImporterService checkImage error:', e);
+            console.error('aiImporterService cleanImage error:', e);
             return { url: imageUrl, hasContactInfo: false, description: 'No analizada', checked: false };
         }
     }
@@ -121,7 +128,7 @@ class AiImporterService {
         }));
 
         if (checkImages && images.length > 0) {
-            images = await Promise.all(images.map(img => this.checkImage(img.url)));
+            images = await Promise.all(images.map(img => this.cleanImage(img.url)));
         }
 
         // 4. Map attributes (if we have required attrs and amazon attrs)

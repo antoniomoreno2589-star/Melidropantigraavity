@@ -2,6 +2,17 @@ import { api } from './api';
 import { supabase } from './supabase';
 import { Product } from '../types';
 
+// Map raw ML order statuses to the narrower set allowed by the DB CHECK
+// constraint on orders.status: pending | paid | shipped | delivered | cancelled.
+function mapMlStatus(o: any): 'pending' | 'paid' | 'shipped' | 'delivered' | 'cancelled' {
+    if (o.status === 'cancelled') return 'cancelled';
+    const ss = o.shipping?.status ?? '';
+    if (ss === 'delivered') return 'delivered';
+    if (['shipped', 'me2', 'in_transit', 'almost_there'].includes(ss)) return 'shipped';
+    if (o.status === 'paid') return 'paid';
+    return 'pending';
+}
+
 export interface MeliCredentials {
     appId: string;
     secret: string;
@@ -24,15 +35,13 @@ class MeliService {
 
     private async saveCredentials(creds: MeliCredentials) {
         localStorage.setItem('melidrop_meli_credentials', JSON.stringify(creds));
-        
-        // Sync to Supabase
+
         const { data: { user } } = await supabase.auth.getUser();
         if (user) {
-            await supabase.from('user_connections').upsert({
-                user_id: user.id,
-                meli_credentials: creds,
-                updated_at: new Error().stack?.includes('refreshToken') ? undefined : new Date().toISOString()
-            });
+            await supabase.from('user_connections').upsert(
+                { user_id: user.id, meli_credentials: creds, updated_at: new Date().toISOString() },
+                { onConflict: 'user_id' }
+            );
         }
     }
 
@@ -44,7 +53,7 @@ class MeliService {
             .from('user_connections')
             .select('meli_credentials')
             .eq('user_id', user.id)
-            .single();
+            .maybeSingle();
 
         if (data?.meli_credentials) {
             localStorage.setItem('melidrop_meli_credentials', JSON.stringify(data.meli_credentials));
@@ -81,13 +90,15 @@ class MeliService {
                 refresh_token: creds.refreshToken
             });
 
-            const response = await fetch(`${this.baseUrl}/oauth/token`, {
+            const response = await fetch('/api/proxy', {
                 method: 'POST',
-                headers: {
-                    'Content-Type': 'application/x-www-form-urlencoded',
-                    'Accept': 'application/json'
-                },
-                body
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    url: `${this.baseUrl}/oauth/token`,
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Accept': 'application/json' },
+                    body: body.toString()
+                })
             });
 
             if (!response.ok) throw new Error('Failed to refresh token');
@@ -133,6 +144,9 @@ class MeliService {
         await new Promise(r => setTimeout(r, 100));
 
         if (response.status === 401) {
+            // If a customToken was provided it belongs to a different account (e.g. test user).
+            // Refreshing the real user's token and retrying would publish to the wrong account.
+            if (customToken) throw new Error('Token de usuario de prueba expirado. Reconecta el usuario en Configuración.');
             console.warn("MeliService: Token expired (401), refreshing...");
             const newToken = await this.refreshToken();
             if (newToken) {
@@ -348,23 +362,37 @@ class MeliService {
 
             // Sync orders to Supabase for persistence and analytics
             if (results.length > 0) {
-                const ordersToSync = results.map((o: any) => ({
-                    id: o.id.toString(),
-                    user_id: supabaseUserId,
-                    product_title: o.order_items?.[0]?.item?.title || 'Producto',
-                    buyer_name: o.buyer?.nickname || 'Comprador',
-                    total: o.payments?.[0]?.net_received_amount || o.total_amount || 0,
-                    status: o.status,
-                    date: o.date_created ? o.date_created.split('T')[0] : null,
-                    amazon_status: 'pending',
-                    amazon_asin: o.order_items?.[0]?.item?.seller_custom_field || '',
-                    amazon_marketplace: 'MX'
-                }));
+                const ordersToSync = results.map((o: any) => {
+                    const pmt = o.payments?.[0];
+                    const totalAmt    = o.total_amount ?? 0;
+                    const netReceived = pmt?.net_received_amount ?? null;
+                    const fee         = pmt?.marketplace_fee ?? null;
+                    const shipping    = (pmt?.shipping_cost > 0 ? pmt.shipping_cost : null)
+                                        ?? (o.shipping?.base_cost > 0 ? o.shipping.base_cost : null)
+                                        ?? 0;
+                    const netIncome   = netReceived != null ? netReceived
+                        : totalAmt - (fee ?? 0) - shipping;
+                    return {
+                        id: o.id.toString(),
+                        user_id: supabaseUserId,
+                        product_title: o.order_items?.[0]?.item?.title || 'Producto',
+                        buyer_name: o.buyer?.nickname || 'Comprador',
+                        total:         totalAmt,
+                        net_income:    netIncome,
+                        ml_commission: fee,
+                        shipping_cost: shipping,
+                        meli_item_id:  o.order_items?.[0]?.item?.id ?? null,
+                        status: mapMlStatus(o),
+                        date: o.date_created ? o.date_created.split('T')[0] : null,
+                        amazon_asin: o.order_items?.[0]?.item?.seller_custom_field || '',
+                        amazon_marketplace: 'MX'
+                    };
+                });
 
                 try {
                     await api.orders.bulkUpsert(ordersToSync);
-                } catch (e) {
-                    console.warn("MeliService: Could not sync orders to Supabase:", e);
+                } catch (e: any) {
+                    console.warn("MeliService: Could not sync orders to Supabase:", e?.message, e);
                 }
             }
 
@@ -372,6 +400,96 @@ class MeliService {
         } catch (e: any) {
             console.error('meliService: Error fetching orders:', e);
             if (e.message === 'forbidden') throw e;
+            return [];
+        }
+    }
+
+    // Paginated order fetch with optional date range (ISO strings with timezone).
+    // ML Orders API filter params: order.date_created.from / order.date_created.to
+    async getOrdersFiltered(dateFrom?: string, dateTo?: string): Promise<any[]> {
+        const creds = this.getCredentials();
+        if (!creds) return [];
+        try {
+            let allOrders: any[] = [];
+            let offset = 0;
+            const limit = 50;
+
+            while (allOrders.length < 300) {
+                let url = `/orders/search?seller=${creds.id}&limit=${limit}&offset=${offset}&sort=date_desc`;
+                if (dateFrom) url += `&order.date_created.from=${encodeURIComponent(dateFrom)}`;
+                if (dateTo)   url += `&order.date_created.to=${encodeURIComponent(dateTo)}`;
+
+                const res = await this.fetchWithAuth(url);
+                if (!res.ok) break;
+
+                const data = await res.json();
+                const results: any[] = data.results || [];
+                allOrders = [...allOrders, ...results];
+                if (results.length < limit) break;
+                offset += limit;
+            }
+
+            // orders/search omits marketplace_fee and shipping_cost from payments.
+            // Fetch individual order detail (8 concurrent) to get complete fee data.
+            const BATCH = 8;
+            const enriched: any[] = [];
+            for (let i = 0; i < allOrders.length; i += BATCH) {
+                const slice = allOrders.slice(i, i + BATCH);
+                const details = await Promise.all(
+                    slice.map(async o => {
+                        try {
+                            const r = await this.fetchWithAuth(`/orders/${o.id}`);
+                            return r.ok ? await r.json() : o;
+                        } catch { return o; }
+                    })
+                );
+                enriched.push(...details);
+            }
+
+            // For orders where shipping is still 0, ML bills it via the shipment record.
+            const needsShipment = enriched.filter(o =>
+                !(o.payments?.[0]?.shipping_cost > 0) &&
+                !(o.shipping?.base_cost > 0) &&
+                o.shipping?.id &&
+                o.status !== 'cancelled'
+            );
+            if (needsShipment.length > 0) {
+                const costMap: Record<string, number> = {};
+                for (let i = 0; i < needsShipment.length; i += BATCH) {
+                    const batch = needsShipment.slice(i, i + BATCH);
+                    const results = await Promise.allSettled(
+                        batch.map(async o => {
+                            const r = await this.fetchWithAuth(`/shipments/${o.shipping.id}`);
+                            if (!r.ok) return null;
+                            const d = await r.json();
+                            // shipping_option.list_cost is the actual seller charge;
+                            // base_cost is gross before ML's internal adjustments
+                            const cc = d.cost_components ?? {};
+                            const netCost = Math.max(0,
+                                (d.shipping_option?.list_cost ?? d.base_cost ?? 0)
+                                - (cc.loyal_discount ?? 0)
+                                - (cc.special_discount ?? 0)
+                                - (cc.gap_discount ?? 0)
+                                + (cc.compensation ?? 0)
+                            );
+                            return { id: o.id, cost: netCost };
+                        })
+                    );
+                    for (const r of results) {
+                        if (r.status === 'fulfilled' && r.value) costMap[r.value.id] = r.value.cost;
+                    }
+                }
+                for (const o of enriched) {
+                    if (costMap[o.id] != null) {
+                        if (!o.shipping) o.shipping = {};
+                        o.shipping.base_cost = costMap[o.id];
+                    }
+                }
+            }
+
+            return enriched;
+        } catch (e) {
+            console.error('meliService.getOrdersFiltered error:', e);
             return [];
         }
     }
@@ -733,7 +851,9 @@ class MeliService {
         }, customToken);
         const data = await response.json();
         if (!response.ok) {
-            return { error: data.message || "Error al publicar", cause: data.cause };
+            console.error('[Melidrop] ML publish error:', JSON.stringify(data, null, 2));
+            console.error('[Melidrop] ML publish payload:', JSON.stringify(body, null, 2));
+            return { error: data.message || "Error al publicar", cause: data.cause, raw: data };
         }
         return data;
     }
@@ -783,6 +903,22 @@ class MeliService {
         }
     }
 
+    async updateItem(meliId: string, payload: { price?: number; available_quantity?: number; description?: { plain_text: string } }): Promise<{ ok: boolean; error?: string }> {
+        try {
+            const response = await this.fetchWithAuth(`/items/${meliId}`, {
+                method: 'PUT',
+                body: JSON.stringify(payload),
+            });
+            if (!response.ok) {
+                const data = await response.json().catch(() => ({}));
+                return { ok: false, error: data?.message ?? `HTTP ${response.status}` };
+            }
+            return { ok: true };
+        } catch (e: any) {
+            return { ok: false, error: e.message };
+        }
+    }
+
     async getCategoryAttributes(categoryId: string): Promise<any[]> {
         try {
             const response = await this.fetchWithAuth(`/categories/${categoryId}/attributes`);
@@ -819,6 +955,25 @@ class MeliService {
         }
     }
 
+    async uploadImageBinary(dataUrl: string, customToken?: string): Promise<string | null> {
+        try {
+            const [header, base64] = dataUrl.split(',');
+            const mimeType = header.match(/data:([^;]+)/)?.[1] || 'image/png';
+            const binary = Uint8Array.from(atob(base64), c => c.charCodeAt(0));
+            const formData = new FormData();
+            formData.append('file', new Blob([binary], { type: mimeType }), 'image.png');
+            const response = await this.fetchWithAuth('/pictures/items/upload', {
+                method: 'POST',
+                body: formData
+            }, customToken);
+            if (!response.ok) return null;
+            const data = await response.json();
+            return data.id || null;
+        } catch {
+            return null;
+        }
+    }
+
     async createTestUser(siteId: string = 'MLM'): Promise<any> {
         try {
             const response = await this.fetchWithAuth('/users/test_user', {
@@ -851,10 +1006,15 @@ class MeliService {
                 username: testUserEmail,
                 password: testUserPassword
             });
-            const response = await fetch(`${this.baseUrl}/oauth/token`, {
+            const response = await fetch('/api/proxy', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Accept': 'application/json' },
-                body
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    url: `${this.baseUrl}/oauth/token`,
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Accept': 'application/json' },
+                    body: body.toString()
+                })
             });
             if (!response.ok) {
                 const err = await response.text();

@@ -28,6 +28,18 @@ const App = () => {
   const [user, setUser] = useState<User | null>(null);
   const [meliMetrics, setMeliMetrics] = useState<any>(null);
 
+  // Intercept OAuth popup callbacks (test user connect flow)
+  useEffect(() => {
+    if (!window.opener) return;
+    const params = new URLSearchParams(window.location.search);
+    const code = params.get('code');
+    const state = params.get('state');
+    if (code) {
+      window.opener.postMessage({ type: 'ml_oauth_code', code, state }, window.location.origin);
+      setTimeout(() => window.close(), 200);
+    }
+  }, []);
+
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
@@ -71,11 +83,13 @@ const App = () => {
 
       // 2. Sync credentials and settings from Supabase FIRST
       try {
-        const { data } = await supabase
+        const { data: rows } = await supabase
           .from('user_connections')
           .select('*')
           .eq('user_id', session.user.id)
-          .single();
+          .order('updated_at', { ascending: false })
+          .limit(1);
+        const data = rows?.[0] ?? null;
 
         if (data) {
           console.log('App: Sincronizando configuraciones desde la nube...');

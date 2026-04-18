@@ -1,5 +1,5 @@
 import { supabase } from './supabase';
-import { Product, Order, DashboardStats } from '../types';
+import { Product, Order, Expense, DashboardStats } from '../types';
 
 export const api = {
     products: {
@@ -121,6 +121,21 @@ export const api = {
 
             if (error) throw error;
         },
+        // Single lightweight query: ASIN (stored as sku) → currency for Amazon link routing.
+        async getCurrencyMap(): Promise<Record<string, 'USD' | 'MXN'>> {
+            const { data, error } = await supabase
+                .from('products')
+                .select('sku, currency');
+
+            if (error) throw error;
+
+            const map: Record<string, 'USD' | 'MXN'> = {};
+            for (const row of data ?? []) {
+                if (row.sku) map[row.sku] = row.currency === 'MXN' ? 'MXN' : 'USD';
+            }
+            return map;
+        },
+
         async bulkUpsert(products: Partial<Product>[]): Promise<void> {
             const { data: { user } } = await supabase.auth.getUser();
             if (!user) throw new Error("User not authenticated");
@@ -161,14 +176,47 @@ export const api = {
                 id: o.id,
                 productTitle: o.product_title,
                 buyerName: o.buyer_name,
-                total: o.total,
+                total: o.total ?? 0,
+                netIncome: o.net_income ?? o.total ?? 0,
+                mlCommission: o.ml_commission ?? 0,
+                shippingCost: o.shipping_cost ?? 0,
+                meliItemId: o.meli_item_id ?? '',
                 status: o.status,
                 date: o.date,
                 shippingDeadline: o.shipping_deadline,
-                amazonStatus: o.amazon_status,
+                amazonStatus: o.amazon_status ?? 'pending',
                 amazonPurchasePrice: o.amazon_purchase_price,
-                amazonAsin: o.amazon_asin,
-                amazonMarketplace: o.amazon_marketplace
+                amazonAsin: o.amazon_asin ?? '',
+                amazonMarketplace: o.amazon_marketplace ?? 'MX',
+            }));
+        },
+
+        async listWithDateRange(dateFrom: string, dateTo: string): Promise<Order[]> {
+            const { data, error } = await supabase
+                .from('orders')
+                .select('*')
+                .gte('date', dateFrom)
+                .lte('date', dateTo)
+                .order('date', { ascending: false });
+
+            if (error) throw error;
+
+            return (data ?? []).map(o => ({
+                id: o.id,
+                productTitle: o.product_title ?? '',
+                buyerName: o.buyer_name ?? '',
+                total: o.total ?? 0,
+                netIncome: o.net_income ?? o.total ?? 0,
+                mlCommission: o.ml_commission ?? 0,
+                shippingCost: o.shipping_cost ?? 0,
+                meliItemId: o.meli_item_id ?? '',
+                status: o.status ?? 'pending',
+                date: o.date ?? '',
+                shippingDeadline: o.shipping_deadline ?? '',
+                amazonStatus: o.amazon_status ?? 'pending',
+                amazonPurchasePrice: o.amazon_purchase_price,
+                amazonAsin: o.amazon_asin ?? '',
+                amazonMarketplace: o.amazon_marketplace ?? 'MX',
             }));
         },
 
@@ -194,9 +242,12 @@ export const api = {
                 ...o
             }));
 
+            // ignoreDuplicates: false so ML financial fields (net_income, ml_commission)
+            // update on re-sync. amazon_status / amazon_purchase_price are excluded from
+            // sync payloads so they are never touched by the ON CONFLICT SET clause.
             const { error } = await supabase
                 .from('orders')
-                .upsert(payloads, { onConflict: 'id' });
+                .upsert(payloads, { onConflict: 'id', ignoreDuplicates: false });
 
             if (error) throw error;
         }
@@ -309,6 +360,59 @@ export const api = {
                 .from('test_products')
                 .delete()
                 .eq('user_id', user.id);
+            if (error) throw error;
+        }
+    },
+
+    expenses: {
+        async listRange(fromYM: string, toYM: string): Promise<Expense[]> {
+            const { data: { user } } = await supabase.auth.getUser();
+            if (!user) throw new Error('Not authenticated');
+
+            const { data, error } = await supabase
+                .from('expenses')
+                .select('*')
+                .eq('user_id', user.id)
+                .gte('year_month', fromYM)
+                .lte('year_month', toYM)
+                .order('year_month', { ascending: true })
+                .order('created_at', { ascending: true });
+
+            if (error) throw error;
+            return (data ?? []).map(e => ({
+                id: e.id,
+                concept: e.concept,
+                amount: e.amount,
+                period: e.period,
+                year_month: e.year_month,
+            }));
+        },
+
+        async create(data: { concept: string; amount: number; period?: string; year_month: string }): Promise<Expense> {
+            const { data: { user } } = await supabase.auth.getUser();
+            if (!user) throw new Error('Not authenticated');
+
+            const { data: row, error } = await supabase
+                .from('expenses')
+                .insert({
+                    user_id: user.id,
+                    concept: data.concept,
+                    amount: data.amount,
+                    period: data.period ?? 'Mensual',
+                    year_month: data.year_month,
+                })
+                .select()
+                .single();
+
+            if (error) throw error;
+            return { id: row.id, concept: row.concept, amount: row.amount, period: row.period, year_month: row.year_month };
+        },
+
+        async delete(id: number): Promise<void> {
+            const { error } = await supabase
+                .from('expenses')
+                .delete()
+                .eq('id', id);
             if (error) throw error;
         }
     }
