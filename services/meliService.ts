@@ -929,6 +929,23 @@ class MeliService {
         }
     }
 
+    async searchCatalog(query: string, categoryId?: string, siteId: string = 'MLM'): Promise<string | null> {
+        try {
+            const encoded = encodeURIComponent(query.substring(0, 60));
+            const catParam = categoryId ? `&category_id=${categoryId}` : '';
+            const response = await this.fetchWithAuth(
+                `/products/search?site_id=${siteId}&q=${encoded}${catParam}&limit=1&status=active`
+            );
+            if (!response.ok) return null;
+            const data = await response.json();
+            const firstResult = data.results?.[0];
+            return firstResult?.id || null;
+        } catch (e) {
+            console.error('[Melidrop] Catalog search failed:', e);
+            return null;
+        }
+    }
+
     async predictCategory(searchTerm: string, siteId: string = 'MLM'): Promise<any[]> {
         try {
             const encoded = encodeURIComponent(searchTerm);

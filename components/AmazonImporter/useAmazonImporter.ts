@@ -40,6 +40,9 @@ export function useAmazonImporter() {
         isSkipped?: boolean;
     }>>({});
 
+    // Catalog product IDs (when product matches ML catalog - simplifies publishing)
+    const [catalogProductIds, setCatalogProductIds] = useState<Record<string, string>>({});
+
     // ── Step 5: Publish ────────────────────────────────────────────────
     const [publishingStatus, setPublishingStatus] = useState<Record<string, 'idle' | 'loading' | 'success' | 'error'>>({});
     const [publishResults, setPublishResults] = useState<Record<string, any>>({});
@@ -207,6 +210,14 @@ export function useAmazonImporter() {
 
             if (catId) {
                 try {
+                    // Try to match against ML catalog - simplifies publishing enormously
+                    const searchQuery = `${product.brand || ''} ${processed.optimizedTitle || product.title}`.trim();
+                    const catalogId = await meliService.searchCatalog(searchQuery, catId);
+                    if (catalogId) {
+                        console.log(`[Melidrop] Found catalog match for ${product.asin}: ${catalogId}`);
+                        setCatalogProductIds(prev => ({ ...prev, [product.asin]: catalogId }));
+                    }
+
                     const attrs = await meliService.getCategoryAttributes(catId);
                     const relevant = attrs
                         .filter((a: any) =>
@@ -355,7 +366,24 @@ export function useAmazonImporter() {
             ? 'Toalla con Capucha'
             : undefined;
 
-        const payload: any = {
+        // If we have a catalog match, use catalog_product_id — ML handles family_name,
+        // attributes, title, and description automatically from the catalog entry
+        const catalogId = catalogProductIds[processed.asin];
+
+        const payload: any = catalogId ? {
+            catalog_product_id: catalogId,
+            catalog_listing: true,
+            price: priceMXN,
+            currency_id: marketplace === 'MLM' ? 'MXN' : 'USD',
+            available_quantity: availableQty,
+            listing_type_id: listingType,
+            condition: 'new',
+            sale_terms: [
+                { id: 'HANDLING_TIME', value_name: String(Math.min(Math.max(1, handlingTime), 30)) }
+            ],
+            warranty: warrantyMonths > 0 ? `Garantía del vendedor: ${warrantyMonths} ${warrantyMonths === 1 ? 'mes' : 'meses'}` : undefined,
+            seller_custom_field: processed.asin,
+        } : {
             title: safeTitle,
             category_id: catId,
             price: priceMXN,
