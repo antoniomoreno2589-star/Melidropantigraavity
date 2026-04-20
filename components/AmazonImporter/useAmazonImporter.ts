@@ -325,21 +325,22 @@ export function useAmazonImporter() {
             .substring(0, 60)
             .trim();
 
-        // Don't add family_name - it causes validation issues with variant products
-        // ML's validation is inconsistent about requiring this field
-        const attributesWithFamily = finalAttributes;
+        // Detect variation attributes (COLOR, SIZE, TALLA, STORAGE, etc.)
+        const VARIATION_ATTR_IDS = ['COLOR', 'SIZE', 'TALLA', 'STORAGE_CAPACITY', 'MODEL', 'COLORS', 'SHOE_SIZE', 'LENGTH'];
+        const variationAttrs = finalAttributes.filter(a =>
+            VARIATION_ATTR_IDS.includes(a.id.toUpperCase()) && a.value_name
+        );
+        const nonVariationAttrs = finalAttributes.filter(a =>
+            !VARIATION_ATTR_IDS.includes(a.id.toUpperCase())
+        );
 
-        // ML requires family_name at top level for some categories, especially with variants
-        const payload: any = {
+        const basePayload: any = {
             title: safeTitle,
             category_id: catId,
-            price: priceMXN,
             currency_id: marketplace === 'MLM' ? 'MXN' : 'USD',
-            available_quantity: availableQty,
             buying_mode: 'buy_it_now',
             listing_type_id: listingType,
             condition: 'new',
-            // handling_time as a direct field is deprecated — use sale_terms
             sale_terms: [
                 { id: 'HANDLING_TIME', value_name: String(Math.min(Math.max(1, handlingTime), 30)) }
             ],
@@ -347,15 +348,30 @@ export function useAmazonImporter() {
             description: { plain_text: descriptionText },
             seller_custom_field: processed.asin,
             pictures: pictureUrls.map(url => ({ source: url })),
-            attributes: attributesWithFamily
         };
 
-        // Add family_name at top level if not in attributes (required by ML API)
-        if (!attributesWithFamily.some(a => a.id === 'family_name')) {
-            payload.family_name = product.title.split(/[,\-]/)[0].trim().substring(0, 50);
+        if (variationAttrs.length > 0) {
+            // Publish as item with variations
+            basePayload.attributes = nonVariationAttrs;
+            basePayload.variations = [
+                {
+                    attribute_combinations: variationAttrs.map(a => ({
+                        id: a.id,
+                        value_name: a.value_name
+                    })),
+                    price: priceMXN,
+                    available_quantity: availableQty,
+                    seller_custom_field: processed.asin,
+                }
+            ];
+        } else {
+            // Publish as simple item (no variants)
+            basePayload.price = priceMXN;
+            basePayload.available_quantity = availableQty;
+            basePayload.attributes = nonVariationAttrs;
         }
 
-        return payload;
+        return basePayload;
     };
 
     // ── Step 5 handlers ────────────────────────────────────────────────
