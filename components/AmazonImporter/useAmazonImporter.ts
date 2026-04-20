@@ -227,6 +227,19 @@ export function useAmazonImporter() {
                         const conditionAttr = relevant.find((a: any) => a.id === 'ITEM_CONDITION');
                         if (conditionAttr) seed['ITEM_CONDITION'] = 'Nuevo';
 
+                        // Add product code (UPC/EAN/GTIN) from Amazon if available
+                        const amazonAttrs = product.attributes || {};
+                        const barcode = amazonAttrs.item_barcode?.[0]?.value || amazonAttrs.ean?.[0]?.value;
+                        if (barcode) {
+                            const codeAttrs = relevant.filter((a: any) =>
+                                a.id === 'EAN' || a.id === 'UPC' || a.id === 'GTIN' ||
+                                a.id === 'ITEM_BARCODE' || a.id === 'UNIVERSAL_CODE'
+                            );
+                            if (codeAttrs.length > 0) {
+                                seed[codeAttrs[0].id] = barcode;
+                            }
+                        }
+
                         const aiMapped = await aiImporterService.mapAttributes(
                             product.title,
                             product.description || '',
