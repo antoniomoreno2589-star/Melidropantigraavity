@@ -230,15 +230,19 @@ export function useAmazonImporter() {
                         // Add product code (UPC/EAN/GTIN) from Amazon if available
                         const amazonAttrs = product.attributes || {};
                         const barcode = amazonAttrs.item_barcode?.[0]?.value || amazonAttrs.ean?.[0]?.value;
-                        if (barcode) {
-                            const codeAttrs = relevant.filter((a: any) =>
-                                a.id === 'EAN' || a.id === 'UPC' || a.id === 'GTIN' ||
-                                a.id === 'ITEM_BARCODE' || a.id === 'UNIVERSAL_CODE'
-                            );
-                            if (codeAttrs.length > 0) {
-                                seed[codeAttrs[0].id] = barcode;
-                            }
-                        }
+                        console.log(`[Melidrop] Amazon attrs for ${product.asin}:`, amazonAttrs);
+                        console.log(`[Melidrop] Barcode extracted: ${barcode}`);
+
+                        const codeAttrOptions = relevant.filter((a: any) =>
+                            a.id === 'EAN' || a.id === 'UPC' || a.id === 'GTIN' ||
+                            a.id === 'ITEM_BARCODE' || a.id === 'UNIVERSAL_CODE' ||
+                            a.id.includes('CODE') || a.id.includes('BARCODE')
+                        );
+                        console.log(`[Melidrop] Available code attributes:`, codeAttrOptions.map((a: any) => a.id));
+
+                        if (barcode && codeAttrOptions.length > 0) {
+                            seed[codeAttrOptions[0].id] = barcode;
+                            console.log(`[Melidrop] Seeded ${codeAttrOptions[0].id} = ${barcode}`);
 
                         const aiMapped = await aiImporterService.mapAttributes(
                             product.title,
