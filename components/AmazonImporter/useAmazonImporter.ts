@@ -325,16 +325,12 @@ export function useAmazonImporter() {
             .substring(0, 60)
             .trim();
 
-        // Extract family_name from title (first noun/main category)
-        const familyNameMatch = product.title.match(/^(\w+\s+\w+|\w+)/i);
-        const familyName = familyNameMatch ? familyNameMatch[1] : product.title.substring(0, 50);
+        // Don't add family_name - it causes validation issues with variant products
+        // ML's validation is inconsistent about requiring this field
+        const attributesWithFamily = finalAttributes;
 
-        // Add family_name if not already in attributes
-        const attributesWithFamily = finalAttributes.some(a => a.id === 'family_name')
-            ? finalAttributes
-            : [...finalAttributes, { id: 'family_name', value_name: familyName }];
-
-        return {
+        // ML requires family_name at top level for some categories, especially with variants
+        const payload: any = {
             title: safeTitle,
             category_id: catId,
             price: priceMXN,
@@ -353,6 +349,13 @@ export function useAmazonImporter() {
             pictures: pictureUrls.map(url => ({ source: url })),
             attributes: attributesWithFamily
         };
+
+        // Add family_name at top level if not in attributes (required by ML API)
+        if (!attributesWithFamily.some(a => a.id === 'family_name')) {
+            payload.family_name = product.title.split(/[,\-]/)[0].trim().substring(0, 50);
+        }
+
+        return payload;
     };
 
     // ── Step 5 handlers ────────────────────────────────────────────────
