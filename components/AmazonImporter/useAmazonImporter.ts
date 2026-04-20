@@ -40,9 +40,6 @@ export function useAmazonImporter() {
         isSkipped?: boolean;
     }>>({});
 
-    // Catalog product IDs (when product matches ML catalog - simplifies publishing)
-    const [catalogProductIds, setCatalogProductIds] = useState<Record<string, string>>({});
-
     // ── Step 5: Publish ────────────────────────────────────────────────
     const [publishingStatus, setPublishingStatus] = useState<Record<string, 'idle' | 'loading' | 'success' | 'error'>>({});
     const [publishResults, setPublishResults] = useState<Record<string, any>>({});
@@ -210,14 +207,6 @@ export function useAmazonImporter() {
 
             if (catId) {
                 try {
-                    // Try to match against ML catalog - simplifies publishing enormously
-                    const searchQuery = `${product.brand || ''} ${processed.optimizedTitle || product.title}`.trim();
-                    const catalogId = await meliService.searchCatalog(searchQuery, catId);
-                    if (catalogId) {
-                        console.log(`[Melidrop] Found catalog match for ${product.asin}: ${catalogId}`);
-                        setCatalogProductIds(prev => ({ ...prev, [product.asin]: catalogId }));
-                    }
-
                     const attrs = await meliService.getCategoryAttributes(catId);
                     const relevant = attrs
                         .filter((a: any) =>
@@ -366,21 +355,7 @@ export function useAmazonImporter() {
             ? 'Toalla con Capucha'
             : undefined;
 
-        // If we have a catalog match, use catalog_product_id — ML handles family_name,
-        // attributes, title, and description automatically from the catalog entry
-        const catalogId = catalogProductIds[processed.asin];
-
-        const payload: any = catalogId ? {
-            catalog_product_id: catalogId,
-            catalog_listing: true,
-            category_id: catId,
-            price: priceMXN,
-            currency_id: marketplace === 'MLM' ? 'MXN' : 'USD',
-            available_quantity: availableQty,
-            listing_type_id: listingType,
-            condition: 'new',
-            seller_custom_field: processed.asin,
-        } : {
+        const payload: any = {
             title: safeTitle,
             category_id: catId,
             price: priceMXN,
