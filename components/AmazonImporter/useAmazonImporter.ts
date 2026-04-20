@@ -373,6 +373,7 @@ export function useAmazonImporter() {
         const payload: any = catalogId ? {
             catalog_product_id: catalogId,
             catalog_listing: true,
+            category_id: catId,
             price: priceMXN,
             currency_id: marketplace === 'MLM' ? 'MXN' : 'USD',
             available_quantity: availableQty,
