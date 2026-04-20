@@ -698,13 +698,18 @@ export const SettingsPage = () => {
                             <h3 className="text-lg font-bold text-blue-900 dark:text-blue-200">🔧 Estado de Conexión Supabase</h3>
                         </div>
                         <div className="space-y-2">
-                            {testUser ? (
+                            {testUser?.access_token ? (
                                 <>
-                                    <p className="text-sm text-green-700 dark:text-green-300">✅ <strong>Usuario de Prueba Conectado:</strong> {testUser.nickname}</p>
-                                    <p className="text-xs text-slate-600 dark:text-slate-400">Token válido hasta: {testUser.expires_at ? new Date(testUser.expires_at).toLocaleString('es-MX') : 'No definido'}</p>
+                                    <p className="text-sm text-green-700 dark:text-green-300">✅ <strong>Usuario Conectado:</strong> {testUser.nickname || testUser.email}</p>
+                                    <p className="text-xs text-slate-600 dark:text-slate-400">Email: {testUser.email}</p>
+                                </>
+                            ) : testUser?.nickname ? (
+                                <>
+                                    <p className="text-sm text-amber-700 dark:text-amber-300">⚠️ <strong>Usuario Existe pero SIN Access Token:</strong> {testUser.nickname}</p>
+                                    <p className="text-xs text-slate-600 dark:text-slate-400">Necesitas completar la conexión OAuth.</p>
                                 </>
                             ) : (
-                                <p className="text-sm text-amber-700 dark:text-amber-300">⚠️ <strong>Sin usuario de prueba conectado</strong></p>
+                                <p className="text-sm text-red-700 dark:text-red-300">❌ <strong>Sin usuario de prueba conectado</strong></p>
                             )}
                             {testUserStatus && (
                                 <p className={`text-xs font-mono mt-2 ${testUserStatus.startsWith('✅') ? 'text-green-700 dark:text-green-300' : testUserStatus.startsWith('❌') ? 'text-red-700 dark:text-red-300' : 'text-slate-600 dark:text-slate-400'}`}>
@@ -715,11 +720,11 @@ export const SettingsPage = () => {
                         <div className="flex gap-2">
                             <button
                                 onClick={handleVerifyTestUser}
-                                disabled={testUserLoading || !testUser}
+                                disabled={testUserLoading || !testUser?.access_token}
                                 className="flex-1 px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-400 text-white font-bold rounded-lg text-sm transition-all flex items-center justify-center gap-2"
                             >
                                 <span className="material-symbols-outlined text-[16px]">check_circle</span>
-                                Verificar Conexión
+                                Verificar Token
                             </button>
                             {testUser && (
                                 <button
