@@ -243,6 +243,7 @@ export function useAmazonImporter() {
                         if (barcode && codeAttrOptions.length > 0) {
                             seed[codeAttrOptions[0].id] = barcode;
                             console.log(`[Melidrop] Seeded ${codeAttrOptions[0].id} = ${barcode}`);
+                        }
 
                         const aiMapped = await aiImporterService.mapAttributes(
                             product.title,
