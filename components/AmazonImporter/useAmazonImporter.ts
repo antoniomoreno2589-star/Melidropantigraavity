@@ -325,6 +325,15 @@ export function useAmazonImporter() {
             .substring(0, 60)
             .trim();
 
+        // Extract family_name from title (first noun/main category)
+        const familyNameMatch = product.title.match(/^(\w+\s+\w+|\w+)/i);
+        const familyName = familyNameMatch ? familyNameMatch[1] : product.title.substring(0, 50);
+
+        // Add family_name if not already in attributes
+        const attributesWithFamily = finalAttributes.some(a => a.id === 'family_name')
+            ? finalAttributes
+            : [...finalAttributes, { id: 'family_name', value_name: familyName }];
+
         return {
             title: safeTitle,
             category_id: catId,
@@ -342,7 +351,7 @@ export function useAmazonImporter() {
             description: { plain_text: descriptionText },
             seller_custom_field: processed.asin,
             pictures: pictureUrls.map(url => ({ source: url })),
-            attributes: finalAttributes
+            attributes: attributesWithFamily
         };
     };
 
