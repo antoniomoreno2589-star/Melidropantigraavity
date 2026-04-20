@@ -508,6 +508,8 @@ export function useAmazonImporter() {
 
             const result = await meliService.publishItem(payload, isDraft);
 
+            console.log(`[Melidrop] Publication response for ${asin}:`, result);
+
             if (result.error) {
                 const causes: string[] = [];
                 if (result.cause && Array.isArray(result.cause)) {
