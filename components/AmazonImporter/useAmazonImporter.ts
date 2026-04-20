@@ -325,6 +325,12 @@ export function useAmazonImporter() {
             .substring(0, 60)
             .trim();
 
+        // Derive family_name for categories that require it
+        const withHoodAttr = finalAttributes.find(a => a.id === 'WITH_HOOD')?.value_name;
+        const familyName = withHoodAttr === 'Sí'
+            ? 'Toalla con Capucha'
+            : undefined;
+
         const payload: any = {
             title: safeTitle,
             category_id: catId,
@@ -341,6 +347,7 @@ export function useAmazonImporter() {
             description: { plain_text: descriptionText },
             seller_custom_field: processed.asin,
             pictures: pictureUrls.map(url => ({ source: url })),
+            ...(familyName && { family_name: familyName }),
             attributes: finalAttributes
         };
 
