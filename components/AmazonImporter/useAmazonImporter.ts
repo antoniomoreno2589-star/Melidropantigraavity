@@ -325,12 +325,6 @@ export function useAmazonImporter() {
             .substring(0, 60)
             .trim();
 
-        // Some ML categories require family_name in attributes (not top-level)
-        // Only add family_name as attribute if user filled it, otherwise omit it
-        const finalAttrs = cleanAttributes.some(a => a.id === 'FAMILY_NAME')
-            ? cleanAttributes
-            : cleanAttributes;
-
         const payload: any = {
             title: safeTitle,
             category_id: catId,
@@ -347,7 +341,7 @@ export function useAmazonImporter() {
             description: { plain_text: descriptionText },
             seller_custom_field: processed.asin,
             pictures: pictureUrls.map(url => ({ source: url })),
-            attributes: finalAttrs
+            attributes: finalAttributes
         };
 
         return payload;
