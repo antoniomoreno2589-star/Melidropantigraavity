@@ -330,8 +330,9 @@ export function useAmazonImporter() {
         const variationAttrs = finalAttributes.filter(a =>
             VARIATION_ATTR_IDS.includes(a.id.toUpperCase()) && a.value_name
         );
+        // Remove family_name from attributes - it conflicts with variations structure
         const nonVariationAttrs = finalAttributes.filter(a =>
-            !VARIATION_ATTR_IDS.includes(a.id.toUpperCase())
+            !VARIATION_ATTR_IDS.includes(a.id.toUpperCase()) && a.id !== 'family_name'
         );
 
         const basePayload: any = {
