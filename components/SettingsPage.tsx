@@ -437,6 +437,48 @@ export const SettingsPage = () => {
                 </div>
 
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                    {/* DEBUG: TEST USER STATUS */}
+                    <div className="lg:col-span-2 bg-blue-50 dark:bg-blue-950/20 border border-blue-200 dark:border-blue-800 rounded-xl p-6 flex flex-col gap-4">
+                        <div className="flex items-center gap-3">
+                            <span className="material-symbols-outlined text-blue-600 dark:text-blue-400">bug_report</span>
+                            <h3 className="text-lg font-bold text-blue-900 dark:text-blue-200">🔧 Estado de Conexión Supabase</h3>
+                        </div>
+                        <div className="space-y-2">
+                            {testUser ? (
+                                <>
+                                    <p className="text-sm text-green-700 dark:text-green-300">✅ <strong>Usuario de Prueba Conectado:</strong> {testUser.nickname}</p>
+                                    <p className="text-xs text-slate-600 dark:text-slate-400">Token válido hasta: {testUser.expires_at ? new Date(testUser.expires_at).toLocaleString('es-MX') : 'No definido'}</p>
+                                </>
+                            ) : (
+                                <p className="text-sm text-amber-700 dark:text-amber-300">⚠️ <strong>Sin usuario de prueba conectado</strong></p>
+                            )}
+                            {testUserStatus && (
+                                <p className={`text-xs font-mono mt-2 ${testUserStatus.startsWith('✅') ? 'text-green-700 dark:text-green-300' : testUserStatus.startsWith('❌') ? 'text-red-700 dark:text-red-300' : 'text-slate-600 dark:text-slate-400'}`}>
+                                    {testUserStatus}
+                                </p>
+                            )}
+                        </div>
+                        <div className="flex gap-2">
+                            <button
+                                onClick={handleVerifyTestUser}
+                                disabled={testUserLoading || !testUser}
+                                className="flex-1 px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-400 text-white font-bold rounded-lg text-sm transition-all flex items-center justify-center gap-2"
+                            >
+                                <span className="material-symbols-outlined text-[16px]">check_circle</span>
+                                Verificar Conexión
+                            </button>
+                            {testUser && (
+                                <button
+                                    onClick={handleDisconnectTestUser}
+                                    className="flex-1 px-4 py-2 bg-red-600 hover:bg-red-700 text-white font-bold rounded-lg text-sm transition-all flex items-center justify-center gap-2"
+                                >
+                                    <span className="material-symbols-outlined text-[16px]">logout</span>
+                                    Desconectar
+                                </button>
+                            )}
+                        </div>
+                    </div>
+
                     {/* AMAZON CONNECT CARD */}
                     <div className="lg:col-span-2">
                         <AmazonConnect />
