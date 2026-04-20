@@ -379,10 +379,6 @@ export function useAmazonImporter() {
             available_quantity: availableQty,
             listing_type_id: listingType,
             condition: 'new',
-            sale_terms: [
-                { id: 'HANDLING_TIME', value_name: String(Math.min(Math.max(1, handlingTime), 30)) }
-            ],
-            warranty: warrantyMonths > 0 ? `Garantía del vendedor: ${warrantyMonths} ${warrantyMonths === 1 ? 'mes' : 'meses'}` : undefined,
             seller_custom_field: processed.asin,
         } : {
             title: safeTitle,
