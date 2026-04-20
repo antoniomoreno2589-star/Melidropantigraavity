@@ -331,9 +331,10 @@ export function useAmazonImporter() {
         // Strip any family_name the user may have typed in attributes (avoid conflict).
         const cleanAttributes = finalAttributes.filter(a => a.id !== 'family_name');
 
-        // Generate family_name from title (short, product-type only)
-        // e.g. "Toalla Baño Capucha..." -> "Toalla Baño Capucha Niños Vellón Coral"
-        const familyName = safeTitle.substring(0, 60);
+        // Generate family_name from product title: just first 2-3 words
+        // e.g. "Toalla Baño Capucha..." -> "Toalla Baño Capucha"
+        const familyNameWords = safeTitle.split(/\s+/).slice(0, 3).join(' ');
+        const familyName = familyNameWords || safeTitle.substring(0, 30);
 
         const payload: any = {
             title: safeTitle,
