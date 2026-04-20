@@ -533,10 +533,10 @@ export function useAmazonImporter() {
                     const { data: { user } } = await supabase.auth.getUser();
                     if (user) {
                         const product = loadedProducts.find(p => p.asin === asin);
-                        await supabase.from('products').upsert({
+                        const { error: sbErr } = await supabase.from('products').upsert({
                             user_id:          user.id,
                             meli_id:          result.id,
-                            title:            payload.title,
+                            title:            result.title || payload.title || processed.optimizedTitle,
                             sku:              processed.asin,
                             price_mxn:        payload.price,
                             stock_meli:       payload.available_quantity,
@@ -546,6 +546,7 @@ export function useAmazonImporter() {
                             description_text: payload.description?.plain_text ?? null,
                             last_updated:     new Date().toISOString(),
                         }, { onConflict: 'meli_id' });
+                        if (sbErr) console.warn('[Melidrop] Supabase upsert error:', sbErr.message);
                     }
                 }
             }
