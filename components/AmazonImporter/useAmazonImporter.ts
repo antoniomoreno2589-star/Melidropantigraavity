@@ -325,16 +325,11 @@ export function useAmazonImporter() {
             .substring(0, 60)
             .trim();
 
-        // Some ML categories are "catalog families" that require family_name
-        // and do NOT allow variations. We publish as simple item, keeping color
-        // as a regular attribute (item = single-color SKU).
-        // Strip any family_name the user may have typed in attributes (avoid conflict).
-        const cleanAttributes = finalAttributes.filter(a => a.id !== 'family_name');
-
-        // Generate family_name from product title: just first 2-3 words
-        // e.g. "Toalla Baño Capucha..." -> "Toalla Baño Capucha"
-        const familyNameWords = safeTitle.split(/\s+/).slice(0, 3).join(' ');
-        const familyName = familyNameWords || safeTitle.substring(0, 30);
+        // Some ML categories require family_name in attributes (not top-level)
+        // Only add family_name as attribute if user filled it, otherwise omit it
+        const finalAttrs = cleanAttributes.some(a => a.id === 'FAMILY_NAME')
+            ? cleanAttributes
+            : cleanAttributes;
 
         const payload: any = {
             title: safeTitle,
@@ -345,7 +340,6 @@ export function useAmazonImporter() {
             buying_mode: 'buy_it_now',
             listing_type_id: listingType,
             condition: 'new',
-            family_name: familyName,
             sale_terms: [
                 { id: 'HANDLING_TIME', value_name: String(Math.min(Math.max(1, handlingTime), 30)) }
             ],
@@ -353,7 +347,7 @@ export function useAmazonImporter() {
             description: { plain_text: descriptionText },
             seller_custom_field: processed.asin,
             pictures: pictureUrls.map(url => ({ source: url })),
-            attributes: cleanAttributes
+            attributes: finalAttrs
         };
 
         return payload;
