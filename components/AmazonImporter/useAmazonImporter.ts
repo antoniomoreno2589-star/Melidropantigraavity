@@ -288,11 +288,17 @@ export function useAmazonImporter() {
         const title = editedTitles[processed.asin] || processed.optimizedTitle;
         const attrs = userAttributes[processed.asin] || {};
 
+        // Extract product code from Amazon attributes (UPC, EAN, GTIN)
+        const amazonAttrs = product.attributes || {};
+        const barcode = amazonAttrs.item_barcode?.[0]?.value || amazonAttrs.ean?.[0]?.value;
+        const userHasBarcode = barcode && Object.values(attrs).includes(barcode);
+
         const finalAttributes = [
             ...Object.entries(attrs)
                 .filter(([id, v]) => v && id !== 'SELLER_SKU')
                 .map(([id, value_name]) => ({ id, value_name })),
-            { id: 'SELLER_SKU', value_name: processed.asin }
+            { id: 'SELLER_SKU', value_name: processed.asin },
+            ...(barcode && !userHasBarcode ? [{ id: 'UPC', value_name: barcode }] : [])
         ];
 
         const currency = product.currency || 'USD';
