@@ -114,6 +114,8 @@ export const SettingsPage = () => {
     const [testUserEmail, setTestUserEmail] = useState('');
     const [testUserPassword, setTestUserPassword] = useState('');
     const [testUserStatus, setTestUserStatus] = useState<string>('');
+    const [existingUserId, setExistingUserId] = useState('');
+    const [existingUserPwd, setExistingUserPwd] = useState('Melidrop2024!');
 
     useEffect(() => {
         const fetchTestUser = async () => {
@@ -269,6 +271,42 @@ export const SettingsPage = () => {
         }
         setTestUser(null);
         setTestUserStatus('Usuario de prueba desconectado.');
+    };
+
+    const handleResetAndConnectExisting = async () => {
+        if (!existingUserId.trim()) {
+            setTestUserStatus('❌ Ingresa el User ID del test user.');
+            return;
+        }
+        setTestUserLoading(true);
+        setTestUserStatus('Intentando resetear password del test user existente...');
+        try {
+            // Step 1: Reset password using main account token via proxy
+            const creds = JSON.parse(localStorage.getItem('melidrop_meli_credentials') || '{}');
+            const mainToken = await meliService.getValidToken();
+            if (!mainToken) throw new Error('No hay token de la cuenta principal de ML. Conecta primero tu cuenta real.');
+
+            const resetRes = await fetch('/api/proxy', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    url: `https://api.mercadolibre.com/users/${existingUserId.trim()}`,
+                    method: 'PUT',
+                    headers: { 'Authorization': `Bearer ${mainToken}`, 'Content-Type': 'application/json' },
+                    body: { password: existingUserPwd }
+                })
+            });
+            const resetData = await resetRes.json();
+            if (!resetRes.ok) {
+                setTestUserStatus(`⚠️ No se pudo resetear via API (${resetData.message || resetRes.status}). Intenta el password directamente con OAuth abajo.`);
+            } else {
+                setTestUserStatus(`✅ Password reseteado. Ahora conecta con OAuth usando el password: ${existingUserPwd}`);
+            }
+        } catch (e: any) {
+            setTestUserStatus(`❌ Error: ${e.message}`);
+        } finally {
+            setTestUserLoading(false);
+        }
     };
 
     const [usaRules, setUsaRules] = useState<PriceRule[]>(() => {
@@ -681,6 +719,35 @@ export const SettingsPage = () => {
                                         {testUserLoading ? <span className="w-4 h-4 rounded-full border-2 border-white/30 border-t-white animate-spin" /> : <span className="material-symbols-outlined text-[18px]">open_in_new</span>}
                                         Conectar con OAuth
                                     </button>
+
+                                    {/* Recover existing test user */}
+                                    <div className="border-t border-slate-200 dark:border-slate-700 pt-4 space-y-3">
+                                        <p className="text-xs font-bold text-slate-500 uppercase tracking-wider">¿Ya tienes un test user pero perdiste el password?</p>
+                                        <div className="space-y-2">
+                                            <input
+                                                type="text"
+                                                value={existingUserId}
+                                                onChange={e => setExistingUserId(e.target.value)}
+                                                placeholder="User ID del test user (ej: 123456789)"
+                                                className="w-full px-3 py-2 border border-slate-300 dark:border-slate-600 rounded-lg text-xs bg-white dark:bg-slate-900 dark:text-white"
+                                            />
+                                            <input
+                                                type="text"
+                                                value={existingUserPwd}
+                                                onChange={e => setExistingUserPwd(e.target.value)}
+                                                placeholder="Nuevo password a asignar"
+                                                className="w-full px-3 py-2 border border-slate-300 dark:border-slate-600 rounded-lg text-xs bg-white dark:bg-slate-900 dark:text-white"
+                                            />
+                                        </div>
+                                        <button
+                                            onClick={handleResetAndConnectExisting}
+                                            disabled={testUserLoading || !existingUserId.trim()}
+                                            className="w-full py-2 bg-amber-500 hover:bg-amber-600 disabled:opacity-50 text-white font-black rounded-xl text-xs transition-all flex items-center justify-center gap-2"
+                                        >
+                                            <span className="material-symbols-outlined text-[16px]">key</span>
+                                            Resetear Password y Reconectar
+                                        </button>
+                                    </div>
                                 </div>
                             )}
                             {testUserStatus && (
