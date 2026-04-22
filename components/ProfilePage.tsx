@@ -86,11 +86,48 @@ export const ProfilePage = () => {
 
     const isExchanging = React.useRef(false);
 
+    // Handle test user OAuth - send postMessage to parent window
+    useEffect(() => {
+        const urlParams = new URLSearchParams(window.location.search);
+        const code = urlParams.get('code');
+        const state = urlParams.get('state');
+
+        if (!code || state !== 'test_user') return;
+
+        console.log("🧪 Test user OAuth detected", {
+            code: code.substring(0, 20) + '...',
+            state,
+            hasOpener: !!window.opener
+        });
+
+        if (!window.opener) {
+            console.warn("⚠️ window.opener is null - popup wasn't opened via window.open()");
+            return;
+        }
+
+        try {
+            window.opener.postMessage(
+                { type: 'ml_oauth_code', code, state },
+                window.location.origin
+            );
+            console.log("✅ Test user OAuth postMessage sent to parent");
+        } catch (e) {
+            console.error("❌ Error sending postMessage:", e);
+        }
+    }, []);
+
     // Handle OAuth Callback
     useEffect(() => {
         // Try getting code from searchParams (after #) or direct search (before #)
         const urlParams = new URLSearchParams(window.location.search);
         const code = searchParams.get('code') || urlParams.get('code');
+        const state = urlParams.get('state');
+
+        // Skip test user OAuth - it's handled by the postMessage useEffect above
+        if (state === 'test_user') {
+            console.log("ℹ️ Skipping local handling of test user OAuth (state=test_user)");
+            return;
+        }
 
         if (!code) return;
 

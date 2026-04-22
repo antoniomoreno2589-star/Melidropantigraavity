@@ -176,10 +176,34 @@ export const SettingsPage = () => {
         setTestUserStatus('Iniciá sesión en la ventana emergente con las credenciales del usuario de prueba...');
 
         const handleMessage = async (event: MessageEvent) => {
-            if (event.origin !== window.location.origin) return;
-            if (event.data?.type !== 'ml_oauth_code' || event.data?.state !== 'test_user') return;
+            console.log("📨 postMessage received in SettingsPage", {
+                type: event.data?.type,
+                state: event.data?.state,
+                originMatch: event.origin === window.location.origin,
+                eventOrigin: event.origin,
+                windowOrigin: window.location.origin
+            });
+
+            if (event.origin !== window.location.origin) {
+                console.warn("❌ Origin mismatch - rejecting message", {
+                    eventOrigin: event.origin,
+                    windowOrigin: window.location.origin
+                });
+                return;
+            }
+
+            if (event.data?.type !== 'ml_oauth_code' || event.data?.state !== 'test_user') {
+                console.warn("❌ Invalid message type or state - rejecting", {
+                    type: event.data?.type,
+                    state: event.data?.state
+                });
+                return;
+            }
+
+            console.log("✅ Valid test user OAuth message received - processing");
             window.removeEventListener('message', handleMessage);
             clearInterval(pollTimer);
+            clearTimeout(timeoutId);
             popup.close();
 
             try {
@@ -230,6 +254,8 @@ export const SettingsPage = () => {
         };
 
         window.addEventListener('message', handleMessage);
+        console.log("✅ postMessage listener attached in SettingsPage");
+
         const pollTimer = setInterval(() => {
             if (popup.closed) {
                 clearInterval(pollTimer);
@@ -238,6 +264,16 @@ export const SettingsPage = () => {
                 setTestUserStatus(prev => prev.startsWith('✅') ? prev : 'Ventana cerrada sin autorizar.');
             }
         }, 1000);
+
+        // Timeout: If no postMessage received after 30 seconds, close popup and show error
+        const timeoutId = setTimeout(() => {
+            console.error("❌ Timeout: No postMessage received after 30s. Closing popup.");
+            window.removeEventListener('message', handleMessage);
+            clearInterval(pollTimer);
+            popup.close();
+            setTestUserLoading(false);
+            setTestUserStatus('⏱️ Timeout esperando respuesta (30s). El popup se cerró automáticamente. Intenta de nuevo.');
+        }, 30000);
     };
 
     const handleVerifyTestUser = async () => {
