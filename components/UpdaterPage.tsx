@@ -28,6 +28,9 @@ const STATUS_COLORS: Record<string, string> = {
     draft: 'bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-400',
 };
 
+const UPDATER_URL = `https://gbdrxwfywxvyoxroqcut.supabase.co/functions/v1/amazon-ml-updater`;
+const ANON_KEY    = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdiZHJ4d2Z5d3h2eW94cm9xY3V0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjkxMzU1MTQsImV4cCI6MjA4NDcxMTUxNH0.8bGbL6bKSfGShizUiijZIJqRdyO_72hecEujK3vYvr4';
+
 export const UpdaterPage: React.FC = () => {
     const [products, setProducts] = useState<Product[]>([]);
     const [loading, setLoading] = useState(true);
@@ -41,6 +44,21 @@ export const UpdaterPage: React.FC = () => {
     const [syncFreqHours, setSyncFreqHours] = useState(24);
     const [page, setPage] = useState(1);
     const PAGE_SIZE = 50;
+    const [syncParams, setSyncParams] = useState<{ price: boolean; stock: boolean; shipping: boolean; description: boolean }>(() => {
+        const saved = localStorage.getItem('melidrop_sync_params');
+        return saved ? JSON.parse(saved) : { price: true, stock: true, shipping: false, description: false };
+    });
+    const [defaultStock, setDefaultStock] = useState<number>(() =>
+        parseInt(localStorage.getItem('melidrop_default_stock') || '3')
+    );
+    const [autoPromos, setAutoPromos] = useState<boolean>(() =>
+        localStorage.getItem('melidrop_auto_promos') === 'true'
+    );
+    const [allowPriceDecrease, setAllowPriceDecrease] = useState<boolean>(() =>
+        localStorage.getItem('melidrop_allow_price_decrease') === 'true'
+    );
+    const [syncRunning, setSyncRunning] = useState(false);
+    const [syncResult, setSyncResult] = useState<string>('');
 
     useEffect(() => {
         loadProducts();
@@ -166,6 +184,61 @@ export const UpdaterPage: React.FC = () => {
         ? Math.round(((syncJob.processed_count || 0) / Math.max(syncJob.total_products || 1, 1)) * 100)
         : 0;
 
+    const handleRunNow = async () => {
+        setSyncRunning(true);
+        setSyncResult('Ejecutando sincronización...');
+        try {
+            const res = await fetch(UPDATER_URL, {
+                method: 'POST',
+                headers: { 'Authorization': `Bearer ${ANON_KEY}`, 'Content-Type': 'application/json' },
+                body: '{}',
+            });
+            const data = await res.json();
+            if (data.success) {
+                const s = data.summary?.[0];
+                if (s?.skipped)   setSyncResult(`⏳ No es necesario aún (próxima sincronización en ${syncFreqHours}h).`);
+                else if (s)       setSyncResult(`✅ Lote procesado: ${s.updated} actualizados, ${s.errors} errores. Offset: ${s.offset}/${syncJob?.total_products ?? '?'}`);
+                else              setSyncResult('✅ Sincronización ejecutada (sin productos pendientes).');
+                const { data: { user } } = await supabase.auth.getUser();
+                if (user) {
+                    const { data: job } = await supabase.from('sync_jobs').select('*').eq('user_id', user.id).order('started_at', { ascending: false }).limit(1).maybeSingle();
+                    if (job) setSyncJob(job);
+                }
+            } else {
+                setSyncResult(`❌ Error: ${data.error}`);
+            }
+        } catch (e: any) {
+            setSyncResult(`❌ Error de red: ${e.message}`);
+        } finally {
+            setSyncRunning(false);
+        }
+    };
+
+    const handleSaveSyncSettings = async () => {
+        localStorage.setItem('melidrop_sync_params', JSON.stringify(syncParams));
+        localStorage.setItem('melidrop_default_stock', defaultStock.toString());
+        localStorage.setItem('melidrop_auto_promos', autoPromos.toString());
+        localStorage.setItem('melidrop_allow_price_decrease', allowPriceDecrease.toString());
+        localStorage.setItem('melidrop_sync_frequency_hours', syncFreqHours.toString());
+        const { data: { user } } = await supabase.auth.getUser();
+        if (user) {
+            const { data: existing } = await supabase.from('user_connections').select('margin_rules').eq('user_id', user.id).maybeSingle();
+            const currentRules = (existing as any)?.margin_rules || {};
+            await supabase.from('user_connections').upsert({
+                user_id: user.id,
+                margin_rules: {
+                    ...currentRules,
+                    sync_params: syncParams,
+                    default_stock: defaultStock,
+                    auto_promos: autoPromos,
+                    allow_price_decrease: allowPriceDecrease,
+                    sync_frequency_hours: syncFreqHours,
+                }
+            }, { onConflict: 'user_id' });
+        }
+        alert('Configuración del actualizador guardada.');
+    };
+
     return (
         <div className="flex-1 overflow-y-auto p-4 md:p-8">
             <div className="w-full max-w-7xl mx-auto flex flex-col gap-6">
@@ -227,6 +300,125 @@ export const UpdaterPage: React.FC = () => {
                         </div>
                     </div>
                 )}
+
+                {/* Sync Settings Card */}
+                <div className="bg-surface-light dark:bg-surface-dark rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 overflow-hidden">
+                    <div className="px-6 py-4 border-b border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-800/50 flex items-center gap-3">
+                        <div className="p-2 rounded-lg bg-blue-100 text-blue-600">
+                            <span className="material-symbols-outlined">tune</span>
+                        </div>
+                        <div>
+                            <h2 className="text-base font-bold text-slate-900 dark:text-white uppercase tracking-tighter">Parámetros de Sincronización</h2>
+                            <p className="text-xs text-slate-500">Configura qué se actualiza y con qué frecuencia.</p>
+                        </div>
+                    </div>
+                    <div className="p-6 space-y-6">
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                            <div>
+                                <label className="text-xs font-black text-slate-500 uppercase mb-3 block">Parámetros a Sincronizar</label>
+                                <div className="grid grid-cols-2 gap-2">
+                                    {([
+                                        { key: 'price',       label: '💰 Precio',          desc: 'Actualiza el precio según Amazon' },
+                                        { key: 'stock',       label: '📦 Stock',            desc: 'Sincroniza disponibilidad' },
+                                        { key: 'shipping',    label: '🚚 Tiempo de envío',  desc: 'Actualiza handling_time' },
+                                        { key: 'description', label: '📝 Descripción',      desc: 'Sincroniza descripción del producto' },
+                                    ] as const).map(p => (
+                                        <label key={p.key} className="flex items-start gap-3 p-3 rounded-xl border border-slate-200 dark:border-slate-700 cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors">
+                                            <input
+                                                type="checkbox"
+                                                checked={syncParams[p.key]}
+                                                onChange={e => setSyncParams((prev: typeof syncParams) => ({ ...prev, [p.key]: e.target.checked }))}
+                                                className="mt-0.5 accent-primary"
+                                            />
+                                            <div>
+                                                <p className="text-sm font-bold text-slate-900 dark:text-white">{p.label}</p>
+                                                <p className="text-xs text-slate-500">{p.desc}</p>
+                                            </div>
+                                        </label>
+                                    ))}
+                                </div>
+                            </div>
+                            <div className="space-y-4">
+                                <div>
+                                    <label className="text-xs font-black text-slate-500 uppercase mb-3 block">Frecuencia de Actualización</label>
+                                    <div className="grid grid-cols-3 gap-2">
+                                        {([
+                                            { hours: 24,  label: 'Cada día',    badge: '✓ Recomendado', color: 'text-green-600' },
+                                            { hours: 72,  label: 'Cada 3 días', badge: 'Moderado',       color: 'text-blue-600'  },
+                                            { hours: 120, label: 'Cada 5 días', badge: 'Conservador',    color: 'text-slate-500' },
+                                        ] as const).map(opt => (
+                                            <button key={opt.hours} onClick={() => setSyncFreqHours(opt.hours)}
+                                                className={`p-3 rounded-xl border-2 text-left transition-all ${syncFreqHours === opt.hours ? 'border-primary bg-primary/5' : 'border-slate-200 dark:border-slate-700 hover:border-slate-300'}`}>
+                                                <p className="font-bold text-slate-900 dark:text-white text-sm">{opt.label}</p>
+                                                <p className={`text-xs font-black ${opt.color}`}>{opt.badge}</p>
+                                            </button>
+                                        ))}
+                                    </div>
+                                </div>
+                                <div>
+                                    <label className="text-xs font-black text-slate-500 uppercase">Stock por Defecto al Importar</label>
+                                    <div className="relative w-40 mt-2">
+                                        <input
+                                            type="number" min="1" max="999"
+                                            value={defaultStock}
+                                            onChange={e => setDefaultStock(Math.max(1, parseInt(e.target.value) || 1))}
+                                            className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg px-3 py-2 text-sm font-black"
+                                        />
+                                        <span className="absolute right-3 top-2 text-slate-400 text-xs">pzas</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div>
+                            <label className="text-xs font-black text-slate-500 uppercase mb-3 block">Opciones de Precio</label>
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                <div className="flex items-center justify-between p-3 rounded-xl border border-slate-200 dark:border-slate-700">
+                                    <div>
+                                        <p className="text-sm font-bold text-slate-900 dark:text-white">🎯 Crear Promociones Automáticas</p>
+                                        <p className="text-xs text-slate-500">Cuando Amazon baja el precio, crea una promoción en ML.</p>
+                                    </div>
+                                    <div onClick={() => setAutoPromos(v => !v)}
+                                        className={`w-12 h-6 rounded-full transition-all cursor-pointer relative flex-shrink-0 ml-4 ${autoPromos ? 'bg-primary' : 'bg-slate-200 dark:bg-slate-700'}`}>
+                                        <span className={`absolute top-0.5 w-5 h-5 bg-white rounded-full shadow transition-all ${autoPromos ? 'left-6' : 'left-0.5'}`} />
+                                    </div>
+                                </div>
+                                <div className="flex items-center justify-between p-3 rounded-xl border border-slate-200 dark:border-slate-700">
+                                    <div>
+                                        <p className="text-sm font-bold text-slate-900 dark:text-white">📉 Permitir Fluctuación de Precios</p>
+                                        <p className="text-xs text-slate-500">Desactivado: solo sube. Activado: sigue los cambios en ambas direcciones.</p>
+                                    </div>
+                                    <div onClick={() => setAllowPriceDecrease(v => !v)}
+                                        className={`w-12 h-6 rounded-full transition-all cursor-pointer relative flex-shrink-0 ml-4 ${allowPriceDecrease ? 'bg-primary' : 'bg-slate-200 dark:bg-slate-700'}`}>
+                                        <span className={`absolute top-0.5 w-5 h-5 bg-white rounded-full shadow transition-all ${allowPriceDecrease ? 'left-6' : 'left-0.5'}`} />
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    {syncResult && (
+                        <div className="px-6 pb-2">
+                            <p className={`text-xs font-mono ${syncResult.startsWith('✅') ? 'text-green-600' : syncResult.startsWith('❌') ? 'text-red-500' : 'text-slate-500'}`}>
+                                {syncResult}
+                            </p>
+                        </div>
+                    )}
+                    <div className="p-4 bg-slate-50 dark:bg-slate-800/50 border-t border-slate-100 dark:border-slate-800 flex gap-3">
+                        <button onClick={handleSaveSyncSettings} className="flex-1 bg-slate-800 hover:bg-slate-900 dark:bg-slate-100 dark:text-slate-900 text-white font-black py-3 px-4 rounded-xl shadow-sm transition-all flex items-center justify-center gap-2 text-sm uppercase">
+                            <span className="material-symbols-outlined text-[18px]">save</span>
+                            Guardar
+                        </button>
+                        <button
+                            onClick={handleRunNow}
+                            disabled={syncRunning}
+                            className="flex-1 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-black py-3 px-4 rounded-xl shadow-sm transition-all flex items-center justify-center gap-2 text-sm uppercase"
+                        >
+                            {syncRunning
+                                ? <><span className="w-4 h-4 rounded-full border-2 border-white/30 border-t-white animate-spin" />Ejecutando...</>
+                                : <><span className="material-symbols-outlined text-[18px]">play_arrow</span>Ejecutar Ahora</>
+                            }
+                        </button>
+                    </div>
+                </div>
 
                 {/* Tabs */}
                 <div className="flex gap-1 bg-slate-100 dark:bg-slate-800 p-1 rounded-xl w-fit">

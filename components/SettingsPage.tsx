@@ -420,78 +420,6 @@ export const SettingsPage = () => {
     const [descriptionSuffix, setDescriptionSuffix] = useState<string>(() =>
         localStorage.getItem('melidrop_description_suffix') ?? DEFAULT_DESCRIPTION_SUFFIX
     );
-    const [syncParams, setSyncParams] = useState<{ price: boolean; stock: boolean; shipping: boolean; description: boolean }>(() => {
-        const saved = localStorage.getItem('melidrop_sync_params');
-        return saved ? JSON.parse(saved) : { price: true, stock: true, shipping: false, description: false };
-    });
-    const [defaultStock, setDefaultStock] = useState<number>(() =>
-        parseInt(localStorage.getItem('melidrop_default_stock') || '3')
-    );
-    const [autoPromos, setAutoPromos] = useState<boolean>(() =>
-        localStorage.getItem('melidrop_auto_promos') === 'true'
-    );
-    const [allowPriceDecrease, setAllowPriceDecrease] = useState<boolean>(() =>
-        localStorage.getItem('melidrop_allow_price_decrease') === 'true'
-    );
-    const [syncFrequencyHours, setSyncFrequencyHours] = useState<number>(() =>
-        parseInt(localStorage.getItem('melidrop_sync_frequency_hours') || '24')
-    );
-
-    const UPDATER_URL = `https://gbdrxwfywxvyoxroqcut.supabase.co/functions/v1/amazon-ml-updater`;
-    const ANON_KEY    = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdiZHJ4d2Z5d3h2eW94cm9xY3V0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjkxMzU1MTQsImV4cCI6MjA4NDcxMTUxNH0.8bGbL6bKSfGShizUiijZIJqRdyO_72hecEujK3vYvr4';
-
-    const [syncRunning, setSyncRunning]   = useState(false);
-    const [syncResult,  setSyncResult]    = useState<string>('');
-    const [lastJob,     setLastJob]       = useState<any>(null);
-
-    useEffect(() => {
-        const fetchLastJob = async () => {
-            const { data: { user } } = await supabase.auth.getUser();
-            if (!user) return;
-            const { data } = await supabase
-                .from('sync_jobs')
-                .select('*')
-                .eq('user_id', user.id)
-                .order('started_at', { ascending: false })
-                .limit(1)
-                .maybeSingle();
-            if (data) setLastJob(data);
-        };
-        fetchLastJob();
-    }, []);
-
-    const handleRunNow = async () => {
-        setSyncRunning(true);
-        setSyncResult('Ejecutando sincronización...');
-        try {
-            const res = await fetch(UPDATER_URL, {
-                method:  'POST',
-                headers: { 'Authorization': `Bearer ${ANON_KEY}`, 'Content-Type': 'application/json' },
-                body:    '{}',
-            });
-            const data = await res.json();
-            if (data.success) {
-                const s = data.summary?.[0];
-                if (s?.skipped)   setSyncResult(`⏳ No es necesario aún (próxima sincronización en ${syncFrequencyHours}h).`);
-                else if (s)       setSyncResult(`✅ Lote procesado: ${s.updated} actualizados, ${s.errors} errores. Offset: ${s.offset}/${lastJob?.total_products ?? '?'}`);
-                else              setSyncResult('✅ Sincronización ejecutada (sin productos pendientes).');
-
-                // Refresh job status
-                const { data: { user } } = await supabase.auth.getUser();
-                if (user) {
-                    const { data: job } = await supabase.from('sync_jobs').select('*').eq('user_id', user.id).order('started_at', { ascending: false }).limit(1).maybeSingle();
-                    if (job) setLastJob(job);
-                }
-            } else {
-                setSyncResult(`❌ Error: ${data.error}`);
-            }
-        } catch (e: any) {
-            setSyncResult(`❌ Error de red: ${e.message}`);
-        } finally {
-            setSyncRunning(false);
-        }
-    };
-
     const updateDolarOnline = async () => {
         setIsUpdatingDolar(true);
         try {
@@ -527,24 +455,19 @@ export const SettingsPage = () => {
         localStorage.setItem('melidrop_postal_code', postalCode);
         localStorage.setItem('melidrop_warranty_months', warrantyMonths.toString());
         localStorage.setItem('melidrop_description_suffix', descriptionSuffix);
-        localStorage.setItem('melidrop_sync_params', JSON.stringify(syncParams));
-        localStorage.setItem('melidrop_default_stock', defaultStock.toString());
-        localStorage.setItem('melidrop_auto_promos', autoPromos.toString());
-        localStorage.setItem('melidrop_allow_price_decrease', allowPriceDecrease.toString());
-        localStorage.setItem('melidrop_sync_frequency_hours', syncFrequencyHours.toString());
 
-        // Sync to Supabase
         const { data: { user } } = await supabase.auth.getUser();
         if (user) {
+            const { data: existing } = await supabase.from('user_connections').select('margin_rules').eq('user_id', user.id).maybeSingle();
+            const existingRules = (existing as any)?.margin_rules || {};
             await supabase.from('user_connections').upsert({
                 user_id: user.id,
                 exchange_rate: exchangeRate,
                 margin_rules: {
+                    ...existingRules,
                     usa: usaRules, mx: mxRules, filters: globalFilters,
                     handling_time_usa: usaHandlingTime, handling_time_mx: mxHandlingTime,
-                    warranty_months: warrantyMonths, default_stock: defaultStock,
-                    sync_params: syncParams, auto_promos: autoPromos,
-                    allow_price_decrease: allowPriceDecrease, sync_frequency_hours: syncFrequencyHours
+                    warranty_months: warrantyMonths,
                 }
             }, { onConflict: 'user_id' });
         }
@@ -962,177 +885,6 @@ export const SettingsPage = () => {
                         </div>
                     </section>
 
-                    {/* ACTUALIZADOR */}
-                    <section className="flex flex-col lg:col-span-2 bg-surface-light dark:bg-surface-dark rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 overflow-hidden">
-                        <div className="px-6 py-5 border-b border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-800/50 flex items-center gap-3">
-                            <div className="p-2 rounded-lg bg-blue-100 text-blue-600">
-                                <span className="material-symbols-outlined">sync</span>
-                            </div>
-                            <h2 className="text-lg font-bold text-slate-900 dark:text-white uppercase tracking-tighter">Actualizador Amazon → MercadoLibre</h2>
-                        </div>
-                        <div className="p-6 space-y-6">
-                            <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-xl p-4">
-                                <p className="font-black text-amber-800 dark:text-amber-200 text-sm flex items-center gap-2">
-                                    <span className="material-symbols-outlined text-[18px]">info</span>
-                                    Recomendación para +20,000 publicaciones
-                                </p>
-                                <p className="text-xs text-amber-700 dark:text-amber-300 mt-2 leading-relaxed">
-                                    La API de MercadoLibre permite ~3,600 req/hora. Actualizar 20k productos de golpe tomaría más de 5h solo en llamadas a ML,
-                                    más las consultas a Amazon SP-API. El sistema procesa en <strong>lotes de 200 productos con pausas de 5 min</strong> entre lotes
-                                    → ciclo completo de 20k en ~10h, sin riesgo de bloqueo. <strong>Frecuencia recomendada: 1 vez al día.</strong>
-                                </p>
-                            </div>
-
-                            <div>
-                                <label className="text-xs font-black text-slate-500 uppercase mb-3 block">Parámetros a Sincronizar</label>
-                                <div className="grid grid-cols-2 gap-2">
-                                    {([
-                                        { key: 'price',       label: '💰 Precio',          desc: 'Actualiza el precio según Amazon' },
-                                        { key: 'stock',       label: '📦 Stock',            desc: 'Sincroniza disponibilidad' },
-                                        { key: 'shipping',    label: '🚚 Tiempo de envío',  desc: 'Actualiza handling_time' },
-                                        { key: 'description', label: '📝 Descripción',      desc: 'Sincroniza descripción del producto' },
-                                    ] as const).map(p => (
-                                        <label key={p.key} className="flex items-start gap-3 p-3 rounded-xl border border-slate-200 dark:border-slate-700 cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors">
-                                            <input
-                                                type="checkbox"
-                                                checked={syncParams[p.key]}
-                                                onChange={e => setSyncParams((prev: typeof syncParams) => ({ ...prev, [p.key]: e.target.checked }))}
-                                                className="mt-0.5 accent-primary"
-                                            />
-                                            <div>
-                                                <p className="text-sm font-bold text-slate-900 dark:text-white">{p.label}</p>
-                                                <p className="text-xs text-slate-500">{p.desc}</p>
-                                            </div>
-                                        </label>
-                                    ))}
-                                </div>
-                            </div>
-
-                            <div className="flex flex-col gap-2">
-                                <label className="text-xs font-black text-slate-500 uppercase">Stock por Defecto al Importar</label>
-                                <div className="relative w-40">
-                                    <input
-                                        type="number" min="1" max="999"
-                                        value={defaultStock}
-                                        onChange={e => setDefaultStock(Math.max(1, parseInt(e.target.value) || 1))}
-                                        className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg px-3 py-2 text-sm font-black"
-                                    />
-                                    <span className="absolute right-3 top-2 text-slate-400 text-xs">pzas</span>
-                                </div>
-                                <p className="text-[10px] text-slate-400 italic">Cantidad disponible asignada a cada publicación nueva en MercadoLibre.</p>
-                            </div>
-
-                            <div>
-                                <label className="text-xs font-black text-slate-500 uppercase mb-3 block">Opciones de Precio</label>
-                                <div className="space-y-3">
-                                    <div className="flex items-center justify-between p-3 rounded-xl border border-slate-200 dark:border-slate-700">
-                                        <div>
-                                            <p className="text-sm font-bold text-slate-900 dark:text-white">🎯 Crear Promociones Automáticas</p>
-                                            <p className="text-xs text-slate-500">Cuando Amazon baja el precio, crea una promoción en MercadoLibre.</p>
-                                        </div>
-                                        <div onClick={() => setAutoPromos(v => !v)}
-                                            className={`w-12 h-6 rounded-full transition-all cursor-pointer relative flex-shrink-0 ml-4 ${autoPromos ? 'bg-primary' : 'bg-slate-200 dark:bg-slate-700'}`}>
-                                            <span className={`absolute top-0.5 w-5 h-5 bg-white rounded-full shadow transition-all ${autoPromos ? 'left-6' : 'left-0.5'}`} />
-                                        </div>
-                                    </div>
-                                    <div className="flex items-center justify-between p-3 rounded-xl border border-slate-200 dark:border-slate-700">
-                                        <div>
-                                            <p className="text-sm font-bold text-slate-900 dark:text-white">📉 Permitir Fluctuación de Precios (Bajas)</p>
-                                            <p className="text-xs text-slate-500">Desactivado: el precio solo sube. Activado: sigue los cambios de Amazon en ambas direcciones.</p>
-                                        </div>
-                                        <div onClick={() => setAllowPriceDecrease(v => !v)}
-                                            className={`w-12 h-6 rounded-full transition-all cursor-pointer relative flex-shrink-0 ml-4 ${allowPriceDecrease ? 'bg-primary' : 'bg-slate-200 dark:bg-slate-700'}`}>
-                                            <span className={`absolute top-0.5 w-5 h-5 bg-white rounded-full shadow transition-all ${allowPriceDecrease ? 'left-6' : 'left-0.5'}`} />
-                                        </div>
-                                    </div>
-                                </div>
-                            </div>
-
-                            <div>
-                                <label className="text-xs font-black text-slate-500 uppercase mb-3 block">Frecuencia de Actualización</label>
-                                <div className="grid grid-cols-3 gap-2">
-                                    {([
-                                        { hours: 24,  label: 'Cada día',    badge: '✓ Recomendado', color: 'text-green-600' },
-                                        { hours: 72,  label: 'Cada 3 días', badge: 'Moderado',       color: 'text-blue-600'  },
-                                        { hours: 120, label: 'Cada 5 días', badge: 'Conservador',    color: 'text-slate-500' },
-                                    ] as const).map(opt => (
-                                        <button key={opt.hours} onClick={() => setSyncFrequencyHours(opt.hours)}
-                                            className={`p-3 rounded-xl border-2 text-left transition-all ${syncFrequencyHours === opt.hours ? 'border-primary bg-primary/5' : 'border-slate-200 dark:border-slate-700 hover:border-slate-300'}`}>
-                                            <p className="font-bold text-slate-900 dark:text-white text-sm">{opt.label}</p>
-                                            <p className={`text-xs font-black ${opt.color}`}>{opt.badge}</p>
-                                        </button>
-                                    ))}
-                                </div>
-                                <p className="text-[10px] text-slate-400 italic mt-2">
-                                    Lotes de 200 productos por ejecución (cron cada 10 min). Ciclo completo de 20k ≈ 17h.
-                                </p>
-                            </div>
-                        </div>
-                        {/* Sync status */}
-                        {lastJob && (
-                            <div className="px-6 pb-4">
-                                <div className="bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl p-4 space-y-2">
-                                    <p className="text-xs font-black text-slate-500 uppercase tracking-widest">Estado del Ciclo Actual</p>
-                                    <div className="flex items-center gap-2">
-                                        <span className={`w-2 h-2 rounded-full flex-shrink-0 ${lastJob.status === 'running' ? 'bg-blue-500 animate-pulse' : lastJob.status === 'completed' ? 'bg-green-500' : 'bg-red-500'}`} />
-                                        <span className="text-sm font-bold text-slate-700 dark:text-slate-300 capitalize">
-                                            {lastJob.status === 'running' ? 'En progreso' : lastJob.status === 'completed' ? 'Completado' : 'Fallido'}
-                                        </span>
-                                    </div>
-                                    {lastJob.total_products > 0 && (
-                                        <div className="w-full bg-slate-200 dark:bg-slate-700 rounded-full h-2">
-                                            <div
-                                                className="bg-primary h-2 rounded-full transition-all"
-                                                style={{ width: `${Math.min(100, (lastJob.processed_count / lastJob.total_products) * 100)}%` }}
-                                            />
-                                        </div>
-                                    )}
-                                    <div className="grid grid-cols-3 gap-2 text-center">
-                                        <div>
-                                            <p className="text-lg font-black text-slate-900 dark:text-white">{lastJob.processed_count?.toLocaleString()}</p>
-                                            <p className="text-[10px] text-slate-400 uppercase">Procesados</p>
-                                        </div>
-                                        <div>
-                                            <p className="text-lg font-black text-green-600">{lastJob.updated_count?.toLocaleString()}</p>
-                                            <p className="text-[10px] text-slate-400 uppercase">Actualizados</p>
-                                        </div>
-                                        <div>
-                                            <p className="text-lg font-black text-red-500">{lastJob.error_count?.toLocaleString()}</p>
-                                            <p className="text-[10px] text-slate-400 uppercase">Errores</p>
-                                        </div>
-                                    </div>
-                                    {lastJob.started_at && (
-                                        <p className="text-[10px] text-slate-400">
-                                            Iniciado: {new Date(lastJob.started_at).toLocaleString('es-MX')}
-                                            {lastJob.finished_at && ` · Terminado: ${new Date(lastJob.finished_at).toLocaleString('es-MX')}`}
-                                        </p>
-                                    )}
-                                </div>
-                                {syncResult && (
-                                    <p className={`mt-2 text-xs font-mono ${syncResult.startsWith('✅') ? 'text-green-600' : syncResult.startsWith('❌') ? 'text-red-500' : 'text-slate-500'}`}>
-                                        {syncResult}
-                                    </p>
-                                )}
-                            </div>
-                        )}
-
-                        <div className="p-4 bg-slate-50 dark:bg-slate-800/50 border-t border-slate-100 dark:border-slate-800 flex gap-3">
-                            <button onClick={() => handleSaveSection('Actualizador')} className="flex-1 bg-slate-800 hover:bg-slate-900 dark:bg-slate-100 dark:text-slate-900 text-white font-black py-3 px-4 rounded-xl shadow-sm transition-all flex items-center justify-center gap-2 text-sm uppercase">
-                                <span className="material-symbols-outlined text-[18px]">save</span>
-                                Guardar
-                            </button>
-                            <button
-                                onClick={handleRunNow}
-                                disabled={syncRunning}
-                                className="flex-1 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-black py-3 px-4 rounded-xl shadow-sm transition-all flex items-center justify-center gap-2 text-sm uppercase"
-                            >
-                                {syncRunning
-                                    ? <><span className="w-4 h-4 rounded-full border-2 border-white/30 border-t-white animate-spin" />Ejecutando...</>
-                                    : <><span className="material-symbols-outlined text-[18px]">play_arrow</span>Ejecutar Ahora</>
-                                }
-                            </button>
-                        </div>
-                    </section>
                 </div>
             </div>
         </div>
