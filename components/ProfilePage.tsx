@@ -15,6 +15,25 @@ export const ProfilePage = () => {
     const [connectModal, setConnectModal] = useState<AccountType>(null);
     const [connectStep, setConnectStep] = useState<ConnectStep>('input');
 
+    // Check for test user OAuth immediately on mount
+    React.useMemo(() => {
+        const urlParams = new URLSearchParams(window.location.search);
+        const code = urlParams.get('code');
+        const state = urlParams.get('state');
+        console.log("🔍 ProfilePage URL check on mount:", { code: code?.substring(0, 20), state, url: window.location.href });
+
+        if (code && state === 'test_user' && window.opener) {
+            console.log("✅ TEST USER OAUTH DETECTED ON MOUNT - sending postMessage immediately");
+            try {
+                window.opener.postMessage({ type: 'ml_oauth_code', code, state }, window.location.origin);
+                console.log("📤 postMessage sent from mount effect");
+            } catch (e) {
+                console.error("❌ Error in mount postMessage:", e);
+            }
+        }
+        return null;
+    }, []);
+
     const [meliAppId, setMeliAppId] = useState('');
     const [meliSecret, setMeliSecret] = useState('');
     const [meliSite, setMeliSite] = useState(() => localStorage.getItem('meli_auth_site_domain') || 'mx');
