@@ -105,32 +105,51 @@ export const ProfilePage = () => {
 
     const isExchanging = React.useRef(false);
 
+    // Handle test user OAuth - send postMessage to parent window
+    useEffect(() => {
+        const urlParams = new URLSearchParams(window.location.search);
+        const code = urlParams.get('code');
+        const state = urlParams.get('state');
+
+        if (!code || state !== 'test_user') return;
+
+        console.log("🧪 Test user OAuth detected", {
+            code: code.substring(0, 20) + '...',
+            state,
+            hasOpener: !!window.opener
+        });
+
+        if (!window.opener) {
+            console.warn("⚠️ window.opener is null - popup wasn't opened via window.open()");
+            return;
+        }
+
+        try {
+            window.opener.postMessage(
+                { type: 'ml_oauth_code', code, state },
+                window.location.origin
+            );
+            console.log("✅ Test user OAuth postMessage sent to parent");
+        } catch (e) {
+            console.error("❌ Error sending postMessage:", e);
+        }
+    }, []);
+
     // Handle OAuth Callback
     useEffect(() => {
         // Always try getting code from direct URL search (query string), not from React Router's searchParams
         // because OAuth redirects come as ?code=...&state=... not #?code=...&state=...
         const urlParams = new URLSearchParams(window.location.search);
-        const code = urlParams.get('code');
+        const code = searchParams.get('code') || urlParams.get('code');
         const state = urlParams.get('state');
 
         console.log("ProfilePage: Checking OAuth callback", { code: code?.substring(0, 20), state, url: window.location.href });
 
         if (!code) return;
 
-        // If this is a test user OAuth request, send postMessage to parent window instead of handling locally
+        // Skip test user OAuth - it's handled by the postMessage useEffect above
         if (state === 'test_user') {
-            console.log("✅ Test user OAuth detected", { state, hasOpener: !!window.opener, code: code?.substring(0, 20) });
-            if (window.opener) {
-                console.log("📤 Sending postMessage to parent window...");
-                try {
-                    window.opener.postMessage({ type: 'ml_oauth_code', code, state }, window.location.origin);
-                    console.log("✅ postMessage sent successfully");
-                } catch (e) {
-                    console.error("❌ Error sending postMessage:", e);
-                }
-            } else {
-                console.warn("⚠️ window.opener is null - popup might not have been opened via window.open()");
-            }
+            console.log("ℹ️ Skipping local handling of test user OAuth (state=test_user)");
             return;
         }
 

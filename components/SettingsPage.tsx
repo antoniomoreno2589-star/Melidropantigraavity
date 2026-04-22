@@ -176,16 +176,31 @@ export const SettingsPage = () => {
         setTestUserStatus('Iniciá sesión en la ventana emergente con las credenciales del usuario de prueba...');
 
         const handleMessage = async (event: MessageEvent) => {
-            console.log("📨 postMessage received:", { type: event.data?.type, state: event.data?.state, origin: event.origin });
+            console.log("📨 postMessage received in SettingsPage", {
+                type: event.data?.type,
+                state: event.data?.state,
+                originMatch: event.origin === window.location.origin,
+                eventOrigin: event.origin,
+                windowOrigin: window.location.origin
+            });
+
             if (event.origin !== window.location.origin) {
-                console.warn("❌ Origin mismatch:", event.origin, "!==", window.location.origin);
+                console.warn("❌ Origin mismatch - rejecting message", {
+                    eventOrigin: event.origin,
+                    windowOrigin: window.location.origin
+                });
                 return;
             }
+
             if (event.data?.type !== 'ml_oauth_code' || event.data?.state !== 'test_user') {
-                console.warn("❌ Invalid message type or state:", { type: event.data?.type, state: event.data?.state });
+                console.warn("❌ Invalid message type or state - rejecting", {
+                    type: event.data?.type,
+                    state: event.data?.state
+                });
                 return;
             }
-            console.log("✅ Valid test user OAuth message received. Closing popup and exchanging code...");
+
+            console.log("✅ Valid test user OAuth message received - processing");
             window.removeEventListener('message', handleMessage);
             clearInterval(pollTimer);
             clearTimeout(timeoutId);
@@ -239,6 +254,8 @@ export const SettingsPage = () => {
         };
 
         window.addEventListener('message', handleMessage);
+        console.log("✅ postMessage listener attached in SettingsPage");
+
         const pollTimer = setInterval(() => {
             if (popup.closed) {
                 clearInterval(pollTimer);
@@ -255,7 +272,7 @@ export const SettingsPage = () => {
             clearInterval(pollTimer);
             popup.close();
             setTestUserLoading(false);
-            setTestUserStatus('⏱️ Timeout esperando respuesta. El popup se cerró automáticamente. Intenta de nuevo.');
+            setTestUserStatus('⏱️ Timeout esperando respuesta (30s). El popup se cerró automáticamente. Intenta de nuevo.');
         }, 30000);
     };
 
