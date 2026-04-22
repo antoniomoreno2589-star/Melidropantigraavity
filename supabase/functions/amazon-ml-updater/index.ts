@@ -246,6 +246,8 @@ serve(async (_req) => {
                     .from("products")
                     .select("*", { count: "exact", head: true })
                     .eq("user_id", userId)
+                    .eq("in_updater", true)
+                    .not("meli_id", "is", null)
                     .not("sku", "is", null)
                     .neq("sku",  "");
 
@@ -262,11 +264,13 @@ serve(async (_req) => {
 
             const offset = job.next_offset as number;
 
-            // 3. Fetch next batch — includes currency and description_text
+            // 3. Fetch next batch — only in_updater products that are published on ML
             const { data: products } = await supabase
                 .from("products")
                 .select("meli_id, sku, price_mxn, stock_meli, currency, description_text")
                 .eq("user_id", userId)
+                .eq("in_updater", true)
+                .not("meli_id", "is", null)
                 .not("sku", "is", null)
                 .neq("sku", "")
                 .range(offset, offset + BATCH_SIZE - 1);
