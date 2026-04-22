@@ -203,8 +203,11 @@ export const SettingsPage = () => {
             console.log("✅ Valid test user OAuth message received - processing");
             window.removeEventListener('message', handleMessage);
             clearInterval(pollTimer);
+            clearInterval(lsPollTimer);
             clearTimeout(timeoutId);
-            popup.close();
+            bc?.close();
+            localStorage.removeItem('ml_test_oauth_result');
+            try { popup.close(); } catch {}
 
             try {
                 const storedVerifier = sessionStorage.getItem('test_oauth_verifier');
@@ -256,24 +259,71 @@ export const SettingsPage = () => {
         window.addEventListener('message', handleMessage);
         console.log("✅ postMessage listener attached in SettingsPage");
 
+        // Clear any stale OAuth result from a previous attempt
+        localStorage.removeItem('ml_test_oauth_result');
+
+        // Channel 2: BroadcastChannel listener (works without window.opener)
+        let bc: BroadcastChannel | null = null;
+        try {
+            bc = new BroadcastChannel('ml_test_oauth');
+            bc.onmessage = (ev) => {
+                console.log("📻 BroadcastChannel message received", ev.data);
+                handleMessage(new MessageEvent('message', {
+                    data: ev.data,
+                    origin: window.location.origin
+                }));
+            };
+            console.log("✅ BroadcastChannel listener attached");
+        } catch (e) {
+            console.warn("BroadcastChannel not supported:", e);
+        }
+
+        // Channel 3: localStorage polling (most reliable fallback)
+        const lsPollTimer = setInterval(() => {
+            const raw = localStorage.getItem('ml_test_oauth_result');
+            if (raw) {
+                try {
+                    const data = JSON.parse(raw);
+                    console.log("💾 Found OAuth result in localStorage", data);
+                    localStorage.removeItem('ml_test_oauth_result');
+                    clearInterval(lsPollTimer);
+                    handleMessage(new MessageEvent('message', {
+                        data,
+                        origin: window.location.origin
+                    }));
+                } catch (e) {
+                    console.error("Error parsing localStorage OAuth result:", e);
+                    localStorage.removeItem('ml_test_oauth_result');
+                }
+            }
+        }, 500);
+
         const pollTimer = setInterval(() => {
             if (popup.closed) {
                 clearInterval(pollTimer);
-                window.removeEventListener('message', handleMessage);
-                setTestUserLoading(false);
-                setTestUserStatus(prev => prev.startsWith('✅') ? prev : 'Ventana cerrada sin autorizar.');
+                // Keep lsPollTimer running for a few more seconds in case localStorage
+                // was written just before the popup closed
+                setTimeout(() => {
+                    clearInterval(lsPollTimer);
+                    window.removeEventListener('message', handleMessage);
+                    bc?.close();
+                    setTestUserLoading(false);
+                    setTestUserStatus(prev => prev.startsWith('✅') ? prev : 'Ventana cerrada sin autorizar.');
+                }, 3000);
             }
         }, 1000);
 
-        // Timeout: If no postMessage received after 30 seconds, close popup and show error
+        // Timeout: If no message received after 60 seconds, close popup and show error
         const timeoutId = setTimeout(() => {
-            console.error("❌ Timeout: No postMessage received after 30s. Closing popup.");
+            console.error("❌ Timeout: No message received after 60s. Closing popup.");
             window.removeEventListener('message', handleMessage);
             clearInterval(pollTimer);
+            clearInterval(lsPollTimer);
+            bc?.close();
             popup.close();
             setTestUserLoading(false);
-            setTestUserStatus('⏱️ Timeout esperando respuesta (30s). El popup se cerró automáticamente. Intenta de nuevo.');
-        }, 30000);
+            setTestUserStatus('⏱️ Timeout esperando respuesta (60s). Intenta de nuevo.');
+        }, 60000);
     };
 
     const handleVerifyTestUser = async () => {
