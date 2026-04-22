@@ -12,6 +12,7 @@ export interface Product {
   imageUrl: string;
   lastUpdated: Date;
   inUpdater?: boolean; // Whether this product is included in auto-sync updates
+  amazonSellerCount?: number | null; // Number of sellers on Amazon (null = not yet synced)
 }
 
 export interface Order {

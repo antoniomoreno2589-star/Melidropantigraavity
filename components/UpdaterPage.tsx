@@ -42,6 +42,7 @@ export const UpdaterPage: React.FC = () => {
     const [bulkLoading, setBulkLoading] = useState(false);
     const [syncJob, setSyncJob] = useState<any>(null);
     const [syncFreqHours, setSyncFreqHours] = useState(24);
+    const [maxSellers, setMaxSellers] = useState<number | null>(null);
     const [page, setPage] = useState(1);
     const PAGE_SIZE = 50;
     const [syncParams, setSyncParams] = useState<{ price: boolean; stock: boolean; shipping: boolean; description: boolean }>(() => {
@@ -107,6 +108,14 @@ export const UpdaterPage: React.FC = () => {
             }
         }
 
+        if (maxSellers !== null) {
+            list = list.filter(p =>
+                p.amazonSellerCount !== null &&
+                p.amazonSellerCount !== undefined &&
+                p.amazonSellerCount <= maxSellers
+            );
+        }
+
         if (search.trim()) {
             const q = search.toLowerCase();
             list = list.filter(p =>
@@ -118,7 +127,7 @@ export const UpdaterPage: React.FC = () => {
         }
 
         return list;
-    }, [products, tab, statusFilter, search]);
+    }, [products, tab, statusFilter, search, maxSellers]);
 
     const paginated = useMemo(() => {
         const start = (page - 1) * PAGE_SIZE;
@@ -439,34 +448,65 @@ export const UpdaterPage: React.FC = () => {
                 </div>
 
                 {/* Filters */}
-                <div className="flex flex-col sm:flex-row gap-3">
-                    <div className="relative flex-1">
-                        <span className="absolute left-3 top-1/2 -translate-y-1/2 material-symbols-outlined text-slate-400 text-[20px]">search</span>
-                        <input
-                            type="text"
-                            value={search}
-                            onChange={e => { setSearch(e.target.value); setPage(1); }}
-                            placeholder="Buscar por título, SKU, ASIN o ID de MercadoLibre..."
-                            className="w-full pl-10 pr-4 py-2.5 bg-surface-light dark:bg-surface-dark border border-slate-200 dark:border-slate-700 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-primary/30"
-                        />
-                        {search && (
-                            <button onClick={() => setSearch('')} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600">
-                                <span className="material-symbols-outlined text-[18px]">close</span>
-                            </button>
-                        )}
+                <div className="flex flex-col gap-3">
+                    <div className="flex flex-col sm:flex-row gap-3">
+                        <div className="relative flex-1">
+                            <span className="absolute left-3 top-1/2 -translate-y-1/2 material-symbols-outlined text-slate-400 text-[20px]">search</span>
+                            <input
+                                type="text"
+                                value={search}
+                                onChange={e => { setSearch(e.target.value); setPage(1); }}
+                                placeholder="Buscar por título, SKU, ASIN o ID de MercadoLibre..."
+                                className="w-full pl-10 pr-4 py-2.5 bg-surface-light dark:bg-surface-dark border border-slate-200 dark:border-slate-700 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-primary/30"
+                            />
+                            {search && (
+                                <button onClick={() => setSearch('')} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600">
+                                    <span className="material-symbols-outlined text-[18px]">close</span>
+                                </button>
+                            )}
+                        </div>
+                        <div className="flex gap-2 flex-wrap">
+                            {(['all', 'active', 'paused', 'inactive'] as StatusFilter[]).map(s => (
+                                <button
+                                    key={s}
+                                    onClick={() => { setStatusFilter(s); setPage(1); }}
+                                    className={`px-3 py-2 rounded-lg text-xs font-bold transition-all border ${statusFilter === s
+                                        ? 'bg-primary text-white border-primary'
+                                        : 'bg-surface-light dark:bg-surface-dark border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:border-primary/50'}`}
+                                >
+                                    {s === 'all' ? 'Todos' : s === 'active' ? 'Activos' : s === 'paused' ? 'Pausados' : 'Inactivos'}
+                                </button>
+                            ))}
+                        </div>
                     </div>
-                    <div className="flex gap-2 flex-wrap">
-                        {(['all', 'active', 'paused', 'inactive'] as StatusFilter[]).map(s => (
+                    {/* Seller count filter */}
+                    <div className="flex items-center gap-3 flex-wrap">
+                        <span className="text-xs font-black text-slate-500 uppercase flex items-center gap-1">
+                            <span className="material-symbols-outlined text-[16px] text-amber-500">storefront</span>
+                            Vendedores Amazon:
+                        </span>
+                        {[
+                            { label: 'Todos', value: null },
+                            { label: '≤ 1', value: 1 },
+                            { label: '≤ 2', value: 2 },
+                            { label: '≤ 5', value: 5 },
+                            { label: '≤ 10', value: 10 },
+                        ].map(opt => (
                             <button
-                                key={s}
-                                onClick={() => { setStatusFilter(s); setPage(1); }}
-                                className={`px-3 py-2 rounded-lg text-xs font-bold transition-all border ${statusFilter === s
-                                    ? 'bg-primary text-white border-primary'
-                                    : 'bg-surface-light dark:bg-surface-dark border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:border-primary/50'}`}
+                                key={String(opt.value)}
+                                onClick={() => { setMaxSellers(opt.value); setPage(1); }}
+                                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all border ${maxSellers === opt.value
+                                    ? 'bg-amber-500 text-white border-amber-500'
+                                    : 'bg-surface-light dark:bg-surface-dark border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:border-amber-400'}`}
                             >
-                                {s === 'all' ? 'Todos' : s === 'active' ? 'Activos' : s === 'paused' ? 'Pausados' : 'Inactivos'}
+                                {opt.label}
                             </button>
                         ))}
+                        {maxSellers !== null && (
+                            <span className="text-xs text-amber-600 font-bold">
+                                {filtered.length} productos con ≤{maxSellers} vendedor{maxSellers !== 1 ? 'es' : ''}
+                            </span>
+                        )}
                     </div>
                 </div>
 
@@ -504,7 +544,7 @@ export const UpdaterPage: React.FC = () => {
                 {/* Table */}
                 <div className="bg-surface-light dark:bg-surface-dark rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 overflow-hidden">
                     {/* Table Header */}
-                    <div className="grid grid-cols-[auto_56px_1fr_auto_auto_auto] gap-3 px-4 py-3 bg-slate-50 dark:bg-slate-800/50 border-b border-slate-200 dark:border-slate-700 text-xs font-bold text-slate-500 uppercase tracking-wider">
+                    <div className="grid grid-cols-[auto_56px_1fr_auto_auto_auto_auto] gap-3 px-4 py-3 bg-slate-50 dark:bg-slate-800/50 border-b border-slate-200 dark:border-slate-700 text-xs font-bold text-slate-500 uppercase tracking-wider">
                         <div className="flex items-center">
                             <input
                                 type="checkbox"
@@ -517,6 +557,7 @@ export const UpdaterPage: React.FC = () => {
                         <div>Producto</div>
                         <div className="hidden sm:block text-center">Estado</div>
                         <div className="hidden md:block text-right">Precio MXN</div>
+                        <div className="hidden lg:block text-center" title="Vendedores en Amazon">Vendedores</div>
                         <div className="text-center">Actualizador</div>
                     </div>
 
@@ -543,7 +584,7 @@ export const UpdaterPage: React.FC = () => {
                             {paginated.map(product => (
                                 <div
                                     key={product.id}
-                                    className={`grid grid-cols-[auto_56px_1fr_auto_auto_auto] gap-3 px-4 py-3 items-center hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors ${selected.has(product.id) ? 'bg-primary/5 dark:bg-primary/10' : ''}`}
+                                    className={`grid grid-cols-[auto_56px_1fr_auto_auto_auto_auto] gap-3 px-4 py-3 items-center hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors ${selected.has(product.id) ? 'bg-primary/5 dark:bg-primary/10' : ''}`}
                                 >
                                     {/* Checkbox */}
                                     <div>
@@ -588,6 +629,22 @@ export const UpdaterPage: React.FC = () => {
                                         <span className="text-sm font-bold text-slate-700 dark:text-slate-200 whitespace-nowrap">
                                             ${product.priceMXN?.toLocaleString('es-MX', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
                                         </span>
+                                    </div>
+
+                                    {/* Seller count */}
+                                    <div className="hidden lg:flex justify-center">
+                                        {product.amazonSellerCount === null || product.amazonSellerCount === undefined ? (
+                                            <span className="text-xs text-slate-300 dark:text-slate-600">—</span>
+                                        ) : (
+                                            <span className={`px-2 py-0.5 rounded-full text-xs font-black ${
+                                                product.amazonSellerCount <= 1 ? 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-400' :
+                                                product.amazonSellerCount <= 3 ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-400' :
+                                                product.amazonSellerCount <= 10 ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-400' :
+                                                'bg-red-100 text-red-600 dark:bg-red-900/40 dark:text-red-400'
+                                            }`}>
+                                                {product.amazonSellerCount}
+                                            </span>
+                                        )}
                                     </div>
 
                                     {/* Toggle */}

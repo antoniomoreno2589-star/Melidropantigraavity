@@ -47,48 +47,58 @@ async function getAmazonToken(creds: any): Promise<string> {
     return data.access_token;
 }
 
-async function fetchAmazonPrice(
+interface AmazonOffers {
+    price: number | null;
+    sellerCount: number;
+}
+
+async function fetchAmazonOffers(
     endpoint: string,
     asin: string,
     accessToken: string,
     marketplaceId: string
-): Promise<number | null> {
+): Promise<AmazonOffers> {
     try {
         const url = `${endpoint}/products/pricing/v0/items/${asin}/offers?MarketplaceId=${marketplaceId}&ItemCondition=New`;
         const res = await fetch(url, {
             headers: { "x-amz-access-token": accessToken, "Content-Type": "application/json" },
         });
-        if (!res.ok) return null;
+        if (!res.ok) return { price: null, sellerCount: 0 };
         const data = await res.json();
-        const lowestNew = data?.payload?.Summary?.LowestPrices?.find(
+        const summary = data?.payload?.Summary;
+        const lowestNew = summary?.LowestPrices?.find(
             (p: any) => p.condition === "new" && p.fulfillmentChannel === "Amazon"
-        ) ?? data?.payload?.Summary?.LowestPrices?.[0];
-        return lowestNew?.ListingPrice?.Amount ?? null;
+        ) ?? summary?.LowestPrices?.[0];
+        const price = lowestNew?.ListingPrice?.Amount ?? null;
+        // NumberOfOffers is an array of { condition, fulfillmentChannel, offerCount }
+        const sellerCount = (summary?.NumberOfOffers ?? [])
+            .reduce((sum: number, o: any) => sum + (o.offerCount ?? 0), 0);
+        return { price, sellerCount };
     } catch {
-        return null;
+        return { price: null, sellerCount: 0 };
     }
 }
 
-// Fetch prices for a list of ASINs from the given marketplace, PRICE_CONCURRENCY at a time.
-async function fetchPricesBatch(
+// Fetch offers for a list of ASINs from the given marketplace, PRICE_CONCURRENCY at a time.
+async function fetchOffersBatch(
     endpoint: string,
     accessToken: string,
     asins: string[],
     marketplaceId: string
-): Promise<Record<string, number>> {
-    const prices: Record<string, number> = {};
+): Promise<Record<string, AmazonOffers>> {
+    const offers: Record<string, AmazonOffers> = {};
     for (let i = 0; i < asins.length; i += PRICE_CONCURRENCY) {
         const chunk   = asins.slice(i, i + PRICE_CONCURRENCY);
         const results = await Promise.allSettled(
-            chunk.map(asin => fetchAmazonPrice(endpoint, asin, accessToken, marketplaceId))
+            chunk.map(asin => fetchAmazonOffers(endpoint, asin, accessToken, marketplaceId))
         );
         results.forEach((r, idx) => {
-            if (r.status === "fulfilled" && r.value !== null) {
-                prices[chunk[idx]] = r.value;
+            if (r.status === "fulfilled") {
+                offers[chunk[idx]] = r.value;
             }
         });
     }
-    return prices;
+    return offers;
 }
 
 // ── MercadoLibre helpers ────────────────────────────────────────────────────
@@ -296,11 +306,11 @@ serve(async (_req) => {
             const usdAsins = products.filter((p: any) => (p.currency ?? 'USD') !== 'MXN').map((p: any) => p.sku);
             const mxnAsins = products.filter((p: any) => (p.currency ?? 'USD') === 'MXN').map((p: any) => p.sku);
 
-            const [usdPrices, mxnPrices] = await Promise.all([
-                usdAsins.length ? fetchPricesBatch(endpoint, accessToken, usdAsins, MARKETPLACE_USA) : Promise.resolve({}),
-                mxnAsins.length ? fetchPricesBatch(endpoint, accessToken, mxnAsins, MARKETPLACE_MXN) : Promise.resolve({}),
+            const [usdOffers, mxnOffers] = await Promise.all([
+                usdAsins.length ? fetchOffersBatch(endpoint, accessToken, usdAsins, MARKETPLACE_USA) : Promise.resolve({}),
+                mxnAsins.length ? fetchOffersBatch(endpoint, accessToken, mxnAsins, MARKETPLACE_MXN) : Promise.resolve({}),
             ]);
-            const asinPrices = { ...usdPrices, ...mxnPrices };
+            const asinOffers: Record<string, AmazonOffers> = { ...usdOffers, ...mxnOffers };
 
             // 5. Get a valid ML token
             let mlToken: string;
@@ -317,8 +327,11 @@ serve(async (_req) => {
                 const meliId   = (product as any).meli_id;
                 const updatePayload: Record<string, unknown> = {};
 
+                const offers     = asinOffers[(product as any).sku];
+                const sellerCount = offers?.sellerCount ?? null;
+
                 if (syncParams.price) {
-                    const amazonPrice = asinPrices[(product as any).sku];
+                    const amazonPrice = offers?.price ?? null;
                     if (amazonPrice) {
                         const newMxn     = calculateMxnPrice(amazonPrice, currency, exchangeRate, usaRules, mxRules);
                         const currentMxn = (product as any).price_mxn ?? 0;
@@ -338,11 +351,17 @@ serve(async (_req) => {
                         const dbUpdate: any = { last_updated: new Date().toISOString() };
                         if (updatePayload.price)              dbUpdate.price_mxn  = updatePayload.price;
                         if (updatePayload.available_quantity) dbUpdate.stock_meli = updatePayload.available_quantity;
+                        if (sellerCount !== null)             dbUpdate.amazon_seller_count = sellerCount;
                         await supabase.from("products").update(dbUpdate).eq("meli_id", meliId);
                         updated++;
                     } else {
                         errors++;
                     }
+                } else if (sellerCount !== null) {
+                    // Still save seller count even if nothing else changed
+                    await supabase.from("products")
+                        .update({ amazon_seller_count: sellerCount })
+                        .eq("meli_id", meliId);
                 }
 
                 // Description lives on a separate ML endpoint — update independently

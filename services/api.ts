@@ -38,6 +38,7 @@ export const api = {
                 imageUrl: p.image_url,
                 lastUpdated: new Date(p.last_updated),
                 inUpdater: p.in_updater ?? false,
+                amazonSellerCount: p.amazon_seller_count ?? null,
             }));
         },
 
