@@ -96,9 +96,19 @@ export const ProfilePage = () => {
         if (!code) return;
 
         // If this is a test user OAuth request, send postMessage to parent window instead of handling locally
-        if (state === 'test_user' && window.opener) {
-            console.log("Test user OAuth detected - sending postMessage to parent window");
-            window.opener.postMessage({ type: 'ml_oauth_code', code, state }, window.location.origin);
+        if (state === 'test_user') {
+            console.log("Test user OAuth detected", { state, hasOpener: !!window.opener, code: code?.substring(0, 20) });
+            if (window.opener) {
+                console.log("Sending postMessage to parent window...");
+                try {
+                    window.opener.postMessage({ type: 'ml_oauth_code', code, state }, window.location.origin);
+                    console.log("postMessage sent successfully");
+                } catch (e) {
+                    console.error("Error sending postMessage:", e);
+                }
+            } else {
+                console.warn("window.opener is null - popup might not have been opened via window.open()");
+            }
             return;
         }
 
