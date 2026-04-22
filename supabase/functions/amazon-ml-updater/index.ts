@@ -28,6 +28,9 @@ const PRICE_CONCURRENCY = 20;
 const MARKETPLACE_USA = "ATVPDKIKX0DER"; // Amazon USA  (prices in USD)
 const MARKETPLACE_MXN = "A1AM78C64UM0Y8"; // Amazon Mexico (prices in MXN)
 
+const AMAZON_SELLER_USA = "A1G99GVHAT2WD8"; // Amazon.com retail seller ID
+const AMAZON_SELLER_MXN = "AVDBXBAVVSXLQ";  // Amazon.com.mx retail seller ID
+
 // ── Amazon helpers ──────────────────────────────────────────────────────────
 
 async function getAmazonToken(creds: any): Promise<string> {
@@ -50,47 +53,50 @@ async function getAmazonToken(creds: any): Promise<string> {
 interface AmazonOffers {
     price: number | null;
     sellerCount: number;
+    soldByAmazon: boolean;
 }
 
 async function fetchAmazonOffers(
     endpoint: string,
     asin: string,
     accessToken: string,
-    marketplaceId: string
+    marketplaceId: string,
+    amazonSellerId: string
 ): Promise<AmazonOffers> {
     try {
         const url = `${endpoint}/products/pricing/v0/items/${asin}/offers?MarketplaceId=${marketplaceId}&ItemCondition=New`;
         const res = await fetch(url, {
             headers: { "x-amz-access-token": accessToken, "Content-Type": "application/json" },
         });
-        if (!res.ok) return { price: null, sellerCount: 0 };
+        if (!res.ok) return { price: null, sellerCount: 0, soldByAmazon: false };
         const data = await res.json();
         const summary = data?.payload?.Summary;
         const lowestNew = summary?.LowestPrices?.find(
             (p: any) => p.condition === "new" && p.fulfillmentChannel === "Amazon"
         ) ?? summary?.LowestPrices?.[0];
         const price = lowestNew?.ListingPrice?.Amount ?? null;
-        // NumberOfOffers is an array of { condition, fulfillmentChannel, offerCount }
         const sellerCount = (summary?.NumberOfOffers ?? [])
             .reduce((sum: number, o: any) => sum + (o.offerCount ?? 0), 0);
-        return { price, sellerCount };
+        const soldByAmazon = (data?.payload?.Offers ?? [])
+            .some((o: any) => o.SellerId === amazonSellerId);
+        return { price, sellerCount, soldByAmazon };
     } catch {
-        return { price: null, sellerCount: 0 };
+        return { price: null, sellerCount: 0, soldByAmazon: false };
     }
 }
 
-// Fetch offers for a list of ASINs from the given marketplace, PRICE_CONCURRENCY at a time.
 async function fetchOffersBatch(
     endpoint: string,
     accessToken: string,
     asins: string[],
-    marketplaceId: string
+    marketplaceId: string,
+    amazonSellerId: string
 ): Promise<Record<string, AmazonOffers>> {
     const offers: Record<string, AmazonOffers> = {};
     for (let i = 0; i < asins.length; i += PRICE_CONCURRENCY) {
         const chunk   = asins.slice(i, i + PRICE_CONCURRENCY);
         const results = await Promise.allSettled(
-            chunk.map(asin => fetchAmazonOffers(endpoint, asin, accessToken, marketplaceId))
+            chunk.map(asin => fetchAmazonOffers(endpoint, asin, accessToken, marketplaceId, amazonSellerId))
         );
         results.forEach((r, idx) => {
             if (r.status === "fulfilled") {
@@ -307,8 +313,8 @@ serve(async (_req) => {
             const mxnAsins = products.filter((p: any) => (p.currency ?? 'USD') === 'MXN').map((p: any) => p.sku);
 
             const [usdOffers, mxnOffers] = await Promise.all([
-                usdAsins.length ? fetchOffersBatch(endpoint, accessToken, usdAsins, MARKETPLACE_USA) : Promise.resolve({}),
-                mxnAsins.length ? fetchOffersBatch(endpoint, accessToken, mxnAsins, MARKETPLACE_MXN) : Promise.resolve({}),
+                usdAsins.length ? fetchOffersBatch(endpoint, accessToken, usdAsins, MARKETPLACE_USA, AMAZON_SELLER_USA) : Promise.resolve({}),
+                mxnAsins.length ? fetchOffersBatch(endpoint, accessToken, mxnAsins, MARKETPLACE_MXN, AMAZON_SELLER_MXN) : Promise.resolve({}),
             ]);
             const asinOffers: Record<string, AmazonOffers> = { ...usdOffers, ...mxnOffers };
 
@@ -327,8 +333,9 @@ serve(async (_req) => {
                 const meliId   = (product as any).meli_id;
                 const updatePayload: Record<string, unknown> = {};
 
-                const offers     = asinOffers[(product as any).sku];
-                const sellerCount = offers?.sellerCount ?? null;
+                const offers      = asinOffers[(product as any).sku];
+                const sellerCount  = offers?.sellerCount ?? null;
+                const soldByAmazon = offers?.soldByAmazon ?? null;
 
                 if (syncParams.price) {
                     const amazonPrice = offers?.price ?? null;
@@ -349,19 +356,21 @@ serve(async (_req) => {
                     const ok = await updateMeliItem(meliId, updatePayload, mlToken);
                     if (ok) {
                         const dbUpdate: any = { last_updated: new Date().toISOString() };
-                        if (updatePayload.price)              dbUpdate.price_mxn  = updatePayload.price;
-                        if (updatePayload.available_quantity) dbUpdate.stock_meli = updatePayload.available_quantity;
-                        if (sellerCount !== null)             dbUpdate.amazon_seller_count = sellerCount;
+                        if (updatePayload.price)              dbUpdate.price_mxn           = updatePayload.price;
+                        if (updatePayload.available_quantity) dbUpdate.stock_meli           = updatePayload.available_quantity;
+                        if (sellerCount !== null)             dbUpdate.amazon_seller_count  = sellerCount;
+                        if (soldByAmazon !== null)            dbUpdate.sold_by_amazon       = soldByAmazon;
                         await supabase.from("products").update(dbUpdate).eq("meli_id", meliId);
                         updated++;
                     } else {
                         errors++;
                     }
-                } else if (sellerCount !== null) {
-                    // Still save seller count even if nothing else changed
-                    await supabase.from("products")
-                        .update({ amazon_seller_count: sellerCount })
-                        .eq("meli_id", meliId);
+                } else if (sellerCount !== null || soldByAmazon !== null) {
+                    // Still save seller metadata even if nothing else changed
+                    const countUpdate: any = {};
+                    if (sellerCount !== null)  countUpdate.amazon_seller_count = sellerCount;
+                    if (soldByAmazon !== null) countUpdate.sold_by_amazon      = soldByAmazon;
+                    await supabase.from("products").update(countUpdate).eq("meli_id", meliId);
                 }
 
                 // Description lives on a separate ML endpoint — update independently

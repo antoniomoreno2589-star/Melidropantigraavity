@@ -43,6 +43,7 @@ export const UpdaterPage: React.FC = () => {
     const [syncJob, setSyncJob] = useState<any>(null);
     const [syncFreqHours, setSyncFreqHours] = useState(24);
     const [maxSellers, setMaxSellers] = useState<number | null>(null);
+    const [excludeAmazon, setExcludeAmazon] = useState(false);
     const [page, setPage] = useState(1);
     const PAGE_SIZE = 50;
     const [syncParams, setSyncParams] = useState<{ price: boolean; stock: boolean; shipping: boolean; description: boolean }>(() => {
@@ -116,6 +117,10 @@ export const UpdaterPage: React.FC = () => {
             );
         }
 
+        if (excludeAmazon) {
+            list = list.filter(p => p.soldByAmazon === false);
+        }
+
         if (search.trim()) {
             const q = search.toLowerCase();
             list = list.filter(p =>
@@ -127,7 +132,7 @@ export const UpdaterPage: React.FC = () => {
         }
 
         return list;
-    }, [products, tab, statusFilter, search, maxSellers]);
+    }, [products, tab, statusFilter, search, maxSellers, excludeAmazon]);
 
     const paginated = useMemo(() => {
         const start = (page - 1) * PAGE_SIZE;
@@ -507,6 +512,20 @@ export const UpdaterPage: React.FC = () => {
                                 {filtered.length} productos con ≤{maxSellers} vendedor{maxSellers !== 1 ? 'es' : ''}
                             </span>
                         )}
+                        <button
+                            onClick={() => { setExcludeAmazon(v => !v); setPage(1); }}
+                            className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all border flex items-center gap-1.5 ${excludeAmazon
+                                ? 'bg-orange-500 text-white border-orange-500'
+                                : 'bg-surface-light dark:bg-surface-dark border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:border-orange-400'}`}
+                        >
+                            <span>🅰</span>
+                            Sin Amazon
+                        </button>
+                        {excludeAmazon && (
+                            <span className="text-xs text-orange-600 font-bold">
+                                Amazon no vende estos {filtered.length} productos
+                            </span>
+                        )}
                     </div>
                 </div>
 
@@ -631,19 +650,29 @@ export const UpdaterPage: React.FC = () => {
                                         </span>
                                     </div>
 
-                                    {/* Seller count */}
-                                    <div className="hidden lg:flex justify-center">
+                                    {/* Seller count + Amazon badge */}
+                                    <div className="hidden lg:flex justify-center items-center gap-1">
                                         {product.amazonSellerCount === null || product.amazonSellerCount === undefined ? (
                                             <span className="text-xs text-slate-300 dark:text-slate-600">—</span>
                                         ) : (
-                                            <span className={`px-2 py-0.5 rounded-full text-xs font-black ${
-                                                product.amazonSellerCount <= 1 ? 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-400' :
-                                                product.amazonSellerCount <= 3 ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-400' :
-                                                product.amazonSellerCount <= 10 ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-400' :
-                                                'bg-red-100 text-red-600 dark:bg-red-900/40 dark:text-red-400'
-                                            }`}>
-                                                {product.amazonSellerCount}
-                                            </span>
+                                            <>
+                                                <span className={`px-2 py-0.5 rounded-full text-xs font-black ${
+                                                    product.amazonSellerCount <= 1 ? 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-400' :
+                                                    product.amazonSellerCount <= 3 ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-400' :
+                                                    product.amazonSellerCount <= 10 ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-400' :
+                                                    'bg-red-100 text-red-600 dark:bg-red-900/40 dark:text-red-400'
+                                                }`}>
+                                                    {product.amazonSellerCount}
+                                                </span>
+                                                {product.soldByAmazon === true && (
+                                                    <span
+                                                        title="Amazon vende este producto"
+                                                        className="px-1.5 py-0.5 rounded text-[10px] font-black bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-400"
+                                                    >
+                                                        AMZ
+                                                    </span>
+                                                )}
+                                            </>
                                         )}
                                     </div>
 
