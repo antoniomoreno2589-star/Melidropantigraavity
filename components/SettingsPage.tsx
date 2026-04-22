@@ -176,10 +176,19 @@ export const SettingsPage = () => {
         setTestUserStatus('Iniciá sesión en la ventana emergente con las credenciales del usuario de prueba...');
 
         const handleMessage = async (event: MessageEvent) => {
-            if (event.origin !== window.location.origin) return;
-            if (event.data?.type !== 'ml_oauth_code' || event.data?.state !== 'test_user') return;
+            console.log("📨 postMessage received:", { type: event.data?.type, state: event.data?.state, origin: event.origin });
+            if (event.origin !== window.location.origin) {
+                console.warn("❌ Origin mismatch:", event.origin, "!==", window.location.origin);
+                return;
+            }
+            if (event.data?.type !== 'ml_oauth_code' || event.data?.state !== 'test_user') {
+                console.warn("❌ Invalid message type or state:", { type: event.data?.type, state: event.data?.state });
+                return;
+            }
+            console.log("✅ Valid test user OAuth message received. Closing popup and exchanging code...");
             window.removeEventListener('message', handleMessage);
             clearInterval(pollTimer);
+            clearTimeout(timeoutId);
             popup.close();
 
             try {
@@ -238,6 +247,16 @@ export const SettingsPage = () => {
                 setTestUserStatus(prev => prev.startsWith('✅') ? prev : 'Ventana cerrada sin autorizar.');
             }
         }, 1000);
+
+        // Timeout: If no postMessage received after 30 seconds, close popup and show error
+        const timeoutId = setTimeout(() => {
+            console.error("❌ Timeout: No postMessage received after 30s. Closing popup.");
+            window.removeEventListener('message', handleMessage);
+            clearInterval(pollTimer);
+            popup.close();
+            setTestUserLoading(false);
+            setTestUserStatus('⏱️ Timeout esperando respuesta. El popup se cerró automáticamente. Intenta de nuevo.');
+        }, 30000);
     };
 
     const handleVerifyTestUser = async () => {
