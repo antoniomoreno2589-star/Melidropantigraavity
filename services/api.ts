@@ -36,7 +36,8 @@ export const api = {
                 stockMeli: p.stock_meli,
                 status: p.status,
                 imageUrl: p.image_url,
-                lastUpdated: new Date(p.last_updated)
+                lastUpdated: new Date(p.last_updated),
+                inUpdater: p.in_updater ?? false,
             }));
         },
 
@@ -77,6 +78,7 @@ export const api = {
                     stock_meli: product.stockMeli,
                     status: product.status,
                     image_url: product.imageUrl,
+                    in_updater: true,
                 })
                 .select()
                 .single();
@@ -116,7 +118,8 @@ export const api = {
                     stock_meli: product.stockMeli || 0,
                     status: product.status,
                     image_url: product.imageUrl,
-                    last_updated: new Date().toISOString()
+                    last_updated: new Date().toISOString(),
+                    in_updater: true,
                 }, { onConflict: 'meli_id' });
 
             if (error) throw error;
@@ -136,6 +139,22 @@ export const api = {
             return map;
         },
 
+        async toggleUpdater(id: string, inUpdater: boolean): Promise<void> {
+            const { error } = await supabase
+                .from('products')
+                .update({ in_updater: inUpdater })
+                .eq('id', id);
+            if (error) throw error;
+        },
+
+        async bulkToggleUpdater(ids: string[], inUpdater: boolean): Promise<void> {
+            const { error } = await supabase
+                .from('products')
+                .update({ in_updater: inUpdater })
+                .in('id', ids);
+            if (error) throw error;
+        },
+
         async bulkUpsert(products: Partial<Product>[]): Promise<void> {
             const { data: { user } } = await supabase.auth.getUser();
             if (!user) throw new Error("User not authenticated");
@@ -152,7 +171,8 @@ export const api = {
                 stock_meli: (p as any).stock_meli || 0,
                 status: p.status,
                 image_url: (p as any).image_url,
-                last_updated: new Date().toISOString()
+                last_updated: new Date().toISOString(),
+                in_updater: true,
             }));
 
             const { error } = await supabase

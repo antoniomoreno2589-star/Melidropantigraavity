@@ -11,6 +11,7 @@ export interface Product {
   status: 'active' | 'paused' | 'under_review' | 'not_yet_active' | 'payment_required' | 'inactive' | 'closed' | 'draft';
   imageUrl: string;
   lastUpdated: Date;
+  inUpdater?: boolean; // Whether this product is included in auto-sync updates
 }
 
 export interface Order {

@@ -60,6 +60,10 @@ const Sidebar = ({ activePath }: { activePath: string }) => {
           <span className={getIconClass('/ordenes')}>shopping_cart</span>
           <span>Órdenes</span>
         </Link>
+        <Link to="/actualizacion" className={getLinkClass('/actualizacion')}>
+          <span className={getIconClass('/actualizacion')}>autorenew</span>
+          <span>Actualización</span>
+        </Link>
         <Link to="/mensajeria" className={getLinkClass('/mensajeria')}>
           <span className={getIconClass('/mensajeria')}>forum</span>
           <span>Mensajería</span>
@@ -154,6 +158,7 @@ export const Layout: React.FC<LayoutProps> = ({ children, user, onLogout, meliDa
     if (path === '/productos-prueba') return 'Productos de Prueba';
     if (path === '/publicaciones') return 'Gestión de Publicaciones';
     if (path === '/ordenes') return 'Gestión de Órdenes';
+    if (path === '/actualizacion') return 'Actualización Automática';
     if (path === '/analitica') return 'Analítica de Rentabilidad';
     if (path === '/configuracion') return 'Configuración';
     if (path === '/perfil') return 'Mi Perfil';

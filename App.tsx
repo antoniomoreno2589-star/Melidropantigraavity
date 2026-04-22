@@ -16,6 +16,7 @@ import { CommunicationsPage } from './components/CommunicationsPage';
 import { SecurityHistoryPage } from './components/SecurityHistoryPage';
 import { AnalyticsPage } from './components/AnalyticsPage';
 import { TestProductsPage } from './components/TestProductsPage';
+import { UpdaterPage } from './components/UpdaterPage';
 import { Product, User } from './types';
 import { getDashboardStats } from './services/mockService';
 import { meliService } from './services/meliService';
@@ -203,6 +204,7 @@ const App = () => {
         <Route path="/productos-prueba" element={<TestProductsPage />} />
         <Route path="/publicaciones" element={<CatalogTable products={products} onUpdateProduct={handleUpdateProduct} onBulkUpdate={handleBulkUpdate} />} />
         <Route path="/ordenes" element={<OrdersPage />} />
+        <Route path="/actualizacion" element={<UpdaterPage />} />
         <Route path="/analitica" element={<AnalyticsPage />} />
         <Route path="/configuracion" element={<SettingsPage />} />
         <Route path="/perfil" element={<ProfilePage />} />
