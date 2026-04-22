@@ -88,26 +88,29 @@ export const ProfilePage = () => {
 
     // Handle OAuth Callback
     useEffect(() => {
-        // Try getting code from searchParams (after #) or direct search (before #)
+        // Always try getting code from direct URL search (query string), not from React Router's searchParams
+        // because OAuth redirects come as ?code=...&state=... not #?code=...&state=...
         const urlParams = new URLSearchParams(window.location.search);
-        const code = searchParams.get('code') || urlParams.get('code');
-        const state = searchParams.get('state') || urlParams.get('state');
+        const code = urlParams.get('code');
+        const state = urlParams.get('state');
+
+        console.log("ProfilePage: Checking OAuth callback", { code: code?.substring(0, 20), state, url: window.location.href });
 
         if (!code) return;
 
         // If this is a test user OAuth request, send postMessage to parent window instead of handling locally
         if (state === 'test_user') {
-            console.log("Test user OAuth detected", { state, hasOpener: !!window.opener, code: code?.substring(0, 20) });
+            console.log("✅ Test user OAuth detected", { state, hasOpener: !!window.opener, code: code?.substring(0, 20) });
             if (window.opener) {
-                console.log("Sending postMessage to parent window...");
+                console.log("📤 Sending postMessage to parent window...");
                 try {
                     window.opener.postMessage({ type: 'ml_oauth_code', code, state }, window.location.origin);
-                    console.log("postMessage sent successfully");
+                    console.log("✅ postMessage sent successfully");
                 } catch (e) {
-                    console.error("Error sending postMessage:", e);
+                    console.error("❌ Error sending postMessage:", e);
                 }
             } else {
-                console.warn("window.opener is null - popup might not have been opened via window.open()");
+                console.warn("⚠️ window.opener is null - popup might not have been opened via window.open()");
             }
             return;
         }
