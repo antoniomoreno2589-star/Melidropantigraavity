@@ -91,8 +91,16 @@ export const ProfilePage = () => {
         // Try getting code from searchParams (after #) or direct search (before #)
         const urlParams = new URLSearchParams(window.location.search);
         const code = searchParams.get('code') || urlParams.get('code');
+        const state = searchParams.get('state') || urlParams.get('state');
 
         if (!code) return;
+
+        // If this is a test user OAuth request, send postMessage to parent window instead of handling locally
+        if (state === 'test_user' && window.opener) {
+            console.log("Test user OAuth detected - sending postMessage to parent window");
+            window.opener.postMessage({ type: 'ml_oauth_code', code, state }, window.location.origin);
+            return;
+        }
 
         // If we already have stored credentials, don't try to exchange the code again
         // (Mercado Libre codes are one-time use, and page refreshes trigger this effect again)
