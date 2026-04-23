@@ -69,7 +69,14 @@ async function fetchAmazonOffers(
         const res = await fetch(url, {
             headers: { "x-amz-access-token": accessToken, "Content-Type": "application/json" },
         });
-        if (!res.ok) return { price: null, sellerCount: 0, soldByAmazon: false };
+        if (!res.ok) {
+            // 404 or similar = ASIN doesn't exist — treat as 0 stock (pause product)
+            if (res.status === 404 || res.status === 400) {
+                return { price: null, sellerCount: 0, soldByAmazon: false, amazonStock: 0 };
+            }
+            // Other errors = API issue, return null to preserve existing data
+            return { price: null, sellerCount: 0, soldByAmazon: false, amazonStock: null };
+        }
         const data = await res.json();
         const summary = data?.payload?.Summary;
         const lowestNew = summary?.LowestPrices?.find(
@@ -405,12 +412,14 @@ serve(async (req) => {
                     } else {
                         errors++;
                     }
-                } else if (sellerCount !== null || soldByAmazon !== null || amazonStock !== null) {
-                    // Still save Amazon metadata even if nothing else changed
-                    const metaUpdate: any = {};
-                    if (sellerCount !== null)   metaUpdate.amazon_seller_count = sellerCount;
-                    if (soldByAmazon !== null)  metaUpdate.sold_by_amazon      = soldByAmazon;
-                    if (amazonStock !== null)   metaUpdate.amazon_stock        = amazonStock;
+                }
+
+                // Always save Amazon metadata (seller count, availability, stock) to track Amazon changes
+                const metaUpdate: any = { last_updated: new Date().toISOString() };
+                if (sellerCount !== null)   metaUpdate.amazon_seller_count = sellerCount;
+                if (soldByAmazon !== null)  metaUpdate.sold_by_amazon      = soldByAmazon;
+                if (amazonStock !== null)   metaUpdate.amazon_stock        = amazonStock;
+                if (Object.keys(metaUpdate).length > 1) {  // More than just last_updated
                     await supabase.from("products").update(metaUpdate).eq("meli_id", meliId);
                 }
 
