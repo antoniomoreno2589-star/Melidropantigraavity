@@ -194,13 +194,21 @@ function calculateMxnPrice(
 
 // ── Main handler ────────────────────────────────────────────────────────────
 
-serve(async (_req) => {
+const corsHeaders = {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+    "Content-Type": "application/json",
+};
+
+serve(async (req) => {
+    if (req.method === "OPTIONS") {
+        return new Response("ok", { headers: corsHeaders });
+    }
+
     const supabase = createClient(
         Deno.env.get("SUPABASE_URL") ?? "",
         Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? ""
     );
-
-    const corsHeaders = { "Content-Type": "application/json" };
 
     try {
         // 1. Get all users that have both ML and Amazon credentials
