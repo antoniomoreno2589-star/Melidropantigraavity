@@ -358,7 +358,9 @@ serve(async (_req) => {
                 }
 
                 if (syncParams.stock && amazonStock !== 0) {
-                    updatePayload.available_quantity = defaultStock;
+                    // Use minimum of Amazon stock and default config to reflect real availability
+                    const stockToSync = amazonStock !== null ? Math.min(amazonStock, defaultStock) : defaultStock;
+                    updatePayload.available_quantity = stockToSync;
                 }
 
                 if (Object.keys(updatePayload).length > 0) {
