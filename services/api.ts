@@ -40,6 +40,7 @@ export const api = {
                 inUpdater: p.in_updater ?? false,
                 amazonSellerCount: p.amazon_seller_count ?? null,
                 soldByAmazon: p.sold_by_amazon ?? null,
+                amazonStock: p.amazon_stock ?? null,
             }));
         },
 

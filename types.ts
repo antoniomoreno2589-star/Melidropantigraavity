@@ -14,6 +14,7 @@ export interface Product {
   inUpdater?: boolean; // Whether this product is included in auto-sync updates
   amazonSellerCount?: number | null; // Number of sellers on Amazon (null = not yet synced)
   soldByAmazon?: boolean | null;     // Whether Amazon itself is a seller (null = not yet synced)
+  amazonStock?: number | null;       // Amazon inventory available (null = not yet synced, 0 = out of stock)
 }
 
 export interface Order {

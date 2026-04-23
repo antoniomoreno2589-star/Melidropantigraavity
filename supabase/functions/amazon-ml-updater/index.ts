@@ -54,6 +54,7 @@ interface AmazonOffers {
     price: number | null;
     sellerCount: number;
     soldByAmazon: boolean;
+    amazonStock: number | null;
 }
 
 async function fetchAmazonOffers(
@@ -77,11 +78,13 @@ async function fetchAmazonOffers(
         const price = lowestNew?.ListingPrice?.Amount ?? null;
         const sellerCount = (summary?.NumberOfOffers ?? [])
             .reduce((sum: number, o: any) => sum + (o.offerCount ?? 0), 0);
-        const soldByAmazon = (data?.payload?.Offers ?? [])
-            .some((o: any) => o.SellerId === amazonSellerId);
-        return { price, sellerCount, soldByAmazon };
+        const amazonOffer = (data?.payload?.Offers ?? [])
+            .find((o: any) => o.SellerId === amazonSellerId);
+        const soldByAmazon = !!amazonOffer;
+        const amazonStock = amazonOffer?.QuantityOnHand ?? null;
+        return { price, sellerCount, soldByAmazon, amazonStock };
     } catch {
-        return { price: null, sellerCount: 0, soldByAmazon: false };
+        return { price: null, sellerCount: 0, soldByAmazon: false, amazonStock: null };
     }
 }
 
@@ -333,9 +336,15 @@ serve(async (_req) => {
                 const meliId   = (product as any).meli_id;
                 const updatePayload: Record<string, unknown> = {};
 
-                const offers      = asinOffers[(product as any).sku];
-                const sellerCount  = offers?.sellerCount ?? null;
-                const soldByAmazon = offers?.soldByAmazon ?? null;
+                const offers       = asinOffers[(product as any).sku];
+                const sellerCount   = offers?.sellerCount ?? null;
+                const soldByAmazon  = offers?.soldByAmazon ?? null;
+                const amazonStock   = offers?.amazonStock ?? null;
+
+                // Auto-pause if Amazon stock is 0
+                if (amazonStock === 0) {
+                    updatePayload.status = "paused";
+                }
 
                 if (syncParams.price) {
                     const amazonPrice = offers?.price ?? null;
@@ -348,7 +357,7 @@ serve(async (_req) => {
                     }
                 }
 
-                if (syncParams.stock) {
+                if (syncParams.stock && amazonStock !== 0) {
                     updatePayload.available_quantity = defaultStock;
                 }
 
@@ -358,19 +367,22 @@ serve(async (_req) => {
                         const dbUpdate: any = { last_updated: new Date().toISOString() };
                         if (updatePayload.price)              dbUpdate.price_mxn           = updatePayload.price;
                         if (updatePayload.available_quantity) dbUpdate.stock_meli           = updatePayload.available_quantity;
+                        if (updatePayload.status)             dbUpdate.status               = updatePayload.status;
                         if (sellerCount !== null)             dbUpdate.amazon_seller_count  = sellerCount;
                         if (soldByAmazon !== null)            dbUpdate.sold_by_amazon       = soldByAmazon;
+                        if (amazonStock !== null)             dbUpdate.amazon_stock         = amazonStock;
                         await supabase.from("products").update(dbUpdate).eq("meli_id", meliId);
                         updated++;
                     } else {
                         errors++;
                     }
-                } else if (sellerCount !== null || soldByAmazon !== null) {
-                    // Still save seller metadata even if nothing else changed
-                    const countUpdate: any = {};
-                    if (sellerCount !== null)  countUpdate.amazon_seller_count = sellerCount;
-                    if (soldByAmazon !== null) countUpdate.sold_by_amazon      = soldByAmazon;
-                    await supabase.from("products").update(countUpdate).eq("meli_id", meliId);
+                } else if (sellerCount !== null || soldByAmazon !== null || amazonStock !== null) {
+                    // Still save Amazon metadata even if nothing else changed
+                    const metaUpdate: any = {};
+                    if (sellerCount !== null)   metaUpdate.amazon_seller_count = sellerCount;
+                    if (soldByAmazon !== null)  metaUpdate.sold_by_amazon      = soldByAmazon;
+                    if (amazonStock !== null)   metaUpdate.amazon_stock        = amazonStock;
+                    await supabase.from("products").update(metaUpdate).eq("meli_id", meliId);
                 }
 
                 // Description lives on a separate ML endpoint — update independently

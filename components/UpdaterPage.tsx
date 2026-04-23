@@ -44,6 +44,7 @@ export const UpdaterPage: React.FC = () => {
     const [syncFreqHours, setSyncFreqHours] = useState(24);
     const [maxSellers, setMaxSellers] = useState<number | null>(null);
     const [excludeAmazon, setExcludeAmazon] = useState(false);
+    const [amazonStockFilter, setAmazonStockFilter] = useState<'all' | 'in-stock' | 'out-of-stock' | 'no-data'>('all');
     const [page, setPage] = useState(1);
     const PAGE_SIZE = 50;
     const [syncParams, setSyncParams] = useState<{ price: boolean; stock: boolean; shipping: boolean; description: boolean }>(() => {
@@ -121,6 +122,16 @@ export const UpdaterPage: React.FC = () => {
             list = list.filter(p => p.soldByAmazon === false);
         }
 
+        if (amazonStockFilter !== 'all') {
+            if (amazonStockFilter === 'in-stock') {
+                list = list.filter(p => p.amazonStock !== null && p.amazonStock > 0);
+            } else if (amazonStockFilter === 'out-of-stock') {
+                list = list.filter(p => p.amazonStock === 0);
+            } else if (amazonStockFilter === 'no-data') {
+                list = list.filter(p => p.amazonStock === null || p.amazonStock === undefined);
+            }
+        }
+
         if (search.trim()) {
             const q = search.toLowerCase();
             list = list.filter(p =>
@@ -132,7 +143,7 @@ export const UpdaterPage: React.FC = () => {
         }
 
         return list;
-    }, [products, tab, statusFilter, search, maxSellers, excludeAmazon]);
+    }, [products, tab, statusFilter, search, maxSellers, excludeAmazon, amazonStockFilter]);
 
     const paginated = useMemo(() => {
         const start = (page - 1) * PAGE_SIZE;
@@ -527,6 +538,29 @@ export const UpdaterPage: React.FC = () => {
                             </span>
                         )}
                     </div>
+                    {/* Amazon stock filter */}
+                    <div className="flex items-center gap-3 flex-wrap">
+                        <span className="text-xs font-black text-slate-500 uppercase flex items-center gap-1">
+                            <span className="material-symbols-outlined text-[16px] text-blue-500">inventory_2</span>
+                            Stock Amazon:
+                        </span>
+                        {[
+                            { label: 'Todos', value: 'all' as const },
+                            { label: '📦 En Stock', value: 'in-stock' as const },
+                            { label: '❌ Sin Stock', value: 'out-of-stock' as const },
+                            { label: '❓ Sin Datos', value: 'no-data' as const },
+                        ].map(opt => (
+                            <button
+                                key={opt.value}
+                                onClick={() => { setAmazonStockFilter(opt.value); setPage(1); }}
+                                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all border ${amazonStockFilter === opt.value
+                                    ? 'bg-blue-500 text-white border-blue-500'
+                                    : 'bg-surface-light dark:bg-surface-dark border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:border-blue-400'}`}
+                            >
+                                {opt.label}
+                            </button>
+                        ))}
+                    </div>
                 </div>
 
                 {/* Bulk Actions */}
@@ -563,7 +597,7 @@ export const UpdaterPage: React.FC = () => {
                 {/* Table */}
                 <div className="bg-surface-light dark:bg-surface-dark rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 overflow-hidden">
                     {/* Table Header */}
-                    <div className="grid grid-cols-[auto_56px_1fr_auto_auto_auto_auto] gap-3 px-4 py-3 bg-slate-50 dark:bg-slate-800/50 border-b border-slate-200 dark:border-slate-700 text-xs font-bold text-slate-500 uppercase tracking-wider">
+                    <div className="grid grid-cols-[auto_56px_1fr_auto_auto_auto_auto_auto] gap-3 px-4 py-3 bg-slate-50 dark:bg-slate-800/50 border-b border-slate-200 dark:border-slate-700 text-xs font-bold text-slate-500 uppercase tracking-wider">
                         <div className="flex items-center">
                             <input
                                 type="checkbox"
@@ -577,6 +611,7 @@ export const UpdaterPage: React.FC = () => {
                         <div className="hidden sm:block text-center">Estado</div>
                         <div className="hidden md:block text-right">Precio MXN</div>
                         <div className="hidden lg:block text-center" title="Vendedores en Amazon">Vendedores</div>
+                        <div className="hidden xl:block text-center" title="Stock en Amazon">Stock AMZ</div>
                         <div className="text-center">Actualizador</div>
                     </div>
 
@@ -603,7 +638,7 @@ export const UpdaterPage: React.FC = () => {
                             {paginated.map(product => (
                                 <div
                                     key={product.id}
-                                    className={`grid grid-cols-[auto_56px_1fr_auto_auto_auto_auto] gap-3 px-4 py-3 items-center hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors ${selected.has(product.id) ? 'bg-primary/5 dark:bg-primary/10' : ''}`}
+                                    className={`grid grid-cols-[auto_56px_1fr_auto_auto_auto_auto_auto] gap-3 px-4 py-3 items-center hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors ${selected.has(product.id) ? 'bg-primary/5 dark:bg-primary/10' : ''}`}
                                 >
                                     {/* Checkbox */}
                                     <div>
@@ -673,6 +708,21 @@ export const UpdaterPage: React.FC = () => {
                                                     </span>
                                                 )}
                                             </>
+                                        )}
+                                    </div>
+
+                                    {/* Amazon stock */}
+                                    <div className="hidden xl:flex justify-center">
+                                        {product.amazonStock === null || product.amazonStock === undefined ? (
+                                            <span className="text-xs text-slate-300 dark:text-slate-600">—</span>
+                                        ) : product.amazonStock === 0 ? (
+                                            <span className="px-2 py-0.5 rounded-full text-xs font-black bg-red-100 text-red-600 dark:bg-red-900/40 dark:text-red-400">
+                                                ❌ Sin Stock
+                                            </span>
+                                        ) : (
+                                            <span className="px-2 py-0.5 rounded-full text-xs font-black bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-400">
+                                                📦 {product.amazonStock}
+                                            </span>
                                         )}
                                     </div>
 
