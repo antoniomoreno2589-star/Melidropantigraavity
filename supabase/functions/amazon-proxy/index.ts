@@ -15,7 +15,7 @@ interface AmazonCredentials {
 }
 
 interface AmazonRequest {
-    action: 'getProduct' | 'searchProducts' | 'updatePrice' | 'refreshToken';
+    action: 'getProduct' | 'searchProducts' | 'updatePrice' | 'refreshToken' | 'estimateDelivery';
     credentials: AmazonCredentials;
     params?: any;
 }
@@ -160,6 +160,54 @@ async function updatePrice(credentials: AmazonCredentials, sku: string, price: n
     return await makeAmazonRequest(endpoint, pricePath, accessToken, 'PATCH', priceData);
 }
 
+const AMAZON_SELLER_MXN = "AVDBXBAVVSXLQ";
+const AMAZON_SELLER_USA = "A1G99GVHAT2WD8";
+const MARKETPLACE_MXN   = "A1AM78C64UM0Y8";
+const MARKETPLACE_USA   = "ATVPDKIKX0DER";
+
+async function estimateDelivery(credentials: AmazonCredentials, asin: string) {
+    const accessToken = await getAccessToken(credentials);
+    const endpoint = ENDPOINTS[credentials.region as keyof typeof ENDPOINTS] || ENDPOINTS.na;
+
+    // --- Amazon MX delivery estimate ---
+    let mxDays = 3; // sensible default
+    try {
+        const mxPath = `/products/pricing/v0/items/${asin}/offers?MarketplaceId=${MARKETPLACE_MXN}&ItemCondition=New`;
+        const mxData = await makeAmazonRequest(endpoint, mxPath, accessToken);
+        const amazonMxOffer = (mxData?.payload?.Offers ?? []).find((o: any) => o.SellerId === AMAZON_SELLER_MXN);
+        if (amazonMxOffer?.ShippingTime) {
+            const maxHours = amazonMxOffer.ShippingTime.maximumHours ?? 72;
+            mxDays = Math.max(1, Math.ceil(maxHours / 24));
+        } else {
+            // If Amazon isn't a seller, fall back to any FBA offer
+            const anyOffer = mxData?.payload?.Offers?.[0];
+            if (anyOffer?.ShippingTime?.maximumHours) {
+                mxDays = Math.max(1, Math.ceil(anyOffer.ShippingTime.maximumHours / 24));
+            }
+        }
+    } catch (e) {
+        console.warn('Could not fetch MX delivery estimate:', e);
+    }
+
+    // --- Amazon USA → Mexico estimate ---
+    // SP-API does not expose cross-border delivery times — use Amazon Global typical range
+    let usaDays = 10;
+    try {
+        const usaPath = `/products/pricing/v0/items/${asin}/offers?MarketplaceId=${MARKETPLACE_USA}&ItemCondition=New`;
+        const usaData = await makeAmazonRequest(endpoint, usaPath, accessToken);
+        const amazonUsaOffer = (usaData?.payload?.Offers ?? []).find((o: any) => o.SellerId === AMAZON_SELLER_USA);
+        if (amazonUsaOffer?.ShippingTime?.maximumHours) {
+            // Domestic US hours + ~7 days for customs/international transit to Mexico
+            const domesticDays = Math.ceil(amazonUsaOffer.ShippingTime.maximumHours / 24);
+            usaDays = domesticDays + 7;
+        }
+    } catch (e) {
+        console.warn('Could not fetch USA offers, using default:', e);
+    }
+
+    return { mxDays, usaDays };
+}
+
 serve(async (req) => {
     // Handle CORS preflight
     if (req.method === 'OPTIONS') {
@@ -194,6 +242,11 @@ serve(async (req) => {
             case 'refreshToken':
                 const accessToken = await getAccessToken(credentials);
                 result = { accessToken };
+                break;
+
+            case 'estimateDelivery':
+                if (!params?.asin) throw new Error('ASIN is required for delivery estimation');
+                result = await estimateDelivery(credentials, params.asin);
                 break;
 
             default:

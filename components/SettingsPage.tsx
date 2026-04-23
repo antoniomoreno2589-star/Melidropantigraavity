@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { AmazonConnect } from './AmazonConnect';
 import { supabase } from '../services/supabase';
 import { meliService } from '../services/meliService';
+import { amazonService } from '../services/amazonService';
 
 interface PriceRule {
     id: number;
@@ -412,6 +413,8 @@ export const SettingsPage = () => {
     const [usaDefaultMargin, setUsaDefaultMargin] = useState<number>(30);
     const [mxDefaultMargin, setMxDefaultMargin] = useState<number>(20);
     const [isUpdatingDolar, setIsUpdatingDolar] = useState(false);
+    const [isDetecting, setIsDetecting] = useState(false);
+    const [detectStatus, setDetectStatus] = useState('');
     const [globalFilters, setGlobalFilters] = useState("Nike\nAdidas\nReacondicionado");
 
     const [warrantyMonths, setWarrantyMonths] = useState<number>(() =>
@@ -443,6 +446,39 @@ export const SettingsPage = () => {
         }
     };
 
+    const handleAutoDetect = async () => {
+        if (!postalCode) { setDetectStatus('❌ Ingresa tu código postal primero.'); return; }
+        if (!amazonService.isAuthenticated()) { setDetectStatus('❌ Conecta tu cuenta de Amazon en la sección superior.'); return; }
+        setIsDetecting(true);
+        setDetectStatus('Consultando tiempos de entrega en Amazon...');
+        try {
+            // Grab a sample ASIN from the user's product catalog
+            const { data: { user } } = await supabase.auth.getUser();
+            let sampleAsin: string | null = null;
+            if (user) {
+                const { data: product } = await supabase
+                    .from('products')
+                    .select('sku')
+                    .eq('user_id', user.id)
+                    .not('sku', 'is', null)
+                    .neq('sku', '')
+                    .limit(1)
+                    .maybeSingle();
+                sampleAsin = product?.sku ?? null;
+            }
+            if (!sampleAsin) { setDetectStatus('❌ No hay productos con ASIN en tu catálogo. Importa uno primero.'); return; }
+
+            const { mxDays, usaDays } = await amazonService.estimateDelivery(sampleAsin);
+            setMxDeliveryDays(mxDays);
+            setUsaDeliveryDays(usaDays);
+            setDetectStatus(`✅ Amazon MX → tu bodega: ${mxDays} día(s) · Amazon USA → tu bodega: ${usaDays} día(s) (estimado internacional). Revisa y guarda.`);
+        } catch (e: any) {
+            setDetectStatus(`❌ Error: ${e.message}`);
+        } finally {
+            setIsDetecting(false);
+        }
+    };
+
     const handleSaveSection = async (section: string) => {
         localStorage.setItem('melidrop_usa_rules', JSON.stringify(usaRules));
         localStorage.setItem('melidrop_mx_rules', JSON.stringify(mxRules));
@@ -467,6 +503,8 @@ export const SettingsPage = () => {
                     ...existingRules,
                     usa: usaRules, mx: mxRules, filters: globalFilters,
                     handling_time_usa: usaHandlingTime, handling_time_mx: mxHandlingTime,
+                    amazon_delivery_usa: usaDeliveryDays, amazon_delivery_mx: mxDeliveryDays,
+                    postal_code: postalCode,
                     warranty_months: warrantyMonths,
                 }
             }, { onConflict: 'user_id' });
@@ -490,27 +528,49 @@ export const SettingsPage = () => {
                     </div>
 
                     {/* POSTAL CODE */}
-                    <div className="lg:col-span-2 bg-surface-light dark:bg-surface-dark rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 p-6 flex flex-col sm:flex-row items-start sm:items-center gap-4">
-                        <div className="p-2 rounded-lg bg-indigo-100 text-indigo-600 flex-shrink-0">
-                            <span className="material-symbols-outlined">pin_drop</span>
+                    <div className="lg:col-span-2 bg-surface-light dark:bg-surface-dark rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 p-6 flex flex-col gap-4">
+                        <div className="flex flex-col sm:flex-row items-start sm:items-center gap-4">
+                            <div className="p-2 rounded-lg bg-indigo-100 text-indigo-600 flex-shrink-0">
+                                <span className="material-symbols-outlined">pin_drop</span>
+                            </div>
+                            <div className="flex-1">
+                                <p className="text-sm font-black text-slate-900 dark:text-white">Código Postal de tu Bodega / Domicilio</p>
+                                <p className="text-xs text-slate-500 mt-0.5">
+                                    Ingresa tu CP y haz clic en <strong>Detectar</strong> para que el sistema consulte automáticamente cuántos días tarda Amazon en entregar a tu dirección.
+                                </p>
+                            </div>
+                            <div className="relative w-36 flex-shrink-0">
+                                <input
+                                    type="text"
+                                    maxLength={10}
+                                    value={postalCode}
+                                    onChange={e => setPostalCode(e.target.value.replace(/\D/g, ''))}
+                                    placeholder="64000"
+                                    className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg px-3 py-2 text-sm font-black text-center tracking-widest"
+                                />
+                            </div>
+                            <div className="flex gap-2 flex-shrink-0">
+                                <button
+                                    onClick={handleAutoDetect}
+                                    disabled={isDetecting}
+                                    className="flex items-center gap-1.5 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 text-white font-black rounded-lg text-xs transition-all"
+                                >
+                                    {isDetecting
+                                        ? <span className="w-3.5 h-3.5 rounded-full border-2 border-white/30 border-t-white animate-spin" />
+                                        : <span className="material-symbols-outlined text-[16px]">my_location</span>
+                                    }
+                                    Detectar
+                                </button>
+                                <button onClick={() => handleSaveSection('Código Postal')} className="flex-shrink-0 px-4 py-2 bg-slate-700 hover:bg-slate-800 text-white font-black rounded-lg text-xs transition-all">
+                                    Guardar CP
+                                </button>
+                            </div>
                         </div>
-                        <div className="flex-1">
-                            <p className="text-sm font-black text-slate-900 dark:text-white">Código Postal de tu Bodega / Domicilio</p>
-                            <p className="text-xs text-slate-500 mt-0.5">Se usa para estimar tiempos de entrega de Amazon a tu ubicación. Ingresa los días manualmente en cada sección.</p>
-                        </div>
-                        <div className="relative w-40 flex-shrink-0">
-                            <input
-                                type="text"
-                                maxLength={10}
-                                value={postalCode}
-                                onChange={e => setPostalCode(e.target.value.replace(/\D/g, ''))}
-                                placeholder="64000"
-                                className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg px-3 py-2 text-sm font-black text-center tracking-widest"
-                            />
-                        </div>
-                        <button onClick={() => handleSaveSection('Código Postal')} className="flex-shrink-0 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-black rounded-lg text-xs transition-all">
-                            Guardar CP
-                        </button>
+                        {detectStatus && (
+                            <p className={`text-xs font-mono px-3 py-2 rounded-lg ${detectStatus.startsWith('✅') ? 'bg-green-50 text-green-700 dark:bg-green-900/20 dark:text-green-400' : detectStatus.startsWith('❌') ? 'bg-red-50 text-red-600 dark:bg-red-900/20 dark:text-red-400' : 'bg-indigo-50 text-indigo-600 dark:bg-indigo-900/20 dark:text-indigo-400'}`}>
+                                {detectStatus}
+                            </p>
+                        )}
                     </div>
 
                     {/* AMAZON USA CARD */}

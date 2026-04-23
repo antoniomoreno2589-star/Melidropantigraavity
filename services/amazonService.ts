@@ -233,6 +233,14 @@ class AmazonService {
             throw error;
         }
     }
+
+    async estimateDelivery(asin: string): Promise<{ mxDays: number; usaDays: number }> {
+        if (!this.isAuthenticated()) {
+            throw new Error('Not authenticated with Amazon');
+        }
+        const result = await this.callProxy('estimateDelivery', { asin });
+        return result as { mxDays: number; usaDays: number };
+    }
 }
 
 export const amazonService = new AmazonService();

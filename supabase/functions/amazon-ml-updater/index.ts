@@ -222,13 +222,15 @@ serve(async (_req) => {
             const meliCreds     = conn.meli_credentials as any;
             const amazonCreds   = conn.amazon_credentials as any;
             const settings      = (conn.margin_rules ?? {}) as any;
-            const syncParams    = settings.sync_params   ?? { price: true, stock: true };
-            const allowDecrease = settings.allow_price_decrease ?? false;
-            const defaultStock  = settings.default_stock ?? 3;
-            const exchangeRate  = conn.exchange_rate      ?? settings.exchange_rate ?? 18.5;
-            const usaRules      = settings.usa            ?? [];
-            const mxRules       = settings.mx             ?? [];
-            const freqHours     = settings.sync_frequency_hours ?? 24;
+            const syncParams       = settings.sync_params   ?? { price: true, stock: true };
+            const allowDecrease   = settings.allow_price_decrease ?? false;
+            const defaultStock    = settings.default_stock ?? 3;
+            const exchangeRate    = conn.exchange_rate      ?? settings.exchange_rate ?? 18.5;
+            const usaRules        = settings.usa            ?? [];
+            const mxRules         = settings.mx             ?? [];
+            const freqHours       = settings.sync_frequency_hours ?? 24;
+            const handlingTimeUsa = (settings.handling_time_usa ?? 7) + (settings.amazon_delivery_usa ?? 5);
+            const handlingTimeMx  = (settings.handling_time_mx  ?? 3) + (settings.amazon_delivery_mx  ?? 3);
 
             if (!meliCreds?.token || !amazonCreds?.refreshToken) continue;
 
@@ -361,6 +363,15 @@ serve(async (_req) => {
                     // Use minimum of Amazon stock and default config to reflect real availability
                     const stockToSync = amazonStock !== null ? Math.min(amazonStock, defaultStock) : defaultStock;
                     updatePayload.available_quantity = stockToSync;
+                }
+
+                if (syncParams.shipping) {
+                    // Apply handling_time based on product currency
+                    const isMxnProduct = currency?.toUpperCase() === 'MXN';
+                    const totalHandlingTime = isMxnProduct ? handlingTimeMx : handlingTimeUsa;
+                    updatePayload.sale_terms = [
+                        { id: "MANUFACTURING_TIME", value_name: `${totalHandlingTime} días` }
+                    ];
                 }
 
                 if (Object.keys(updatePayload).length > 0) {
