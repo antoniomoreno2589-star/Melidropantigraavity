@@ -210,6 +210,14 @@ serve(async (req) => {
         Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? ""
     );
 
+    let forceRun = false;
+    try {
+        const body = await req.json().catch(() => ({}));
+        forceRun = body.force === true;
+    } catch {
+        // Ignore parse errors
+    }
+
     try {
         // 1. Get all users that have both ML and Amazon credentials
         const { data: connections, error: connErr } = await supabase
@@ -266,7 +274,7 @@ serve(async (req) => {
 
                 const lastFinished  = lastJob?.finished_at ? new Date(lastJob.finished_at).getTime() : 0;
                 const nextRunAt     = lastFinished + freqHours * 60 * 60 * 1000;
-                if (Date.now() < nextRunAt) {
+                if (Date.now() < nextRunAt && !forceRun) {
                     summary.push({ userId, skipped: true, reason: "Not due yet" });
                     continue;
                 }

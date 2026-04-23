@@ -216,7 +216,7 @@ export const UpdaterPage: React.FC = () => {
             const res = await fetch(UPDATER_URL, {
                 method: 'POST',
                 headers: { 'Authorization': `Bearer ${ANON_KEY}`, 'Content-Type': 'application/json' },
-                body: '{}',
+                body: JSON.stringify({ force: true }),
             });
             const data = await res.json();
             if (data.success) {
