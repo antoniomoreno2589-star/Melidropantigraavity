@@ -146,36 +146,6 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ user, stats, meliD
           </div>
         </div>
 
-        {/* Banner de acceso restringido al balance */}
-        {(meliData?.balance?.error === 'forbidden') && (
-          <div className="mb-4 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 p-4 rounded-2xl flex flex-col sm:flex-row items-center justify-between gap-4">
-            <div className="flex items-center gap-3">
-              <div className="p-2 bg-amber-100 dark:bg-amber-800 text-amber-600 dark:text-amber-400 rounded-full">
-                <span className="material-symbols-outlined">warning</span>
-              </div>
-              <div>
-                <h3 className="text-sm font-black text-amber-900 dark:text-amber-100">Acceso Restringido</h3>
-                <p className="text-xs text-amber-700 dark:text-amber-300">Es posible que necesites actualizar los permisos de tu cuenta para ver el saldo y mensajes pendientes.</p>
-              </div>
-            </div>
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => window.location.reload()}
-                className="bg-white dark:bg-slate-700 text-amber-600 dark:text-amber-400 border border-amber-200 dark:border-amber-800 px-4 py-2 rounded-xl text-xs font-bold hover:bg-amber-100 dark:hover:bg-amber-800/50 transition-all flex items-center gap-2"
-              >
-                <span className="material-symbols-outlined text-[16px]">refresh</span>
-                Refrescar Datos
-              </button>
-              <button
-                onClick={() => navigate('/perfil')}
-                className="bg-amber-500 hover:bg-amber-600 text-white px-4 py-2 rounded-xl text-xs font-bold transition-all shadow-sm shadow-amber-500/20"
-              >
-                Actualizar Permisos
-              </button>
-            </div>
-          </div>
-        )}
-
         {/* Banner si órdenes o preguntas fallan por permisos */}
         {(meliData?.permissionErrors?.length > 0) && (
           <div className="mb-4 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 p-4 rounded-2xl flex flex-col sm:flex-row items-center justify-between gap-4">
