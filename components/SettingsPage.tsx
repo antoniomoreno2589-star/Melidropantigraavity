@@ -133,6 +133,27 @@ export const SettingsPage = () => {
         fetchTestUser();
     }, []);
 
+    useEffect(() => {
+        // When OAuth succeeds, reload testUser from Supabase after a short delay
+        if (testUserStatus?.startsWith('✅ Usuario de prueba conectado')) {
+            const timer = setTimeout(() => {
+                const fetchTestUser = async () => {
+                    const { data: { user } } = await supabase.auth.getUser();
+                    if (!user) return;
+                    const { data } = await supabase
+                        .from('user_connections')
+                        .select('meli_test_user')
+                        .eq('user_id', user.id)
+                        .limit(1)
+                        .maybeSingle();
+                    if (data?.meli_test_user) setTestUser(data.meli_test_user);
+                };
+                fetchTestUser();
+            }, 500);
+            return () => clearTimeout(timer);
+        }
+    }, [testUserStatus]);
+
     const handleCreateTestUser = async () => {
         setTestUserLoading(true);
         setTestUserStatus('Creando usuario de prueba en MercadoLibre...');
