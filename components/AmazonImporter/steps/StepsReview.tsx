@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { useAmazonImporter } from '../useAmazonImporter';
 
 type Props = ReturnType<typeof useAmazonImporter>;
@@ -111,112 +112,194 @@ export function Step5Publish({
     setDryRunResults,
     setPublishResults,
 }: Props) {
+    const [selectedAsins, setSelectedAsins] = useState<Set<string>>(new Set());
+    const [isBulkProcessing, setIsBulkProcessing] = useState(false);
+
+    const toggleSelection = (asin: string) => {
+        setSelectedAsins(prev => {
+            const next = new Set(prev);
+            if (next.has(asin)) {
+                next.delete(asin);
+            } else {
+                next.add(asin);
+            }
+            return next;
+        });
+    };
+
+    const toggleSelectAll = () => {
+        if (selectedAsins.size === processedProducts.length) {
+            setSelectedAsins(new Set());
+        } else {
+            setSelectedAsins(new Set(processedProducts.map(p => p.asin)));
+        }
+    };
+
+    const handleBulkDryRun = async () => {
+        if (selectedAsins.size === 0) return;
+        setIsBulkProcessing(true);
+        try {
+            for (const asin of selectedAsins) {
+                await handleDryRun(asin);
+            }
+        } finally {
+            setIsBulkProcessing(false);
+        }
+    };
+
+    const handleBulkPublish = async () => {
+        if (selectedAsins.size === 0) return;
+        setIsBulkProcessing(true);
+        try {
+            for (const asin of selectedAsins) {
+                await handlePublish(asin, false);
+            }
+        } finally {
+            setIsBulkProcessing(false);
+        }
+    };
+
     return (
         <div className="space-y-4">
             <div className="bg-white dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 p-6">
-                <h2 className="text-lg font-black text-slate-900 dark:text-white mb-1">Confirmar Publicación</h2>
-                <p className="text-sm text-slate-500 mb-4">Revisa el resumen antes de publicar</p>
+                <div className="flex items-center justify-between mb-6">
+                    <div>
+                        <h2 className="text-lg font-black text-slate-900 dark:text-white mb-1">Confirmar Publicación</h2>
+                        <p className="text-sm text-slate-500">Selecciona los productos para probar o publicar</p>
+                    </div>
+                    <div className="text-sm font-bold text-slate-600 dark:text-slate-300 bg-slate-100 dark:bg-slate-900 px-3 py-1.5 rounded-lg">
+                        {selectedAsins.size} de {processedProducts.length} seleccionados
+                    </div>
+                </div>
 
-                <div className="space-y-3">
+                {/* Bulk Action Buttons */}
+                {selectedAsins.size > 0 && (
+                    <div className="flex gap-2 mb-6 pb-6 border-b border-slate-200 dark:border-slate-700">
+                        <button
+                            onClick={handleBulkDryRun}
+                            disabled={isBulkProcessing}
+                            className="flex-1 py-3 border-2 border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-300 font-black rounded-xl text-sm hover:bg-slate-50 dark:hover:bg-slate-700 transition-all flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                            {isBulkProcessing ? (
+                                <>
+                                    <span className="w-4 h-4 rounded-full border-2 border-slate-400 border-t-slate-700 animate-spin" />
+                                    Procesando...
+                                </>
+                            ) : (
+                                <>
+                                    <span className="material-symbols-outlined text-[18px]">science</span>
+                                    Probar ({selectedAsins.size})
+                                </>
+                            )}
+                        </button>
+                        <button
+                            onClick={handleBulkPublish}
+                            disabled={isBulkProcessing || Array.from(selectedAsins).some(asin => validationResults[asin]?.isSkipped)}
+                            className="flex-1 py-3 bg-green-600 hover:bg-green-700 text-white font-black rounded-xl text-sm transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 shadow-sm shadow-green-600/30"
+                        >
+                            {isBulkProcessing ? (
+                                <>
+                                    <span className="w-4 h-4 rounded-full border-2 border-white border-t-green-400 animate-spin" />
+                                    Publicando...
+                                </>
+                            ) : (
+                                <>
+                                    <span className="material-symbols-outlined text-[18px]">rocket_launch</span>
+                                    Publicar ({selectedAsins.size})
+                                </>
+                            )}
+                        </button>
+                    </div>
+                )}
+
+                {/* Products Table/List */}
+                <div className="space-y-2">
+                    {/* Header */}
+                    <div className="flex items-center gap-3 px-4 py-3 bg-slate-50 dark:bg-slate-900/50 rounded-lg border border-slate-200 dark:border-slate-700">
+                        <input
+                            type="checkbox"
+                            checked={selectedAsins.size > 0 && selectedAsins.size === processedProducts.length}
+                            onChange={toggleSelectAll}
+                            className="w-5 h-5 rounded border-slate-300 dark:border-slate-600 cursor-pointer"
+                        />
+                        <div className="flex-1 grid grid-cols-4 gap-4">
+                            <div className="text-[10px] font-black text-slate-600 dark:text-slate-400 uppercase tracking-wider">Producto</div>
+                            <div className="text-[10px] font-black text-slate-600 dark:text-slate-400 uppercase tracking-wider">ASIN</div>
+                            <div className="text-[10px] font-black text-slate-600 dark:text-slate-400 uppercase tracking-wider">Estado</div>
+                            <div className="text-[10px] font-black text-slate-600 dark:text-slate-400 uppercase tracking-wider">Resultado</div>
+                        </div>
+                    </div>
+
+                    {/* Product Rows */}
                     {processedProducts.map(processed => {
                         const status = publishingStatus[processed.asin];
                         const result = publishResults[processed.asin];
                         const dry = dryRunResults[processed.asin];
                         const val = validationResults[processed.asin];
+                        const isSelected = selectedAsins.has(processed.asin);
 
                         return (
-                            <div key={processed.asin} className="border border-slate-200 dark:border-slate-700 rounded-xl p-4">
-                                <div className="flex items-start justify-between gap-4 mb-3">
-                                    <div className="flex-1 min-w-0">
-                                        <p className="font-bold text-slate-900 dark:text-white text-sm">{editedTitles[processed.asin]}</p>
-                                        <p className="text-[10px] text-slate-400 font-mono mt-0.5">
-                                            {processed.asin} · {selectedCategories[processed.asin]?.name} · {listingType === 'gold_special' ? 'Clásica' : 'Premium'}
-                                        </p>
+                            <div key={processed.asin}>
+                                <div className="flex items-center gap-3 px-4 py-3 border border-slate-200 dark:border-slate-700 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-900/30 transition-colors">
+                                    <input
+                                        type="checkbox"
+                                        checked={isSelected}
+                                        onChange={() => toggleSelection(processed.asin)}
+                                        disabled={val?.isSkipped}
+                                        className="w-5 h-5 rounded border-slate-300 dark:border-slate-600 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                                    />
+                                    <div className="flex-1 grid grid-cols-4 gap-4 items-center">
+                                        <div className="min-w-0">
+                                            <p className="text-sm font-bold text-slate-900 dark:text-white truncate">{editedTitles[processed.asin]}</p>
+                                        </div>
+                                        <div className="text-xs font-mono text-slate-500">{processed.asin}</div>
+                                        <div>
+                                            {status === 'success' && <span className="inline-flex items-center gap-1 bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300 text-[10px] font-black px-2 py-1 rounded-full">
+                                                <span className="material-symbols-outlined text-[12px]">check_circle</span> Publicado
+                                            </span>}
+                                            {status === 'loading' && <span className="inline-flex items-center gap-1 text-slate-600 dark:text-slate-400 text-[10px] font-black">
+                                                <span className="w-3 h-3 rounded-full border-2 border-slate-400 border-t-slate-700 animate-spin" /> Publicando
+                                            </span>}
+                                            {status === 'error' && <span className="inline-flex items-center gap-1 bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300 text-[10px] font-black px-2 py-1 rounded-full">
+                                                <span className="material-symbols-outlined text-[12px]">error</span> Error
+                                            </span>}
+                                            {!status && <span className="inline-flex items-center gap-1 bg-slate-100 dark:bg-slate-900 text-slate-600 dark:text-slate-400 text-[10px] font-bold px-2 py-1 rounded-full">
+                                                {val?.isSkipped ? '🚫 Descartado' : 'Pendiente'}
+                                            </span>}
+                                        </div>
+                                        <div>
+                                            {result?.id && (
+                                                <a href={`https://articulo.mercadolibre.com.mx/${result.id}`} target="_blank" rel="noopener noreferrer"
+                                                    className="text-xs text-primary font-bold hover:underline flex items-center gap-1">
+                                                    <span className="material-symbols-outlined text-[12px]">open_in_new</span> ML-{result.id}
+                                                </a>
+                                            )}
+                                            {result?.error && <span className="text-[10px] text-red-600 dark:text-red-400 font-bold">❌ Error</span>}
+                                            {dry && !result?.id && <span className="text-[10px] text-blue-600 dark:text-blue-400 font-bold">✓ Probado</span>}
+                                        </div>
                                     </div>
-                                    {status === 'success' && <span className="bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300 text-[10px] font-black px-3 py-1 rounded-full flex-shrink-0">✓ Publicado</span>}
-                                    {status === 'error' && <span className="bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300 text-[10px] font-black px-3 py-1 rounded-full flex-shrink-0">✗ Error</span>}
                                 </div>
 
-                                {/* Dry run result */}
-                                {dry && (
-                                    <div className="mb-3 bg-slate-50 dark:bg-slate-900 rounded-lg p-3 space-y-2">
-                                        <p className="text-[10px] font-black text-slate-500 uppercase mb-1">Resultado de Prueba</p>
-                                        <div className="flex flex-wrap gap-2">
-                                            <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${dry.validation?.valid ? 'bg-green-100 text-green-700' : 'bg-amber-100 text-amber-700'}`}>
-                                                {dry.validation?.valid ? '✓ Estructura válida' : '⚠ Errores de validación'}
-                                            </span>
-                                            {dry.hasTestUser ? (
-                                                <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${dry.testPublish?.id ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
-                                                    {dry.testPublish?.id ? `✓ Publicado en ML Test (${dry.testPublish.id})` : '✗ Error en ML Test'}
+                                {/* Expanded details - show only on demand or error */}
+                                {(result?.error || val?.isSkipped) && (
+                                    <div className="px-4 py-3 bg-slate-50 dark:bg-slate-900/30 border border-t-0 border-slate-200 dark:border-slate-700 rounded-b-lg space-y-2">
+                                        {val?.isSkipped && (
+                                            <div className="flex items-center gap-2 text-xs">
+                                                <span className="material-symbols-outlined text-red-500 text-[16px]">block</span>
+                                                <span className="text-red-600 dark:text-red-400 font-bold">
+                                                    {val.isDuplicate ? 'Ya existe en tus publicaciones activas.' : `Contiene palabra prohibida: "${val.forbiddenWord}"`}
                                                 </span>
-                                            ) : (
-                                                <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-blue-100 text-blue-700">
-                                                    📋 Guardado en catálogo de pruebas
-                                                </span>
-                                            )}
-                                        </div>
-                                        {dry.testPublish?.error && (
-                                            <p className="text-[10px] text-red-500 font-mono mt-1">{dry.testPublish.error}</p>
+                                            </div>
                                         )}
-                                        {!dry.hasTestUser && (
-                                            <p className="text-[10px] text-slate-400 mt-1">
-                                                Para publicar en una cuenta test de ML, configura el Usuario de Prueba en <strong>Configuración → MercadoLibre</strong>.
-                                            </p>
+                                        {result?.error && (
+                                            <div className="text-[10px] text-red-600 dark:text-red-400 font-mono space-y-1">
+                                                {result.error.split('\n').map((line: string, i: number) => (
+                                                    <p key={i}>{line}</p>
+                                                ))}
+                                            </div>
                                         )}
                                     </div>
                                 )}
-
-                                {/* Publish result */}
-                                {result?.id && (
-                                    <a href={`https://articulo.mercadolibre.com.mx/${result.id}`} target="_blank" rel="noopener noreferrer"
-                                        className="text-xs text-primary font-bold hover:underline flex items-center gap-1 mb-2">
-                                        <span className="material-symbols-outlined text-[14px]">open_in_new</span>
-                                        Ver en MercadoLibre: {result.id}
-                                    </a>
-                                )}
-                                {result?.error && (
-                                    <div className="mt-2 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-3">
-                                        <p className="text-[10px] font-black text-red-600 uppercase tracking-widest mb-1">Error de MercadoLibre</p>
-                                        {result.error.split('\n').map((line: string, i: number) => (
-                                            <p key={i} className="text-xs text-red-500 font-mono leading-relaxed">{line}</p>
-                                        ))}
-                                    </div>
-                                )}
-
-                                {/* Validation Messages */}
-                                {val?.isSkipped && (
-                                    <div className="bg-red-50 dark:bg-red-900/20 border border-red-100 dark:border-red-800 rounded-lg p-3 flex items-center gap-2 mb-4">
-                                        <span className="material-symbols-outlined text-red-500 text-[20px]">block</span>
-                                        <div className="flex-1">
-                                            <p className="text-xs font-black text-red-600 uppercase tracking-widest">Producto Descartado</p>
-                                            <p className="text-[10px] text-red-500">{val.isDuplicate ? 'Ya existe en tus publicaciones activas.' : `Contiene palabra prohibida: "${val.forbiddenWord}"`}</p>
-                                        </div>
-                                    </div>
-                                )}
-
-                                {/* Action Buttons */}
-                                {!status || status === 'idle' || status === 'error' ? (
-                                    <div className="flex gap-2">
-                                        <button
-                                            onClick={() => handleDryRun(processed.asin)}
-                                            className="flex-1 py-2 border-2 border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-300 font-bold rounded-lg text-sm hover:bg-slate-50 dark:hover:bg-slate-700 transition-all flex items-center justify-center gap-1"
-                                        >
-                                            <span className="material-symbols-outlined text-[16px]">science</span>Probar (Sandbox)
-                                        </button>
-                                        <button
-                                            onClick={() => handlePublish(processed.asin, false)}
-                                            disabled={!!validationResults[processed.asin]?.isSkipped}
-                                            className="flex-1 py-2 bg-green-600 hover:bg-green-700 text-white font-black rounded-lg text-sm transition-all disabled:opacity-50 disabled:grayscale flex items-center justify-center gap-1 shadow-sm shadow-green-600/30"
-                                        >
-                                            <span className="material-symbols-outlined text-[16px]">rocket_launch</span>Publicar en ML
-                                        </button>
-                                    </div>
-                                ) : status === 'loading' ? (
-                                    <div className="flex items-center gap-2 text-sm text-slate-500">
-                                        <span className="w-4 h-4 rounded-full border-2 border-slate-300 border-t-primary animate-spin" />
-                                        Publicando...
-                                    </div>
-                                ) : null}
                             </div>
                         );
                     })}
