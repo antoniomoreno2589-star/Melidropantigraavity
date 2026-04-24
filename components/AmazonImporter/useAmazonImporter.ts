@@ -322,14 +322,6 @@ export function useAmazonImporter() {
         const currency = product.currency || 'USD';
         const isUSD = currency.toUpperCase() !== 'MXN';
         const priceMXN = calculateMexicoPrice(product.price || 0, currency);
-        const baseDescription = product.description
-            ? product.description.substring(0, 2000)
-            : `${product.title}. Producto nuevo, condición original de fábrica.`;
-        const descriptionSuffix = localStorage.getItem('melidrop_description_suffix') || '';
-        const descriptionText = descriptionSuffix
-            ? `${baseDescription}\n\n${descriptionSuffix}`.substring(0, 5000)
-            : baseDescription;
-        const pictureUrls = Array.from(new Set(processed.images.map(i => i.url))).slice(0, 10);
 
         // handling_time = días que Amazon tarda en entregar a tu bodega + días de preparación
         const prepKey     = isUSD ? 'melidrop_handling_time_usa'     : 'melidrop_handling_time_mx';
@@ -355,6 +347,34 @@ export function useAmazonImporter() {
             ? 'Toalla con Capucha'
             : undefined;
 
+        const baseDescription = product.description
+            ? product.description.substring(0, 2000)
+            : `${product.title}. Producto nuevo, condición original de fábrica.`;
+        const descriptionSuffix = localStorage.getItem('melidrop_description_suffix') ||
+            `==========================================
+IMPORTANTE:
+Este producto se importa de Estados Unidos
+Por favor revisa la fecha de entrega antes de comprar
+==========================================
+
+Este producto ha sido seleccionado cuidadosamente para ofrecerte la mejor calidad y desempeño. Ideal para quienes buscan confiabilidad y funcionalidad en su compra.
+
+¿Por qué elegirnos?
+
+Factura disponible: Al realizar tu compra, solicítanos la factura y con gusto te la enviaremos.
+Garantía de ${warrantyMonths} mes${warrantyMonths > 1 ? 'es' : ''}: Si no quedas satisfecho con el producto o presenta algún defecto, puedes realizar devoluciones sin problema.
+Compra con confianza, estamos comprometidos en ofrecerte productos de excelente calidad y un servicio de atención al cliente sobresaliente.
+
+¡Haz tu compra ahora y recibe tu producto en la puerta de tu hogar!`;
+        const descriptionText = descriptionSuffix
+            ? `${baseDescription}\n\n${descriptionSuffix}`.substring(0, 5000)
+            : baseDescription;
+        const pictureUrls = Array.from(new Set(processed.images.map(i => i.url))).slice(0, 10);
+
+        const warrantyLabel = warrantyMonths >= 12
+            ? `${Math.floor(warrantyMonths / 12)} año${Math.floor(warrantyMonths / 12) > 1 ? 's' : ''}`
+            : `${warrantyMonths} mes${warrantyMonths > 1 ? 'es' : ''}`;
+
         const payload: any = {
             title: safeTitle,
             category_id: catId,
@@ -367,7 +387,17 @@ export function useAmazonImporter() {
             description: { plain_text: descriptionText },
             seller_custom_field: processed.asin,
             pictures: pictureUrls.map(url => ({ source: url })),
-            attributes: finalAttributes
+            attributes: finalAttributes,
+            sale_terms: [
+                { id: 'WARRANTY_TYPE', value_name: 'Garantía del vendedor' },
+                { id: 'WARRANTY_TIME', value_name: warrantyLabel },
+                { id: 'MANUFACTURING_TIME', value_name: `${handlingTime} días` }
+            ],
+            shipping: {
+                mode: 'me2',
+                free_shipping: listingType === 'gold_pro',
+                local_pick_up: false
+            }
         };
 
         return payload;
@@ -408,11 +438,15 @@ export function useAmazonImporter() {
                         } catch { /* use existing token */ }
                     }
                     const imageIds: string[] = [];
+                    const seenUploadUrls = new Set<string>();
                     for (const img of processed.images.slice(0, 10)) {
+                        const dedupeKey = img.cleanedUrl || img.url;
+                        if (seenUploadUrls.has(dedupeKey)) continue;
+                        seenUploadUrls.add(dedupeKey);
                         const id = img.cleanedUrl
                             ? await meliService.uploadImageBinary(img.cleanedUrl, testToken)
                             : await meliService.uploadImage(img.url, testToken);
-                        if (id) imageIds.push(id);
+                        if (id && !imageIds.includes(id)) imageIds.push(id);
                     }
                     const testPayload = { ...payload };
                     if (imageIds.length > 0) {
@@ -464,11 +498,15 @@ export function useAmazonImporter() {
         setPublishingStatus(prev => ({ ...prev, [asin]: 'loading' }));
         try {
             const imageIds: string[] = [];
+            const seenUploadUrls = new Set<string>();
             for (const img of processed.images.slice(0, 10)) {
+                const dedupeKey = img.cleanedUrl || img.url;
+                if (seenUploadUrls.has(dedupeKey)) continue;
+                seenUploadUrls.add(dedupeKey);
                 const id = img.cleanedUrl
                     ? await meliService.uploadImageBinary(img.cleanedUrl)
                     : await meliService.uploadImage(img.url);
-                if (id) imageIds.push(id);
+                if (id && !imageIds.includes(id)) imageIds.push(id);
             }
 
             const payload = buildItemPayload(processed);
