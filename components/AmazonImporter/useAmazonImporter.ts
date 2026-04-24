@@ -497,6 +497,29 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
 
         setPublishingStatus(prev => ({ ...prev, [asin]: 'loading' }));
         try {
+            // ML tokens expire in 6h — always refresh test user token before publishing
+            if (testUserCreds?.email && testUserCreds?.password) {
+                try {
+                    const fresh = await meliService.loginTestUser(testUserCreds.email, testUserCreds.password);
+                    if (fresh) {
+                        const { data: { user } } = await supabase.auth.getUser();
+                        if (user) {
+                            const updated = { ...testUserCreds, access_token: fresh };
+                            await supabase.from('user_connections').upsert(
+                                { user_id: user.id, meli_test_user: updated },
+                                { onConflict: 'user_id' }
+                            );
+                            setTestUserCreds(updated);
+                        }
+                    }
+                } catch (refreshErr: any) {
+                    console.warn('[Melidrop] Test user token refresh failed:', refreshErr.message);
+                    alert(`⚠️ No se pudo renovar el token del usuario de prueba.\n\nPor favor, ve a Configuración y reconecta tu Usuario de Prueba.\n\nError: ${refreshErr.message}`);
+                    setPublishingStatus(prev => ({ ...prev, [asin]: 'error' }));
+                    return;
+                }
+            }
+
             const imageIds: string[] = [];
             const seenUploadUrls = new Set<string>();
             for (const img of processed.images.slice(0, 10)) {
