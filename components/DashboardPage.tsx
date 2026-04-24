@@ -407,42 +407,56 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ user, stats, meliD
             </div>
           </div>
 
-          <div className="flex-1 min-h-[220px] relative w-full flex items-end justify-between gap-3 px-2 pb-8 mb-2">
-            <div className="absolute inset-0 flex flex-col justify-between pointer-events-none opacity-50">
-              {[1, 2, 3, 4].map(l => <div key={l} className="w-full h-px bg-slate-100 dark:bg-slate-800"></div>)}
-            </div>
-            
-            {loadingHistory ? (
-              <div className="absolute inset-0 flex items-center justify-center">
-                <div className="w-8 h-8 border-4 border-primary/30 border-t-primary rounded-full animate-spin"></div>
-              </div>
-            ) : history.length === 0 ? (
-              <div className="absolute inset-0 flex items-center justify-center text-slate-400 text-sm font-bold uppercase tracking-widest italic">
-                Sin datos históricos en este periodo
-              </div>
-            ) : (() => {
-               const maxVal = Math.max(...history.map(h => metricFilter === 'money' ? h.income : h.sales), 1);
-               return history.map((bar, i) => {
-                 const height = `${Math.max(( (metricFilter === 'money' ? bar.income : bar.sales) / maxVal) * 100, 5)}%`;
-                 const date = new Date(bar.day + 'T00:00:00');
-                 const dayLabel = date.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric' });
-                 
-                 return (
-                  <div key={i} className="relative w-full group flex flex-col items-center">
-                    <div className={`w-full max-w-[42px] rounded-t-lg transition-all duration-500 group-hover:brightness-110 shadow-sm ${metricFilter === 'money' ? 'bg-primary' : 'bg-orange-400'}`} style={{ height }}>
-                      <div className="absolute -top-12 left-1/2 -translate-x-1/2 bg-slate-800 text-white text-[10px] py-1.5 px-3 rounded-lg opacity-0 group-hover:opacity-100 transition-all z-20 font-bold shadow-xl border border-slate-700 whitespace-nowrap scale-90 group-hover:scale-100">
-                        {metricFilter === 'money' ? `$${bar.income.toLocaleString()}` : `${bar.sales} ventas`}
-                        <div className="text-[8px] opacity-70 mt-0.5">Prof: ${ (bar.income - bar.cost).toLocaleString() }</div>
-                      </div>
-                    </div>
-                    <div className="absolute bottom-[-32px] text-[8px] font-black text-slate-400 uppercase tracking-tighter text-center">
-                      {dayLabel}
-                    </div>
+          {(() => {
+            const CHART_H = 180;
+            const hasAnyData = history.some(h => (metricFilter === 'money' ? h.income : h.sales) > 0);
+            const maxVal = Math.max(...history.map(h => metricFilter === 'money' ? h.income : h.sales), 1);
+
+            return (
+              <div className="relative w-full" style={{ height: `${CHART_H + 40}px` }}>
+                {/* Grid lines */}
+                <div className="absolute inset-x-0 top-0 flex flex-col justify-between pointer-events-none opacity-40" style={{ height: `${CHART_H}px` }}>
+                  {[0, 1, 2, 3, 4].map(l => <div key={l} className="w-full h-px bg-slate-200 dark:bg-slate-700" />)}
+                </div>
+
+                {loadingHistory ? (
+                  <div className="absolute inset-0 flex items-center justify-center">
+                    <div className="w-8 h-8 border-4 border-primary/30 border-t-primary rounded-full animate-spin" />
                   </div>
-                );
-               });
-            })()}
-          </div>
+                ) : !hasAnyData ? (
+                  <div className="absolute inset-0 flex items-center justify-center text-slate-400 text-sm font-bold uppercase tracking-widest italic">
+                    Sin datos históricos en este periodo
+                  </div>
+                ) : (
+                  <div className="absolute inset-x-0 bottom-10 flex items-end justify-between gap-1 px-1" style={{ height: `${CHART_H}px` }}>
+                    {history.map((bar, i) => {
+                      const value = metricFilter === 'money' ? bar.income : bar.sales;
+                      const barPx = Math.max((value / maxVal) * CHART_H, value > 0 ? 6 : 2);
+                      const date = new Date(bar.day + 'T00:00:00');
+                      const dayLabel = date.toLocaleDateString('es-MX', { weekday: 'short', day: 'numeric' });
+
+                      return (
+                        <div key={i} className="relative flex-1 flex flex-col items-center justify-end group" style={{ height: `${CHART_H}px` }}>
+                          <div
+                            className={`w-full rounded-t-lg transition-all duration-500 group-hover:brightness-110 shadow-sm cursor-default ${metricFilter === 'money' ? 'bg-primary' : 'bg-orange-400'}`}
+                            style={{ height: `${barPx}px` }}
+                          >
+                            <div className="absolute -top-14 left-1/2 -translate-x-1/2 bg-slate-800 text-white text-[10px] py-1.5 px-3 rounded-lg opacity-0 group-hover:opacity-100 transition-all z-20 font-bold shadow-xl border border-slate-700 whitespace-nowrap scale-90 group-hover:scale-100 pointer-events-none">
+                              {metricFilter === 'money' ? `$${bar.income.toLocaleString('es-MX')}` : `${bar.sales} ventas`}
+                              <div className="text-[8px] opacity-70 mt-0.5">Ganancia: ${(bar.income - bar.cost).toLocaleString('es-MX')}</div>
+                            </div>
+                          </div>
+                          <div className="absolute -bottom-8 text-[8px] font-black text-slate-400 uppercase tracking-tighter text-center whitespace-nowrap">
+                            {dayLabel}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            );
+          })()}
         </div>
 
         {/* 7. BLOQUE DE PUBLICACIONES (DINÁMICO CON DESGLOSE) */}
