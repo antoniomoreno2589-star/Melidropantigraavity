@@ -121,15 +121,6 @@ export const OrdersPage = () => {
                         : totalAmt - (fee ?? 0) - shipping;
                     // amazon_status intentionally excluded so existing 'purchased' marks
                     // are never overwritten on re-sync (DB DEFAULT 'pending' covers new rows)
-                    const isUSD = currencyMap[asin] === 'USD';
-                    const prepDays     = parseInt(localStorage.getItem(isUSD ? 'melidrop_handling_time_usa'   : 'melidrop_handling_time_mx')   ?? (isUSD ? '7' : '3'));
-                    const deliveryDays = parseInt(localStorage.getItem(isUSD ? 'melidrop_amazon_delivery_usa' : 'melidrop_amazon_delivery_mx') ?? (isUSD ? '5' : '3'));
-                    const totalDays    = prepDays + deliveryDays;
-                    // Use ML's pack_deadline if it's genuinely in the future vs order date;
-                    // otherwise fall back to the user's configured handling+delivery time.
-                    const mlDeadline   = o.pack_deadline ? o.pack_deadline.split('T')[0] : null;
-                    const shipping_deadline = mlDeadline && mlDeadline > dateCreated ? mlDeadline : addDays(dateCreated, totalDays);
-
                     return {
                         id: o.id.toString(),
                         user_id: user?.id,
@@ -142,9 +133,9 @@ export const OrdersPage = () => {
                         meli_item_id:  o.order_items?.[0]?.item?.id ?? null,
                         status: mapMlStatus(o),
                         date: dateCreated,
-                        shipping_deadline,
+                        shipping_deadline: o.pack_deadline?.split('T')[0] ?? addDays(dateCreated, 3),
                         amazon_asin: asin,
-                        amazon_marketplace: isUSD ? 'US' : 'MX',
+                        amazon_marketplace: currencyMap[asin] === 'USD' ? 'US' : 'MX',
                     };
                 });
                 await api.orders.bulkUpsert(payloads);
