@@ -133,7 +133,7 @@ export const OrdersPage = () => {
                         meli_item_id:  o.order_items?.[0]?.item?.id ?? null,
                         status: mapMlStatus(o),
                         date: dateCreated,
-                        shipping_deadline: addDays(dateCreated, 3),
+                        shipping_deadline: o.pack_deadline ? o.pack_deadline.split('T')[0] : addDays(dateCreated, 30),
                         amazon_asin: asin,
                         amazon_marketplace: currencyMap[asin] === 'USD' ? 'US' : 'MX',
                     };
