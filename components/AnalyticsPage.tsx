@@ -78,7 +78,6 @@ export const AnalyticsPage: React.FC = () => {
 
   const [chartOrders, setChartOrders] = useState<Order[]>([]);
   const [chartExpenses, setChartExpenses] = useState<Expense[]>([]);
-  const [currencyMap, setCurrencyMap] = useState<Record<string, 'USD' | 'MXN'>>({});
   const [loading, setLoading] = useState(false);
 
   const [newConcept, setNewConcept] = useState('');
@@ -89,8 +88,6 @@ export const AnalyticsPage: React.FC = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const [roiFilter, setRoiFilter] = useState<'all' | 'positive' | 'negative'>('all');
   const [rentableFilter, setRentableFilter] = useState<'all' | 'yes' | 'no'>('all');
-
-  const exchangeRate = parseFloat(localStorage.getItem('melidrop_exchange_rate') ?? '18.5');
 
   // ── Load data ─────────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -104,12 +101,10 @@ export const AnalyticsPage: React.FC = () => {
     Promise.all([
       api.orders.listWithDateRange(fromDate, toDate),
       api.expenses.listRange(fromYM, selectedYM),
-      api.products.getCurrencyMap(),
     ])
-      .then(([ord, exp, cmap]) => {
+      .then(([ord, exp]) => {
         setChartOrders(ord);
         setChartExpenses(exp);
-        setCurrencyMap(cmap);
       })
       .catch(console.error)
       .finally(() => setLoading(false));
@@ -130,11 +125,8 @@ export const AnalyticsPage: React.FC = () => {
     [chartExpenses, selectedYM],
   );
 
-  const orderCostMXN = useCallback((o: Order): number => {
-    if (!o.amazonPurchasePrice) return 0;
-    const currency = currencyMap[o.amazonAsin] ?? 'USD';
-    return currency === 'USD' ? o.amazonPurchasePrice * exchangeRate : o.amazonPurchasePrice;
-  }, [currencyMap, exchangeRate]);
+  // amazonPurchasePrice is always stored in MXN (already converted at sync time)
+  const orderCostMXN = useCallback((o: Order): number => o.amazonPurchasePrice ?? 0, []);
 
   const kpis = useMemo(() => {
     const calc = (ords: Order[], exps: Expense[]) => {
