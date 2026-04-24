@@ -3,6 +3,14 @@ import { useAmazonImporter } from '../useAmazonImporter';
 
 type Props = ReturnType<typeof useAmazonImporter>;
 
+type ValidationResult = {
+    isDuplicate: boolean;
+    duplicateId?: string;
+    hasForbiddenWords: boolean;
+    forbiddenWord?: string;
+    isSkipped?: boolean;
+};
+
 export function Step4Attributes({
     processedProducts,
     validationResults,
@@ -93,6 +101,22 @@ export function Step4Attributes({
     );
 }
 
+interface Step5Props {
+    processedProducts: any[];
+    publishingStatus: Record<string, 'idle' | 'loading' | 'success' | 'error'>;
+    publishResults: Record<string, any>;
+    dryRunResults: Record<string, any>;
+    validationResults: Record<string, ValidationResult>;
+    editedTitles: Record<string, string>;
+    selectedCategories: Record<string, { id: string; name: string }>;
+    listingType: string;
+    handleDryRun: (asin: string) => Promise<void>;
+    handlePublish: (asin: string, isDraft: boolean) => Promise<void>;
+    setStep: (step: number) => void;
+    setLoadedProducts: (products: any[]) => void;
+    setAsinInput: (input: string) => void;
+}
+
 export function Step5Publish({
     processedProducts,
     publishingStatus,
@@ -106,14 +130,10 @@ export function Step5Publish({
     handlePublish,
     setStep,
     setLoadedProducts,
-    setProcessedProducts,
     setAsinInput,
-    setPublishingStatus,
-    setDryRunResults,
-    setPublishResults,
-}: Props) {
+}: Step5Props) {
     const [selectedAsins, setSelectedAsins] = useState<Set<string>>(new Set());
-    const [isBulkProcessing, setIsBulkProcessing] = useState(false);
+    const [isBulkProcessing, setIsBulkProcessing] = useState<boolean>(false);
 
     const toggleSelection = (asin: string) => {
         setSelectedAsins(prev => {
@@ -194,7 +214,7 @@ export function Step5Publish({
                         </button>
                         <button
                             onClick={handleBulkPublish}
-                            disabled={isBulkProcessing || Array.from(selectedAsins).some(asin => validationResults[asin]?.isSkipped)}
+                            disabled={isBulkProcessing || Array.from(selectedAsins).some((asin: string) => validationResults[asin]?.isSkipped)}
                             className="flex-1 py-3 bg-green-600 hover:bg-green-700 text-white font-black rounded-xl text-sm transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 shadow-sm shadow-green-600/30"
                         >
                             {isBulkProcessing ? (
@@ -364,15 +384,7 @@ export function Step5Publish({
             <div className="flex gap-3">
                 <button onClick={() => setStep(4)} className="flex-1 py-3 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 font-bold rounded-xl hover:bg-slate-50 dark:hover:bg-slate-800 transition-all">Atrás</button>
                 <button
-                    onClick={() => {
-                        setStep(1);
-                        setLoadedProducts([]);
-                        setProcessedProducts([]);
-                        setAsinInput('');
-                        setPublishingStatus({});
-                        setDryRunResults({});
-                        setPublishResults({});
-                    }}
+                    onClick={() => setStep(1)}
                     className="flex-1 py-3 bg-primary hover:bg-primary/90 text-white font-black rounded-xl transition-all flex items-center justify-center gap-2"
                 >
                     <span className="material-symbols-outlined">add</span>Nueva Importación
