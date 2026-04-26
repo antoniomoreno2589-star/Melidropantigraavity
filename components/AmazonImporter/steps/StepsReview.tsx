@@ -295,13 +295,21 @@ export function Step5Publish({
                                                 </a>
                                             )}
                                             {result?.error && <span className="text-[10px] text-red-600 dark:text-red-400 font-bold">❌ Error</span>}
-                                            {dry && !result?.id && <span className="text-[10px] text-blue-600 dark:text-blue-400 font-bold">✓ Probado</span>}
+                                            {dry && !result?.id && dry.testMeliId && (
+                                                <span className="text-[10px] text-green-600 dark:text-green-400 font-bold">✓ Probado (sandbox)</span>
+                                            )}
+                                            {dry && !result?.id && !dry.testMeliId && !dry.dryError && (
+                                                <span className="text-[10px] text-blue-600 dark:text-blue-400 font-bold">✓ En catálogo local</span>
+                                            )}
+                                            {dry?.dryError && (
+                                                <span className="text-[10px] text-amber-600 dark:text-amber-400 font-bold">⚠️ Error sandbox</span>
+                                            )}
                                         </div>
                                     </div>
                                 </div>
 
-                                {/* Expanded details - show only on demand or error */}
-                                {(result?.error || val?.isSkipped) && (
+                                {/* Expanded details - show on error, skip, or dry run issue */}
+                                {(result?.error || val?.isSkipped || dry?.dryError) && (
                                     <div className="px-4 py-3 bg-slate-50 dark:bg-slate-900/30 border border-t-0 border-slate-200 dark:border-slate-700 rounded-b-lg space-y-2">
                                         {val?.isSkipped && (
                                             <div className="flex items-center gap-2 text-xs">
@@ -316,6 +324,17 @@ export function Step5Publish({
                                                 {result.error.split('\n').map((line: string, i: number) => (
                                                     <p key={i}>{line}</p>
                                                 ))}
+                                            </div>
+                                        )}
+                                        {dry?.dryError && (
+                                            <div className="flex items-start gap-2 text-[10px] text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700 rounded-lg p-2">
+                                                <span className="material-symbols-outlined text-[14px] flex-shrink-0 mt-0.5">warning</span>
+                                                <div>
+                                                    <span className="font-bold block">Error al publicar en sandbox:</span>
+                                                    {dry.dryError.split('\n').map((line: string, i: number) => (
+                                                        <p key={i} className="font-mono">{line}</p>
+                                                    ))}
+                                                </div>
                                             </div>
                                         )}
                                     </div>

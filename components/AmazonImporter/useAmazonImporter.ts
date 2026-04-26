@@ -369,7 +369,14 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
         const descriptionText = descriptionSuffix
             ? `${baseDescription}\n\n${descriptionSuffix}`.substring(0, 5000)
             : baseDescription;
-        const pictureUrls = Array.from(new Set(processed.images.map(i => i.url))).slice(0, 10);
+        // Deduplicate by normalized URL (strip size tokens + query strings)
+        const seenNormalized = new Set<string>();
+        const pictureUrls: string[] = [];
+        for (const img of processed.images) {
+            const norm = img.url.replace(/\._[A-Za-z0-9_,]+\./, '.').split('?')[0];
+            if (!seenNormalized.has(norm)) { seenNormalized.add(norm); pictureUrls.push(img.url); }
+        }
+        pictureUrls.splice(10);
 
         const warrantyLabel = warrantyMonths >= 12
             ? `${Math.floor(warrantyMonths / 12)} año${Math.floor(warrantyMonths / 12) > 1 ? 's' : ''}`
@@ -395,7 +402,7 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
             ],
             shipping: {
                 mode: 'me2',
-                free_shipping: listingType === 'gold_pro',
+                free_shipping: true,
                 local_pick_up: false
             }
         };
@@ -473,18 +480,21 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
                 ...(testMeliId ? { meli_id: testMeliId } : {})
             });
 
+            const dryError = !testMeliId && testUserCreds?.access_token
+                ? (publishResult?.error ?? 'Error desconocido al publicar en sandbox')
+                : null;
+
             setDryRunResults(prev => ({
                 ...prev,
-                [asin]: { payload, validation, testPublish: publishResult, hasTestUser: !!testUserCreds?.access_token }
+                [asin]: {
+                    payload, validation,
+                    testPublish: publishResult,
+                    hasTestUser: !!testUserCreds?.access_token,
+                    testMeliId,
+                    dryError,
+                }
             }));
             setPublishingStatus(prev => ({ ...prev, [asin]: 'idle' }));
-
-            const msg = testMeliId
-                ? `✅ Publicado en cuenta de prueba de ML (ID: ${testMeliId}) y guardado en el catálogo de pruebas.`
-                : testUserCreds?.access_token
-                    ? `⚠️ Error al publicar en ML de pruebas:\n${publishResult?.error ?? 'desconocido'}\n\nGuardado solo en el catálogo de pruebas local.`
-                    : `📋 Guardado solo en el catálogo de pruebas local de la app.\n\nPara publicar realmente en ML sandbox:\n1. Ve a Configuración → "Usuario de prueba de Mercado Libre"\n2. Crea o conecta un test user\n3. Vuelve aquí y presiona "Probar (Sandbox)" otra vez.`;
-            alert(msg);
         } catch (err: any) {
             setPublishResults(prev => ({ ...prev, [asin]: { error: `Error en prueba: ${err.message}` } }));
             setPublishingStatus(prev => ({ ...prev, [asin]: 'error' }));
