@@ -493,9 +493,19 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
                 ...(testMeliId ? { meli_id: testMeliId } : {})
             });
 
-            const dryError = !testMeliId && testUserCreds?.access_token
-                ? (publishResult?.error ?? 'Error desconocido al publicar en sandbox')
-                : null;
+            let dryError: string | null = null;
+            if (!testMeliId && testUserCreds?.access_token) {
+                if (publishResult?.error) {
+                    dryError = publishResult.error;
+                } else if (publishResult?.cause && Array.isArray(publishResult.cause)) {
+                    const causes = publishResult.cause.map((c: any) =>
+                        c.message || c.description || JSON.stringify(c)
+                    );
+                    dryError = causes.join(' • ');
+                } else if (publishResult && !publishResult.id) {
+                    dryError = publishResult.message || 'Error desconocido al publicar en sandbox';
+                }
+            }
 
             setDryRunResults(prev => ({
                 ...prev,
