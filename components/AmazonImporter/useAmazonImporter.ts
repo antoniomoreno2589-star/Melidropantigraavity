@@ -415,7 +415,8 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
             shipping: {
                 mode: 'me2',
                 free_shipping: true,
-                local_pick_up: false
+                local_pick_up: false,
+                logistic_type: 'drop_off'
             }
         };
 
