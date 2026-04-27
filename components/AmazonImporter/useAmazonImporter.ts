@@ -501,6 +501,9 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
                 }
             }
 
+            // Build production payload to store for "Publicar Real" later
+            const productionPayload = buildItemPayload(processed, false);
+
             await api.testProducts.create({
                 title: payload.title,
                 asin: processed.asin,
@@ -510,6 +513,7 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
                 image_url: processed.images[0]?.url,
                 category: payload.category_id,
                 status: 'active',
+                publish_payload: productionPayload,
                 ...(testMeliId ? { meli_id: testMeliId } : {})
             });
 

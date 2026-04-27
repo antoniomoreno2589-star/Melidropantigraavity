@@ -140,19 +140,44 @@ export const TestProductsPage = () => {
         if (!product) return;
 
         if (!product.publishPayload) {
-            alert('Este producto debe publicarse primero en el sandbox antes de pasar a producción.');
+            alert('Este producto debe publicarse primero en el sandbox antes de pasar a producción. Vuelve a importarlo desde el Amazon Importer.');
+            return;
+        }
+
+        // Verify real ML credentials are connected
+        const realCreds = meliService.getCredentials();
+        if (!realCreds?.token) {
+            alert('No tienes credenciales reales de MercadoLibre conectadas. Ve a Configuración para conectar tu cuenta.');
             return;
         }
 
         try {
-            const result = await meliService.publishItem(product.publishPayload, false);
+            // Extract description for separate posting (ML rejects description in POST /items)
+            const payload = product.publishPayload;
+            const descriptionText = payload?.description?.plain_text;
+            const itemPayload = { ...payload, description: undefined };
+
+            const result = await meliService.publishItem(itemPayload, false);
 
             if (result.error) {
-                const errorMsg = result.cause?.length > 0
-                    ? result.cause.map((c: any) => `${c.code}: ${c.message}`).join('\n')
+                const causes: string[] = [];
+                if (result.cause && Array.isArray(result.cause)) {
+                    result.cause.forEach((c: any) => {
+                        const field = c.field ? `[${c.field}] ` : '';
+                        const msg = c.message || c.description || (c.code ? `código ${c.code}` : null) || JSON.stringify(c);
+                        causes.push(`${field}${msg}`);
+                    });
+                }
+                const errorMsg = causes.length > 0
+                    ? `${result.error}\n• ${causes.join('\n• ')}`
                     : result.error;
-                alert(`Error al publicar: ${errorMsg}`);
+                alert(`Error al publicar:\n${errorMsg}`);
                 return;
+            }
+
+            // Post description separately (ML requires PUT /items/{id}/description)
+            if (result.id && descriptionText) {
+                await meliService.postDescription(result.id, descriptionText);
             }
 
             // Update test product with real meli_id and publication status
@@ -166,7 +191,7 @@ export const TestProductsPage = () => {
                 p.id === id ? { ...p, meliId: result.id, isPublishedToReal: true } : p
             ));
 
-            alert('✅ Producto publicado exitosamente en tu cuenta real de MercadoLibre.');
+            alert(`✅ Producto publicado exitosamente.\nID: ${result.id}\nVer: ${result.permalink || 'En tu panel de MercadoLibre'}`);
         } catch (err: any) {
             console.error("Error publishing to real account:", err);
             alert(`Error: ${err.message}`);
@@ -201,11 +226,56 @@ export const TestProductsPage = () => {
         }
     };
 
-    const handleBulkPublish = () => {
+    const handleBulkPublish = async () => {
         if (selectedIds.length === 0) return;
-        setTestProducts(prev => prev.map(p => selectedIds.includes(p.id) ? { ...p, isPublishedToReal: true, status: 'active' } : p));
+        if (!confirm(`¿Publicar ${selectedIds.length} producto(s) en tu cuenta REAL de MercadoLibre?`)) return;
+
+        const realCreds = meliService.getCredentials();
+        if (!realCreds?.token) {
+            alert('No tienes credenciales reales de MercadoLibre conectadas. Ve a Configuración para conectar tu cuenta.');
+            return;
+        }
+
+        const toPublish = testProducts.filter(p => selectedIds.includes(p.id) && !p.isPublishedToReal);
+        let successCount = 0;
+        const errors: string[] = [];
+
+        for (const product of toPublish) {
+            if (!product.publishPayload) {
+                errors.push(`${product.title}: sin payload (re-importar)`);
+                continue;
+            }
+            try {
+                const descriptionText = product.publishPayload?.description?.plain_text;
+                const itemPayload = { ...product.publishPayload, description: undefined };
+                const result = await meliService.publishItem(itemPayload, false);
+
+                if (result.error) {
+                    const causes = result.cause?.map((c: any) => c.message || c.code).join(', ') || result.error;
+                    errors.push(`${product.title}: ${causes}`);
+                    continue;
+                }
+
+                if (result.id && descriptionText) {
+                    await meliService.postDescription(result.id, descriptionText);
+                }
+
+                await api.testProducts.update(product.id, {
+                    meli_id: result.id,
+                    is_published_to_real: true
+                });
+                setTestProducts(prev => prev.map(p =>
+                    p.id === product.id ? { ...p, meliId: result.id, isPublishedToReal: true } : p
+                ));
+                successCount++;
+            } catch (err: any) {
+                errors.push(`${product.title}: ${err.message}`);
+            }
+        }
+
         setSelectedIds([]);
-        alert(`${selectedIds.length} productos han sido publicados en MercadoLibre.`);
+        const summary = `✅ Publicados: ${successCount}\n${errors.length > 0 ? `\n❌ Errores (${errors.length}):\n${errors.join('\n')}` : ''}`;
+        alert(summary);
     };
 
     const clearSandbox = async () => {
