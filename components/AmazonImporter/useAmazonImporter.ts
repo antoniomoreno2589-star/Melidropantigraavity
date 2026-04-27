@@ -465,7 +465,8 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
                         const imageIds: string[] = [];
                         const seenUploadUrls = new Set<string>();
                         for (const img of processed.images.slice(0, 10)) {
-                            const dedupeKey = img.cleanedUrl || img.url;
+                            const rawKey = img.cleanedUrl || img.url;
+                            const dedupeKey = rawKey.replace(/\._[A-Za-z0-9_,]+\./, '.').split('?')[0];
                             if (seenUploadUrls.has(dedupeKey)) continue;
                             seenUploadUrls.add(dedupeKey);
                             const id = img.cleanedUrl
@@ -473,12 +474,17 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
                                 : await meliService.uploadImage(img.url, testToken);
                             if (id && !imageIds.includes(id)) imageIds.push(id);
                         }
-                        const testPayload = { ...payload };
+                        const testPayload = { ...payload, description: undefined };
                         if (imageIds.length > 0) {
                             (testPayload as any).pictures = imageIds.map((id: string) => ({ id }));
                         }
                         publishResult = await meliService.publishItem(testPayload, false, testToken);
-                        if (publishResult?.id) testMeliId = publishResult.id;
+                        if (publishResult?.id) {
+                            testMeliId = publishResult.id;
+                            if (payload.description?.plain_text) {
+                                await meliService.postDescription(publishResult.id, payload.description.plain_text, testToken);
+                            }
+                        }
                     } else {
                         publishResult = { error: 'No se pudo obtener token del usuario de prueba' };
                     }
@@ -567,7 +573,8 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
             const imageIds: string[] = [];
             const seenUploadUrls = new Set<string>();
             for (const img of processed.images.slice(0, 10)) {
-                const dedupeKey = img.cleanedUrl || img.url;
+                const rawKey = img.cleanedUrl || img.url;
+                const dedupeKey = rawKey.replace(/\._[A-Za-z0-9_,]+\./, '.').split('?')[0];
                 if (seenUploadUrls.has(dedupeKey)) continue;
                 seenUploadUrls.add(dedupeKey);
                 const id = img.cleanedUrl
@@ -577,11 +584,13 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
             }
 
             const payload = buildItemPayload(processed);
+            const descriptionText = payload.description?.plain_text;
+            const publishPayload = { ...payload, description: undefined };
             if (imageIds.length > 0) {
-                (payload as any).pictures = imageIds.map((id: string) => ({ id }));
+                (publishPayload as any).pictures = imageIds.map((id: string) => ({ id }));
             }
 
-            const result = await meliService.publishItem(payload, isDraft, publishToken);
+            const result = await meliService.publishItem(publishPayload, isDraft, publishToken);
 
             console.log(`[Melidrop] Publication response for ${asin}:`, result);
 
@@ -602,6 +611,10 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
                 setPublishResults(prev => ({ ...prev, [asin]: result }));
                 setPublishingStatus(prev => ({ ...prev, [asin]: 'success' }));
 
+                if (result.id && descriptionText) {
+                    await meliService.postDescription(result.id, descriptionText, publishToken);
+                }
+
                 // Persist the product to Supabase so the updater knows its currency
                 // and description without having to re-fetch from Amazon.
                 if (result.id) {
@@ -611,14 +624,14 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
                         const { error: sbErr } = await supabase.from('products').upsert({
                             user_id:          user.id,
                             meli_id:          result.id,
-                            title:            result.title || payload.title || processed.optimizedTitle,
+                            title:            result.title || publishPayload.title || processed.optimizedTitle,
                             sku:              processed.asin,
-                            price_mxn:        payload.price,
-                            stock_meli:       payload.available_quantity,
+                            price_mxn:        publishPayload.price,
+                            stock_meli:       publishPayload.available_quantity,
                             status:           isDraft ? 'inactive' : 'active',
                             image_url:        processed.images[0]?.url ?? null,
                             currency:         product?.currency ?? 'USD',
-                            description_text: payload.description?.plain_text ?? null,
+                            description_text: descriptionText ?? null,
                             last_updated:     new Date().toISOString(),
                         }, { onConflict: 'meli_id' });
                         if (sbErr) console.warn('[Melidrop] Supabase upsert error:', sbErr.message);

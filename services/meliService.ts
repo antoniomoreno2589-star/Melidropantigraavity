@@ -858,6 +858,18 @@ class MeliService {
         return data;
     }
 
+    async postDescription(meliId: string, descriptionText: string, customToken?: string): Promise<void> {
+        try {
+            await this.fetchWithAuth(`/items/${meliId}/description`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ plain_text: descriptionText })
+            }, customToken);
+        } catch (e) {
+            console.warn('[Melidrop] Failed to post description:', e);
+        }
+    }
+
     async validateItem(itemData: any): Promise<{ valid: boolean; errors: any[] }> {
         // MercadoLibre has a validation endpoint
         try {
