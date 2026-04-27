@@ -341,6 +341,7 @@ export const api = {
                 imageUrl: p.image_url,
                 category: p.category,
                 meliId: p.meli_id,
+                publishPayload: p.publish_payload,
                 isPublishedToReal: p.is_published_to_real,
                 creationDate: new Date(p.created_at).toISOString().split('T')[0]
             }));
@@ -363,9 +364,19 @@ export const api = {
                     stock_meli: product.stock_meli || 0,
                     status: product.status || 'active',
                     image_url: product.image_url,
-                    category: product.category
+                    category: product.category,
+                    meli_id: product.meli_id,
+                    publish_payload: product.publish_payload
                 });
 
+            if (error) throw error;
+        },
+
+        async update(id: string, updates: any): Promise<void> {
+            const { error } = await supabase
+                .from('test_products')
+                .update(updates)
+                .eq('id', id);
             if (error) throw error;
         },
 

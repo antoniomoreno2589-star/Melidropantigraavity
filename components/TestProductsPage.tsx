@@ -135,9 +135,42 @@ export const TestProductsPage = () => {
         setSelectedIds(prev => prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]);
     };
 
-    const handlePublishToReal = (id: string) => {
-        setTestProducts(prev => prev.map(p => p.id === id ? { ...p, isPublishedToReal: true, status: 'active' } : p));
-        alert('Producto publicado exitosamente en MercadoLibre.');
+    const handlePublishToReal = async (id: string) => {
+        const product = testProducts.find(p => p.id === id);
+        if (!product) return;
+
+        if (!product.publishPayload) {
+            alert('Este producto debe publicarse primero en el sandbox antes de pasar a producción.');
+            return;
+        }
+
+        try {
+            const result = await meliService.publishItem(product.publishPayload, false);
+
+            if (result.error) {
+                const errorMsg = result.cause?.length > 0
+                    ? result.cause.map((c: any) => `${c.code}: ${c.message}`).join('\n')
+                    : result.error;
+                alert(`Error al publicar: ${errorMsg}`);
+                return;
+            }
+
+            // Update test product with real meli_id and publication status
+            await api.testProducts.update(id, {
+                meli_id: result.id,
+                is_published_to_real: true
+            });
+
+            // Update local state
+            setTestProducts(prev => prev.map(p =>
+                p.id === id ? { ...p, meliId: result.id, isPublishedToReal: true } : p
+            ));
+
+            alert('✅ Producto publicado exitosamente en tu cuenta real de MercadoLibre.');
+        } catch (err: any) {
+            console.error("Error publishing to real account:", err);
+            alert(`Error: ${err.message}`);
+        }
     };
 
     const handleDelete = async (id: string, meliId?: string) => {
