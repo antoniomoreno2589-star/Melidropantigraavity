@@ -435,23 +435,28 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
             let publishResult: any = null;
             let testMeliId: string | null = null;
 
-            // Attempt sandbox publish if we have credentials (even without a stored token)
-            if (testUserCreds?.email && testUserCreds?.password) {
+            // Attempt sandbox publish if we have any test user credentials
+            if (testUserCreds?.email && (testUserCreds?.password || testUserCreds?.access_token)) {
                 try {
-                    // Always get a fresh token — createTestUser doesn't return access_token
                     let testToken: string | null = null;
                     try {
-                        testToken = await meliService.loginTestUser(testUserCreds.email, testUserCreds.password);
-                        if (testToken) {
-                            const { data: { user } } = await supabase.auth.getUser();
-                            if (user) {
-                                const updated = { ...testUserCreds, access_token: testToken };
-                                await supabase.from('user_connections').upsert(
-                                    { user_id: user.id, meli_test_user: updated },
-                                    { onConflict: 'user_id' }
-                                );
-                                setTestUserCreds(updated);
+                        if (testUserCreds.password) {
+                            // Prefer fresh token via password grant
+                            testToken = await meliService.loginTestUser(testUserCreds.email, testUserCreds.password);
+                            if (testToken) {
+                                const { data: { user } } = await supabase.auth.getUser();
+                                if (user) {
+                                    const updated = { ...testUserCreds, access_token: testToken };
+                                    await supabase.from('user_connections').upsert(
+                                        { user_id: user.id, meli_test_user: updated },
+                                        { onConflict: 'user_id' }
+                                    );
+                                    setTestUserCreds(updated);
+                                }
                             }
+                        } else {
+                            // Connected via OAuth (SettingsPage) — use stored access_token directly
+                            testToken = testUserCreds.access_token;
                         }
                     } catch { testToken = testUserCreds.access_token ?? null; }
 
@@ -530,9 +535,9 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
 
         setPublishingStatus(prev => ({ ...prev, [asin]: 'loading' }));
         try {
-            // ML tokens expire in 6h — always refresh test user token before publishing
+            // ML tokens expire in 6h — refresh if possible, else use stored token
             let publishToken: string | undefined;
-            if (testUserCreds?.access_token) {
+            if (testUserCreds?.access_token || (testUserCreds?.email && testUserCreds?.password)) {
                 try {
                     if (testUserCreds.email && testUserCreds.password) {
                         const fresh = await meliService.loginTestUser(testUserCreds.email, testUserCreds.password);
@@ -548,6 +553,9 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
                                 setTestUserCreds(updated);
                             }
                         }
+                    } else {
+                        // OAuth-connected test user — use stored access_token directly
+                        publishToken = testUserCreds.access_token;
                     }
                 } catch (refreshErr: any) {
                     console.warn('[Melidrop] Test user token refresh failed:', refreshErr.message);
