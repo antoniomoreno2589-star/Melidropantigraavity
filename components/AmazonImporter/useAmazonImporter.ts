@@ -507,13 +507,20 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
 
             let dryError: string | null = null;
             if (!testMeliId && publishResult !== null) {
+                const causeDetails: string[] = [];
+                if (publishResult?.cause && Array.isArray(publishResult.cause)) {
+                    publishResult.cause.forEach((c: any) => {
+                        const field = c.field ? `[${c.field}] ` : '';
+                        const msg = c.message || c.description || (c.code ? `código ${c.code}` : null) || JSON.stringify(c);
+                        causeDetails.push(`${field}${msg}`);
+                    });
+                }
                 if (publishResult?.error) {
-                    dryError = publishResult.error;
-                } else if (publishResult?.cause && Array.isArray(publishResult.cause)) {
-                    const causes = publishResult.cause.map((c: any) =>
-                        c.message || c.description || JSON.stringify(c)
-                    );
-                    dryError = causes.join(' • ');
+                    dryError = causeDetails.length > 0
+                        ? `${publishResult.error}\n• ${causeDetails.join('\n• ')}`
+                        : publishResult.error;
+                } else if (causeDetails.length > 0) {
+                    dryError = causeDetails.join('\n• ');
                 } else if (publishResult && !publishResult.id) {
                     dryError = publishResult.message || 'Error desconocido al publicar en sandbox';
                 }
