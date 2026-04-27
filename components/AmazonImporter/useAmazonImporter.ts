@@ -494,7 +494,7 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
             });
 
             let dryError: string | null = null;
-            if (!testMeliId && testUserCreds?.access_token) {
+            if (!testMeliId && publishResult !== null) {
                 if (publishResult?.error) {
                     dryError = publishResult.error;
                 } else if (publishResult?.cause && Array.isArray(publishResult.cause)) {
