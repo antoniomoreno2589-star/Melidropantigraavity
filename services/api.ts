@@ -340,6 +340,7 @@ export const api = {
                 status: p.status,
                 imageUrl: p.image_url,
                 category: p.category,
+                meliId: p.meli_id,
                 isPublishedToReal: p.is_published_to_real,
                 creationDate: new Date(p.created_at).toISOString().split('T')[0]
             }));

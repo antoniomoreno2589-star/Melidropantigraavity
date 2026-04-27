@@ -423,45 +423,46 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
             let publishResult: any = null;
             let testMeliId: string | null = null;
 
-            if (testUserCreds?.access_token) {
+            // Attempt sandbox publish if we have credentials (even without a stored token)
+            if (testUserCreds?.email && testUserCreds?.password) {
                 try {
-                    // ML tokens expire in 6h — always refresh before using test user token
-                    let testToken = testUserCreds.access_token;
-                    if (testUserCreds.email && testUserCreds.password) {
-                        try {
-                            const fresh = await meliService.loginTestUser(testUserCreds.email, testUserCreds.password);
-                            if (fresh) {
-                                testToken = fresh;
-                                const { data: { user } } = await supabase.auth.getUser();
-                                if (user) {
-                                    const updated = { ...testUserCreds, access_token: fresh };
-                                    await supabase.from('user_connections').upsert(
-                                        { user_id: user.id, meli_test_user: updated },
-                                        { onConflict: 'user_id' }
-                                    );
-                                    setTestUserCreds(updated);
-                                }
+                    // Always get a fresh token — createTestUser doesn't return access_token
+                    let testToken: string | null = null;
+                    try {
+                        testToken = await meliService.loginTestUser(testUserCreds.email, testUserCreds.password);
+                        if (testToken) {
+                            const { data: { user } } = await supabase.auth.getUser();
+                            if (user) {
+                                const updated = { ...testUserCreds, access_token: testToken };
+                                await supabase.from('user_connections').upsert(
+                                    { user_id: user.id, meli_test_user: updated },
+                                    { onConflict: 'user_id' }
+                                );
+                                setTestUserCreds(updated);
                             }
-                        } catch { /* use existing token */ }
-                    }
-                    const imageIds: string[] = [];
-                    const seenUploadUrls = new Set<string>();
-                    for (const img of processed.images.slice(0, 10)) {
-                        const dedupeKey = img.cleanedUrl || img.url;
-                        if (seenUploadUrls.has(dedupeKey)) continue;
-                        seenUploadUrls.add(dedupeKey);
-                        const id = img.cleanedUrl
-                            ? await meliService.uploadImageBinary(img.cleanedUrl, testToken)
-                            : await meliService.uploadImage(img.url, testToken);
-                        if (id && !imageIds.includes(id)) imageIds.push(id);
-                    }
-                    const testPayload = { ...payload };
-                    if (imageIds.length > 0) {
-                        (testPayload as any).pictures = imageIds.map((id: string) => ({ id }));
-                    }
-                    publishResult = await meliService.publishItem(testPayload, false, testToken);
-                    if (publishResult?.id) {
-                        testMeliId = publishResult.id;
+                        }
+                    } catch { testToken = testUserCreds.access_token ?? null; }
+
+                    if (testToken) {
+                        const imageIds: string[] = [];
+                        const seenUploadUrls = new Set<string>();
+                        for (const img of processed.images.slice(0, 10)) {
+                            const dedupeKey = img.cleanedUrl || img.url;
+                            if (seenUploadUrls.has(dedupeKey)) continue;
+                            seenUploadUrls.add(dedupeKey);
+                            const id = img.cleanedUrl
+                                ? await meliService.uploadImageBinary(img.cleanedUrl, testToken)
+                                : await meliService.uploadImage(img.url, testToken);
+                            if (id && !imageIds.includes(id)) imageIds.push(id);
+                        }
+                        const testPayload = { ...payload };
+                        if (imageIds.length > 0) {
+                            (testPayload as any).pictures = imageIds.map((id: string) => ({ id }));
+                        }
+                        publishResult = await meliService.publishItem(testPayload, false, testToken);
+                        if (publishResult?.id) testMeliId = publishResult.id;
+                    } else {
+                        publishResult = { error: 'No se pudo obtener token del usuario de prueba' };
                     }
                 } catch (publishErr: any) {
                     publishResult = { error: publishErr.message };

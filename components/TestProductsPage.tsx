@@ -123,21 +123,30 @@ export const TestProductsPage = () => {
     };
 
     const handleDelete = async (id: string, meliId?: string) => {
-        if (!confirm('¿Estás seguro de que deseas eliminar este producto? Se cerrará en MercadoLibre y se borrará del sistema.')) return;
-        
+        if (!confirm('¿Estás seguro de que deseas eliminar este producto?')) return;
         try {
-            if (meliId) {
-                await meliService.deleteItem(meliId);
-            }
-            // Delete from database
-            const { error } = await supabase.from('products').delete().eq('id', id);
-            if (error) throw error;
-            
+            if (meliId) await meliService.deleteItem(meliId).catch(() => {});
+            await api.testProducts.delete(id);
             setTestProducts(prev => prev.filter(p => p.id !== id));
-            alert('Producto eliminado correctamente.');
         } catch (err: any) {
             console.error("Error deleting product:", err);
-            alert("No se pudo eliminar el producto: " + err.message);
+            alert("No se pudo eliminar: " + err.message);
+        }
+    };
+
+    const handleBulkDelete = async () => {
+        if (selectedIds.length === 0) return;
+        if (!confirm(`¿Eliminar ${selectedIds.length} producto(s) seleccionado(s)?`)) return;
+        try {
+            const toDelete = testProducts.filter(p => selectedIds.includes(p.id));
+            await Promise.all(toDelete.map(async p => {
+                if (p.meliId) await meliService.deleteItem(p.meliId).catch(() => {});
+                await api.testProducts.delete(p.id);
+            }));
+            setTestProducts(prev => prev.filter(p => !selectedIds.includes(p.id)));
+            setSelectedIds([]);
+        } catch (err: any) {
+            alert("Error al eliminar: " + err.message);
         }
     };
 
@@ -496,24 +505,31 @@ export const TestProductsPage = () => {
                         </div>
 
                         {/* Bulk Actions */}
-                        <div className="flex flex-wrap items-center gap-4 mt-4 p-5 bg-white dark:bg-slate-800 rounded-2xl border border-dashed border-slate-300 dark:border-slate-700 shadow-sm">
+                        <div className="flex flex-wrap items-center gap-3 mt-4 p-5 bg-white dark:bg-slate-800 rounded-2xl border border-dashed border-slate-300 dark:border-slate-700 shadow-sm">
                             <p className="text-sm font-bold text-slate-500 flex items-center gap-2 mr-2">
                                 <span className="material-symbols-outlined text-primary">auto_fix_high</span>
-                                Acciones masivas ({selectedIds.length}):
+                                Acciones masivas ({selectedIds.length} seleccionados):
                             </p>
-                            <button 
+                            <button
                                 onClick={handleBulkPublish}
                                 disabled={selectedIds.length === 0}
                                 className={`text-xs font-bold px-4 py-2 rounded-lg transition-all ${selectedIds.length > 0 ? 'bg-primary text-white shadow-md hover:bg-primary-dark' : 'bg-slate-100 text-slate-400 cursor-not-allowed'}`}
                             >
                                 Publicar seleccionados en MercadoLibre
                             </button>
+                            <button
+                                onClick={handleBulkDelete}
+                                disabled={selectedIds.length === 0}
+                                className={`text-xs font-bold px-4 py-2 rounded-lg transition-all border ${selectedIds.length > 0 ? 'bg-red-50 text-red-600 border-red-200 hover:bg-red-100 dark:bg-red-900/20 dark:text-red-400 dark:border-red-800' : 'bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed'}`}
+                            >
+                                Eliminar seleccionados
+                            </button>
                             <span className="text-slate-300 dark:text-slate-700 hidden sm:block">|</span>
-                            <button 
+                            <button
                                 onClick={clearSandbox}
                                 className="text-xs font-bold text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 px-3 py-2 rounded-lg transition-colors border border-transparent hover:border-red-200"
                             >
-                                Limpiar entorno Sandbox
+                                Limpiar todo el Sandbox
                             </button>
                         </div>
                     </div>
