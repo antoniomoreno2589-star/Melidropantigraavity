@@ -359,10 +359,7 @@ export function useAmazonImporter() {
             ? 'Toalla con Capucha'
             : undefined;
 
-        const baseDescription = product.description
-            ? product.description.substring(0, 2000)
-            : `${product.title}. Producto nuevo, condición original de fábrica.`;
-        const descriptionSuffix = localStorage.getItem('melidrop_description_suffix') ||
+        const configDescription = localStorage.getItem('melidrop_description_suffix') ||
             `==========================================
 IMPORTANTE:
 Este producto se importa de Estados Unidos
@@ -378,9 +375,14 @@ Garantía de ${warrantyMonths} mes${warrantyMonths > 1 ? 'es' : ''}: Si no queda
 Compra con confianza, estamos comprometidos en ofrecerte productos de excelente calidad y un servicio de atención al cliente sobresaliente.
 
 ¡Haz tu compra ahora y recibe tu producto en la puerta de tu hogar!`;
-        const descriptionText = descriptionSuffix
-            ? `${baseDescription}\n\n${descriptionSuffix}`.substring(0, 5000)
-            : baseDescription;
+
+        const amazonDescription = product.description
+            ? product.description.substring(0, 1500)
+            : '';
+
+        const descriptionText = amazonDescription
+            ? `${configDescription}\n\n${amazonDescription}`.substring(0, 5000)
+            : configDescription.substring(0, 5000);
         // Deduplicate by normalized URL (strip size tokens + query strings)
         const seenNormalized = new Set<string>();
         const pictureUrls: string[] = [];
@@ -412,12 +414,18 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
                 { id: 'WARRANTY_TIME', value_name: warrantyLabel },
                 { id: 'MANUFACTURING_TIME', value_name: `${handlingTime} días` }
             ],
-            shipping: {
-                mode: 'me2',
-                free_shipping: true,
-                local_pick_up: false,
-                logistic_type: 'drop_off'
-            }
+            shipping: isSandbox
+                ? {
+                    mode: 'me2',
+                    free_shipping: true,
+                    local_pick_up: false
+                  }
+                : {
+                    mode: 'me2',
+                    free_shipping: true,
+                    local_pick_up: false,
+                    logistic_type: 'drop_off'
+                  }
         };
 
         return payload;
