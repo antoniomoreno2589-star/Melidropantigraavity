@@ -300,7 +300,7 @@ export function useAmazonImporter() {
             : Math.ceil(cost * (1 + margin / 100));
     };
 
-    const buildItemPayload = (processed: ProcessedProduct) => {
+    const buildItemPayload = (processed: ProcessedProduct, isSandbox: boolean = false) => {
         const product = loadedProducts.find(p => p.asin === processed.asin)!;
         const catId = selectedCategories[processed.asin]?.id;
         const title = editedTitles[processed.asin] || processed.optimizedTitle;
@@ -321,14 +321,26 @@ export function useAmazonImporter() {
 
         const currency = product.currency || 'USD';
         const isUSD = currency.toUpperCase() !== 'MXN';
-        const priceMXN = calculateMexicoPrice(product.price || 0, currency);
+        let priceMXN = calculateMexicoPrice(product.price || 0, currency);
+
+        // For sandbox test products: multiply price by 10 to prevent accidental purchases
+        if (isSandbox) {
+            priceMXN = priceMXN * 10;
+        }
 
         // handling_time = días que Amazon tarda en entregar a tu bodega + días de preparación
-        const prepKey     = isUSD ? 'melidrop_handling_time_usa'     : 'melidrop_handling_time_mx';
-        const deliveryKey = isUSD ? 'melidrop_amazon_delivery_usa'   : 'melidrop_amazon_delivery_mx';
-        const prepDays     = parseInt(localStorage.getItem(prepKey)     || (isUSD ? '7' : '3'));
-        const deliveryDays = parseInt(localStorage.getItem(deliveryKey) || (isUSD ? '5' : '3'));
-        const handlingTime = prepDays + deliveryDays;
+        // For sandbox: always use 200 days to prevent accidental purchases
+        let handlingTime: number;
+        if (isSandbox) {
+            handlingTime = 200;
+        } else {
+            const prepKey     = isUSD ? 'melidrop_handling_time_usa'     : 'melidrop_handling_time_mx';
+            const deliveryKey = isUSD ? 'melidrop_amazon_delivery_usa'   : 'melidrop_amazon_delivery_mx';
+            const prepDays     = parseInt(localStorage.getItem(prepKey)     || (isUSD ? '7' : '3'));
+            const deliveryDays = parseInt(localStorage.getItem(deliveryKey) || (isUSD ? '5' : '3'));
+            handlingTime = prepDays + deliveryDays;
+        }
+
         const availableQty = parseInt(localStorage.getItem('melidrop_default_stock') || '3');
         const warrantyMonths = parseInt(localStorage.getItem('melidrop_warranty_months') || '1');
 
@@ -417,7 +429,7 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
 
         setPublishingStatus(prev => ({ ...prev, [asin]: 'loading' }));
         try {
-            const payload = buildItemPayload(processed);
+            const payload = buildItemPayload(processed, true);
             const validation = await meliService.validateItem(payload);
 
             let publishResult: any = null;

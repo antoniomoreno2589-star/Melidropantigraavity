@@ -50,7 +50,6 @@ export const TestProductsPage = () => {
         setIsCreatingUser(true);
         try {
             const user = await meliService.createTestUser('MLM');
-            setTestUser(user);
 
             // Save to Supabase with proper conflict resolution
             const { data: { user: authUser } } = await supabase.auth.getUser();
@@ -58,7 +57,26 @@ export const TestProductsPage = () => {
                 const { error } = await supabase
                     .from('user_connections')
                     .upsert({ user_id: authUser.id, meli_test_user: user }, { onConflict: 'user_id' });
-                if (error) throw error;
+                if (error) {
+                    console.error("Upsert error:", error);
+                    throw error;
+                }
+
+                // Verify the save by fetching it back
+                await new Promise(r => setTimeout(r, 100));
+                const { data: verified } = await supabase
+                    .from('user_connections')
+                    .select('meli_test_user')
+                    .eq('user_id', authUser.id)
+                    .maybeSingle();
+
+                if (verified?.meli_test_user) {
+                    setTestUser(verified.meli_test_user);
+                } else {
+                    setTestUser(user);
+                }
+            } else {
+                setTestUser(user);
             }
             alert('✅ Usuario test creado. Ya puedes probar productos en el importador.');
         } catch (err: any) {
