@@ -51,19 +51,19 @@ export const TestProductsPage = () => {
         try {
             const user = await meliService.createTestUser('MLM');
             setTestUser(user);
-            
-            // Save to Supabase
+
+            // Save to Supabase with proper conflict resolution
             const { data: { user: authUser } } = await supabase.auth.getUser();
             if (authUser) {
-                await supabase.from('user_connections').upsert({
-                    user_id: authUser.id,
-                    meli_test_user: user
-                });
+                const { error } = await supabase
+                    .from('user_connections')
+                    .upsert({ user_id: authUser.id, meli_test_user: user }, { onConflict: 'user_id' });
+                if (error) throw error;
             }
-            alert('¡Éxito! Se ha creado un nuevo usuario de prueba en MercadoLibre.');
+            alert('✅ Usuario test creado. Ya puedes probar productos en el importador.');
         } catch (err: any) {
             console.error("Error creating test user:", err);
-            alert("No se pudo crear el usuario: " + err.message);
+            alert("Error: " + err.message);
         } finally {
             setIsCreatingUser(false);
         }
