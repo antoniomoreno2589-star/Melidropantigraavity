@@ -494,7 +494,12 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
                         if (publishResult?.id) {
                             testMeliId = publishResult.id;
                             if (payload.description?.plain_text) {
-                                await meliService.postDescription(publishResult.id, payload.description.plain_text, testToken);
+                                try {
+                                    await meliService.postDescription(publishResult.id, payload.description.plain_text, testToken);
+                                } catch (descErr: any) {
+                                    console.error('[Melidrop] Warning: Description failed to post:', descErr.message);
+                                    publishResult.description_error = descErr.message;
+                                }
                             }
                         }
                     } else {
@@ -639,7 +644,12 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
                 setPublishingStatus(prev => ({ ...prev, [asin]: 'success' }));
 
                 if (result.id && descriptionText) {
-                    await meliService.postDescription(result.id, descriptionText, publishToken);
+                    try {
+                        await meliService.postDescription(result.id, descriptionText, publishToken);
+                    } catch (descErr: any) {
+                        console.error('[Melidrop] Warning: Description failed to post:', descErr.message);
+                        result.description_warning = `Descripción: ${descErr.message}`;
+                    }
                 }
 
                 // Persist the product to Supabase so the updater knows its currency

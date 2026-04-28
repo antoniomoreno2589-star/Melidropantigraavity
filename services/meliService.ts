@@ -860,13 +860,21 @@ class MeliService {
 
     async postDescription(meliId: string, descriptionText: string, customToken?: string): Promise<void> {
         try {
-            await this.fetchWithAuth(`/items/${meliId}/description`, {
+            const response = await this.fetchWithAuth(`/items/${meliId}/description`, {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ plain_text: descriptionText })
             }, customToken);
+
+            if (!response.ok) {
+                const errData = await response.text();
+                console.error(`[Melidrop] Failed to post description (${response.status}):`, errData);
+                return;
+            }
+
+            console.log(`[Melidrop] Description posted successfully for item ${meliId}`);
         } catch (e) {
-            console.warn('[Melidrop] Failed to post description:', e);
+            console.error('[Melidrop] Error posting description:', e);
         }
     }
 
