@@ -76,28 +76,30 @@ export function useAmazonImporter() {
         }));
         setLoadedProducts(initial);
 
-        for (const asin of asins) {
-            try {
-                const product = await amazonService.getProduct(asin);
-                setLoadedProducts(prev => prev.map(p => p.asin === asin ? {
-                    ...p,
-                    title: product.title,
-                    description: product.description,
-                    brand: product.brand || '',
-                    price: product.price,
-                    currency: product.currency,
-                    imageUrl: product.imageUrl,
-                    images: product.images || (product.imageUrl ? [product.imageUrl] : []),
-                    category: product.category || '',
-                    attributes: product.attributes || {},
-                    loading: false,
-                    error: null
-                } : p));
-            } catch (e: any) {
-                setLoadedProducts(prev => prev.map(p =>
-                    p.asin === asin ? { ...p, loading: false, error: e.message } : p
-                ));
-            }
+        try {
+            // Load all ASINs in parallel (was sequential before)
+            const products = await Promise.all(asins.map(asin => amazonService.getProduct(asin)));
+
+            setLoadedProducts(products.map(product => ({
+                asin: product.asin,
+                title: product.title,
+                description: product.description,
+                brand: product.brand || '',
+                price: product.price,
+                currency: product.currency,
+                imageUrl: product.imageUrl,
+                images: product.images || (product.imageUrl ? [product.imageUrl] : []),
+                category: product.category || '',
+                attributes: product.attributes || {},
+                loading: false,
+                error: null
+            })));
+        } catch (err: any) {
+            // Mark failed products individually
+            setLoadedProducts(prev => prev.map(p => {
+                const product = asins.find(asin => asin === p.asin);
+                return { ...p, loading: false, error: err.message };
+            }));
         }
         setLoadingAsins(false);
     };
@@ -108,60 +110,77 @@ export function useAmazonImporter() {
         if (validProducts.length === 0) return;
 
         setIsProcessing(true);
-        const results: ProcessedProduct[] = [];
+        setProcessingStage(`Procesando ${validProducts.length} productos...`);
 
-        for (const product of validProducts) {
-            setProcessingStage(`Procesando "${product.title.substring(0, 30)}..."`);
+        try {
+            // Process AI + category predictions in parallel
+            const processedWithCategories = await Promise.all(validProducts.map(async (product) => {
+                const processed = await aiImporterService.processProduct(product, marketplace, [], cleanImages);
+                const mlPredictions = await meliService.predictCategory(
+                    processed.categorySuggestion.search_term, marketplace
+                );
 
-            const processed = await aiImporterService.processProduct(product, marketplace, [], cleanImages);
+                // Deduplicate images by Amazon image hash
+                const seenHashes = new Set<string>();
+                const uniqueImages: typeof processed.images = [];
+                for (const img of processed.images) {
+                    const hashMatch = img.url.match(/\/images\/I\/([^./]+)/);
+                    const key = hashMatch ? hashMatch[1] : img.url.split('?')[0];
+                    if (!seenHashes.has(key)) {
+                        seenHashes.add(key);
+                        uniqueImages.push(img);
+                    }
+                }
+                processed.images = uniqueImages.slice(0, 10);
 
-            setProcessingStage('Buscando categoría en MercadoLibre...');
-            const mlPredictions = await meliService.predictCategory(
-                processed.categorySuggestion.search_term, marketplace
-            );
+                return { processed, mlPredictions };
+            }));
 
-            if (mlPredictions && mlPredictions.length > 0) {
-                setMlCategorySearchResults(prev => ({ ...prev, [product.asin]: mlPredictions }));
-                const topPred = mlPredictions[0];
-                setSelectedCategories(prev => ({
-                    ...prev,
-                    [product.asin]: {
+            // Update state in batch
+            const mlCategoryMap: Record<string, any[]> = {};
+            const selectedCategoryMap: Record<string, { id: string; name: string }> = {};
+
+            for (const { processed, mlPredictions } of processedWithCategories) {
+                if (mlPredictions?.length > 0) {
+                    mlCategoryMap[processed.asin] = mlPredictions;
+                    const topPred = mlPredictions[0];
+                    selectedCategoryMap[processed.asin] = {
                         id: topPred.category_id || topPred.id,
                         name: topPred.category_name || topPred.domain_name
-                    }
-                }));
-            }
-
-            // Deduplicate images by Amazon image hash
-            const seenHashes = new Set<string>();
-            const uniqueImages: typeof processed.images = [];
-            for (const img of processed.images) {
-                const hashMatch = img.url.match(/\/images\/I\/([^./]+)/);
-                const key = hashMatch ? hashMatch[1] : img.url.split('?')[0];
-                if (!seenHashes.has(key)) {
-                    seenHashes.add(key);
-                    uniqueImages.push(img);
+                    };
                 }
             }
-            processed.images = uniqueImages.slice(0, 10);
-            results.push(processed);
 
-            // Clean title: remove brand, fix encoding artifacts, strip leading punctuation
-            let finalTitle = processed.optimizedTitle || product.title;
-            finalTitle = finalTitle
-                .replace(/ni\s+os/gi, 'niños')
-                .replace(/ni\s+as/gi, 'niñas');
-            if (product.brand) {
-                const brandRegex = new RegExp(product.brand, 'gi');
-                finalTitle = finalTitle.replace(brandRegex, '').replace(/\s\s+/g, ' ').trim();
+            setMlCategorySearchResults(prev => ({ ...prev, ...mlCategoryMap }));
+            setSelectedCategories(prev => ({ ...prev, ...selectedCategoryMap }));
+
+            const results = processedWithCategories.map(({ processed }) => processed);
+
+            // Clean titles for all products in batch
+            const editedTitlesMap: Record<string, string> = {};
+            for (let i = 0; i < results.length; i++) {
+                const processed = results[i];
+                const product = validProducts[i];
+                let finalTitle = processed.optimizedTitle || product.title;
+                finalTitle = finalTitle
+                    .replace(/ni\s+os/gi, 'niños')
+                    .replace(/ni\s+as/gi, 'niñas');
+                if (product.brand) {
+                    const brandRegex = new RegExp(product.brand, 'gi');
+                    finalTitle = finalTitle.replace(brandRegex, '').replace(/\s\s+/g, ' ').trim();
+                }
+                finalTitle = finalTitle.replace(/^[\s\-–—,.:;|]+/, '').trim();
+                finalTitle = finalTitle.charAt(0).toUpperCase() + finalTitle.slice(1);
+                editedTitlesMap[processed.asin] = finalTitle;
             }
-            finalTitle = finalTitle.replace(/^[\s\-–—,.:;|]+/, '').trim();
-            finalTitle = finalTitle.charAt(0).toUpperCase() + finalTitle.slice(1);
-            setEditedTitles(prev => ({ ...prev, [product.asin]: finalTitle }));
-        }
 
-        setProcessedProducts(results);
-        setIsProcessing(false);
+            setEditedTitles(prev => ({ ...prev, ...editedTitlesMap }));
+            setProcessedProducts(results);
+            setIsProcessing(false);
+        } catch (err: any) {
+            console.error('[Melidrop] AI processing error:', err);
+            setIsProcessing(false);
+        }
     };
 
     // ── Step 4 handler ─────────────────────────────────────────────────
