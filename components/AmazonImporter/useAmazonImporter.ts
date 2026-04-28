@@ -311,12 +311,18 @@ export function useAmazonImporter() {
         const barcode = amazonAttrs.item_barcode?.[0]?.value || amazonAttrs.ean?.[0]?.value;
         const userHasBarcode = barcode && Object.values(attrs).includes(barcode);
 
+        const userAttrIds = new Set(Object.keys(attrs).filter(k => attrs[k]));
+
         const finalAttributes = [
             ...Object.entries(attrs)
                 .filter(([id, v]) => v && id !== 'SELLER_SKU')
                 .map(([id, value_name]) => ({ id, value_name })),
             { id: 'SELLER_SKU', value_name: processed.asin },
-            ...(barcode && !userHasBarcode ? [{ id: 'UPC', value_name: barcode }] : [])
+            ...(barcode && !userHasBarcode ? [{ id: 'UPC', value_name: barcode }] : []),
+            // Required by ML for most categories — default to 1 unit per pack
+            ...(!userAttrIds.has('UNITS_PER_PACK') ? [{ id: 'UNITS_PER_PACK', value_name: '1' }] : []),
+            // MODEL is often required — default to brand or product code
+            ...(!userAttrIds.has('MODEL') ? [{ id: 'MODEL', value_name: product.brand || processed.asin }] : []),
         ];
 
         const currency = product.currency || 'USD';
@@ -329,10 +335,10 @@ export function useAmazonImporter() {
         }
 
         // handling_time = días que Amazon tarda en entregar a tu bodega + días de preparación
-        // For sandbox: always use 200 days to prevent accidental purchases
+        // ML sandbox accepts max 60 days; production uses actual configured times
         let handlingTime: number;
         if (isSandbox) {
-            handlingTime = 200;
+            handlingTime = 60;
         } else {
             const prepKey     = isUSD ? 'melidrop_handling_time_usa'     : 'melidrop_handling_time_mx';
             const deliveryKey = isUSD ? 'melidrop_amazon_delivery_usa'   : 'melidrop_amazon_delivery_mx';
@@ -477,8 +483,8 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
                         const imageIds: string[] = [];
                         const seenUploadUrls = new Set<string>();
                         for (const img of processed.images.slice(0, 10)) {
-                            const rawKey = img.cleanedUrl || img.url;
-                            const dedupeKey = rawKey.replace(/\._[A-Za-z0-9_,]+\./, '.').split('?')[0];
+                            // Always use img.url (original) as dedup key — consistent with buildItemPayload
+                            const dedupeKey = img.url.replace(/\._[A-Za-z0-9_,]+\./, '.').split('?')[0];
                             if (seenUploadUrls.has(dedupeKey)) continue;
                             seenUploadUrls.add(dedupeKey);
                             const id = img.cleanedUrl
@@ -605,8 +611,8 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
             const imageIds: string[] = [];
             const seenUploadUrls = new Set<string>();
             for (const img of processed.images.slice(0, 10)) {
-                const rawKey = img.cleanedUrl || img.url;
-                const dedupeKey = rawKey.replace(/\._[A-Za-z0-9_,]+\./, '.').split('?')[0];
+                // Always use img.url (original) as dedup key — consistent with buildItemPayload
+                const dedupeKey = img.url.replace(/\._[A-Za-z0-9_,]+\./, '.').split('?')[0];
                 if (seenUploadUrls.has(dedupeKey)) continue;
                 seenUploadUrls.add(dedupeKey);
                 const id = img.cleanedUrl
