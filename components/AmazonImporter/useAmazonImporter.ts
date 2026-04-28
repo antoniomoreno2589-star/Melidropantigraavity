@@ -499,14 +499,21 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
                         publishResult = await meliService.publishItem(testPayload, false, testToken);
                         if (publishResult?.id) {
                             testMeliId = publishResult.id;
+                            console.log(`[Melidrop] Sandbox item published with ID: ${publishResult.id}`);
                             if (payload.description?.plain_text) {
+                                console.log(`[Melidrop] Posting description (${payload.description.plain_text.length} chars) for item ${publishResult.id}`);
                                 try {
                                     await meliService.postDescription(publishResult.id, payload.description.plain_text, testToken);
+                                    console.log(`[Melidrop] ✅ Description posted successfully`);
                                 } catch (descErr: any) {
-                                    console.error('[Melidrop] Warning: Description failed to post:', descErr.message);
+                                    console.error('[Melidrop] ❌ Description post failed:', descErr.message);
                                     publishResult.description_error = descErr.message;
                                 }
+                            } else {
+                                console.warn(`[Melidrop] ⚠️ No description to post (payload.description?.plain_text is empty)`);
                             }
+                        } else {
+                            console.error(`[Melidrop] ❌ Item publish failed, no ID:`, publishResult);
                         }
                     } else {
                         publishResult = { error: 'No se pudo obtener token del usuario de prueba' };
@@ -650,12 +657,17 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
                 setPublishingStatus(prev => ({ ...prev, [asin]: 'success' }));
 
                 if (result.id && descriptionText) {
+                    console.log(`[Melidrop] Posting description (${descriptionText.length} chars) for item ${result.id}`);
                     try {
                         await meliService.postDescription(result.id, descriptionText, publishToken);
+                        console.log(`[Melidrop] ✅ Description posted successfully`);
                     } catch (descErr: any) {
-                        console.error('[Melidrop] Warning: Description failed to post:', descErr.message);
+                        console.error('[Melidrop] ❌ Description post failed:', descErr.message);
                         result.description_warning = `Descripción: ${descErr.message}`;
                     }
+                } else {
+                    if (!result.id) console.warn(`[Melidrop] ⚠️ No result.id, cannot post description`);
+                    if (!descriptionText) console.warn(`[Melidrop] ⚠️ No description text`);
                 }
 
                 // Persist the product to Supabase so the updater knows its currency
