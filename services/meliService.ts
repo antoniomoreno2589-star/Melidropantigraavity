@@ -860,6 +860,7 @@ class MeliService {
 
     async postDescription(meliId: string, descriptionText: string, customToken?: string): Promise<void> {
         try {
+            // First attempt: plain_text format
             const response = await this.fetchWithAuth(`/items/${meliId}/description`, {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
@@ -868,6 +869,32 @@ class MeliService {
 
             if (!response.ok) {
                 const errData = await response.text();
+                let errJson: any = {};
+                try { errJson = JSON.parse(errData); } catch { /* ignore */ }
+
+                // Some categories don't accept plain_text — retry with HTML format
+                if (errJson.error === 'DESCRIPTION_PLAIN_TEXT_NOT_ALLOWED' || response.status === 400) {
+                    console.warn(`[Melidrop] plain_text rejected, retrying with HTML for item ${meliId}`);
+                    const htmlBody = descriptionText
+                        .split('\n')
+                        .map(line => line.trim() ? `<p>${line.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</p>` : '')
+                        .join('');
+
+                    const retryResponse = await this.fetchWithAuth(`/items/${meliId}/description`, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ content: htmlBody, type: 'text/html' })
+                    }, customToken);
+
+                    if (!retryResponse.ok) {
+                        const retryErr = await retryResponse.text();
+                        console.error(`[Melidrop] Failed to post description (HTML fallback ${retryResponse.status}):`, retryErr);
+                    } else {
+                        console.log(`[Melidrop] Description posted successfully (HTML) for item ${meliId}`);
+                    }
+                    return;
+                }
+
                 console.error(`[Melidrop] Failed to post description (${response.status}):`, errData);
                 return;
             }
