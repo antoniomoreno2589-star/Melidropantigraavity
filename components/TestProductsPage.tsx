@@ -54,9 +54,14 @@ export const TestProductsPage = () => {
             // Save to Supabase with proper conflict resolution
             const { data: { user: authUser } } = await supabase.auth.getUser();
             if (authUser) {
+                // ML tokens last 6 hours; record expiry so auto-refresh knows when to renew
+                const userWithExpiry = {
+                    ...user,
+                    token_expires_at: new Date(Date.now() + 6 * 3600 * 1000).toISOString()
+                };
                 const { error } = await supabase
                     .from('user_connections')
-                    .upsert({ user_id: authUser.id, meli_test_user: user }, { onConflict: 'user_id' });
+                    .upsert({ user_id: authUser.id, meli_test_user: userWithExpiry }, { onConflict: 'user_id' });
                 if (error) {
                     console.error("Upsert error:", error);
                     throw error;

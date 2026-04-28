@@ -133,9 +133,19 @@ const App = () => {
           console.error('App: Error cargando Meli:', err);
         }
       }
+
+      // 4. Auto-refresh test user token on startup
+      meliService.autoRefreshTestUserToken().catch(() => {});
     };
 
     init();
+
+    // Re-run test user token refresh every 3 hours while app is open
+    const testTokenInterval = setInterval(() => {
+      meliService.autoRefreshTestUserToken().catch(() => {});
+    }, 3 * 60 * 60 * 1000);
+
+    return () => clearInterval(testTokenInterval);
   }, [session]); // Only re-runs on session change, not on meliMetrics change
 
   const handleLogout = async () => {

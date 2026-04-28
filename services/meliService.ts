@@ -1057,6 +1057,50 @@ class MeliService {
         }
     }
 
+    async autoRefreshTestUserToken(): Promise<string | null> {
+        try {
+            const { data: { user } } = await supabase.auth.getUser();
+            if (!user) return null;
+
+            const { data } = await supabase
+                .from('user_connections')
+                .select('meli_test_user')
+                .eq('user_id', user.id)
+                .maybeSingle();
+
+            const testUser = data?.meli_test_user;
+            if (!testUser?.email || !testUser?.password) return null;
+
+            // Check if token is still fresh (has more than 1 hour left)
+            if (testUser.token_expires_at) {
+                const expiresAt = new Date(testUser.token_expires_at).getTime();
+                if (Date.now() + 3600000 < expiresAt) {
+                    return testUser.access_token || null;
+                }
+            }
+
+            // Re-login with saved credentials
+            const newToken = await this.loginTestUser(testUser.email, testUser.password);
+            if (!newToken) return null;
+
+            const updatedTestUser = {
+                ...testUser,
+                access_token: newToken,
+                token_expires_at: new Date(Date.now() + 6 * 3600 * 1000).toISOString()
+            };
+
+            await supabase
+                .from('user_connections')
+                .upsert({ user_id: user.id, meli_test_user: updatedTestUser }, { onConflict: 'user_id' });
+
+            console.log('[Melidrop] Test user token auto-refreshed successfully');
+            return newToken;
+        } catch (e: any) {
+            console.warn('[Melidrop] Auto-refresh test user token failed:', e.message);
+            return null;
+        }
+    }
+
     async deleteItem(itemId: string): Promise<boolean> {
         try {
             // Step 1: Set status to closed

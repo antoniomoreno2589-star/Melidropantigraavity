@@ -455,7 +455,11 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
                             if (testToken) {
                                 const { data: { user } } = await supabase.auth.getUser();
                                 if (user) {
-                                    const updated = { ...testUserCreds, access_token: testToken };
+                                    const updated = {
+                                        ...testUserCreds,
+                                        access_token: testToken,
+                                        token_expires_at: new Date(Date.now() + 6 * 3600 * 1000).toISOString()
+                                    };
                                     await supabase.from('user_connections').upsert(
                                         { user_id: user.id, meli_test_user: updated },
                                         { onConflict: 'user_id' }
@@ -571,7 +575,11 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
                             publishToken = fresh;
                             const { data: { user } } = await supabase.auth.getUser();
                             if (user) {
-                                const updated = { ...testUserCreds, access_token: fresh };
+                                const updated = {
+                                    ...testUserCreds,
+                                    access_token: fresh,
+                                    token_expires_at: new Date(Date.now() + 6 * 3600 * 1000).toISOString()
+                                };
                                 await supabase.from('user_connections').upsert(
                                     { user_id: user.id, meli_test_user: updated },
                                     { onConflict: 'user_id' }
