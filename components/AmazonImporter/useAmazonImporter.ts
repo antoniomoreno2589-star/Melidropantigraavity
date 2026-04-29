@@ -521,9 +521,20 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
                             if (seenAmazonIds.has(dedupeKey)) continue;
                             seenAmazonIds.add(dedupeKey);
 
-                            const id = img.cleanedUrl
-                                ? await meliService.uploadImageBinary(img.cleanedUrl, testToken)
-                                : await meliService.uploadImage(img.url, testToken);
+                            let id: string | null = null;
+                            if (img.cleanedUrl) {
+                                id = await meliService.uploadImageBinary(img.cleanedUrl, testToken);
+                            } else {
+                                // Resize if needed, then upload
+                                const resizedUrl = await resizeImageIfNeeded(img.url);
+                                if (resizedUrl.startsWith('data:')) {
+                                    // dataURL from resize — upload as binary
+                                    id = await meliService.uploadImageBinary(resizedUrl, testToken);
+                                } else {
+                                    // Original URL (didn't need resize) — upload as source
+                                    id = await meliService.uploadImage(resizedUrl, testToken);
+                                }
+                            }
                             if (id && !imageIds.includes(id)) imageIds.push(id);
                         }
                         const testPayload = { ...payload, description: undefined };
@@ -611,6 +622,64 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
         }
     };
 
+    // ML requires minimum 500x250px; upscale smaller images
+    const resizeImageIfNeeded = async (imageUrl: string): Promise<string> => {
+        return new Promise((resolve) => {
+            const img = new Image();
+            img.crossOrigin = 'anonymous';
+            img.onload = () => {
+                const MIN_WIDTH = 500;
+                const MIN_HEIGHT = 250;
+
+                if (img.width >= MIN_WIDTH && img.height >= MIN_HEIGHT) {
+                    console.log(`[Melidrop] Image ${img.width}x${img.height} meets ML requirements`);
+                    resolve(imageUrl);
+                    return;
+                }
+
+                let newWidth = img.width;
+                let newHeight = img.height;
+
+                if (newWidth < MIN_WIDTH) {
+                    const scale = MIN_WIDTH / newWidth;
+                    newWidth = MIN_WIDTH;
+                    newHeight = Math.round(newHeight * scale);
+                }
+
+                if (newHeight < MIN_HEIGHT) {
+                    const scale = MIN_HEIGHT / newHeight;
+                    newHeight = MIN_HEIGHT;
+                    newWidth = Math.round(newWidth * scale);
+                }
+
+                console.log(`[Melidrop] Upscaling ${img.width}x${img.height} → ${newWidth}x${newHeight}`);
+
+                const canvas = document.createElement('canvas');
+                canvas.width = newWidth;
+                canvas.height = newHeight;
+                const ctx = canvas.getContext('2d');
+                if (!ctx) {
+                    resolve(imageUrl);
+                    return;
+                }
+
+                ctx.imageSmoothingEnabled = true;
+                ctx.imageSmoothingQuality = 'high';
+                ctx.drawImage(img, 0, 0, newWidth, newHeight);
+
+                const resizedDataUrl = canvas.toDataURL('image/jpeg', 0.95);
+                resolve(resizedDataUrl);
+            };
+
+            img.onerror = () => {
+                console.warn(`[Melidrop] Failed to load image for resizing: ${imageUrl}`);
+                resolve(imageUrl);
+            };
+
+            img.src = imageUrl;
+        });
+    };
+
     const handlePublish = async (asin: string, isDraft = false) => {
         const processed = processedProducts.find(p => p.asin === asin);
         if (!processed) return;
@@ -660,9 +729,20 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
                 if (seenAmazonIds.has(dedupeKey)) continue;
                 seenAmazonIds.add(dedupeKey);
 
-                const id = img.cleanedUrl
-                    ? await meliService.uploadImageBinary(img.cleanedUrl, publishToken)
-                    : await meliService.uploadImage(img.url, publishToken);
+                let id: string | null = null;
+                if (img.cleanedUrl) {
+                    id = await meliService.uploadImageBinary(img.cleanedUrl, publishToken);
+                } else {
+                    // Resize if needed, then upload
+                    const resizedUrl = await resizeImageIfNeeded(img.url);
+                    if (resizedUrl.startsWith('data:')) {
+                        // dataURL from resize — upload as binary
+                        id = await meliService.uploadImageBinary(resizedUrl, publishToken);
+                    } else {
+                        // Original URL (didn't need resize) — upload as source
+                        id = await meliService.uploadImage(resizedUrl, publishToken);
+                    }
+                }
                 if (id && !imageIds.includes(id)) imageIds.push(id);
             }
 
