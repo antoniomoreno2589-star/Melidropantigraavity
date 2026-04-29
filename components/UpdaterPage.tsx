@@ -68,6 +68,70 @@ export const UpdaterPage: React.FC = () => {
         loadSyncStatus();
         const freq = parseInt(localStorage.getItem('melidrop_sync_frequency_hours') || '24');
         setSyncFreqHours(freq);
+
+        // Schedule automatic sync at 7 AM every 3 days
+        const scheduleAutomaticSync = () => {
+            const lastSyncTime = localStorage.getItem('melidrop_last_sync_7am');
+            const lastSync = lastSyncTime ? new Date(lastSyncTime) : null;
+
+            const checkAndRunSync = async () => {
+                const now = new Date();
+                const currentHour = now.getHours();
+                const currentMinute = now.getMinutes();
+
+                // Check if we're at 7 AM (7:00 - 7:59)
+                if (currentHour !== 7) return;
+
+                const timeSinceLastSync = lastSync ? (now.getTime() - lastSync.getTime()) : Infinity;
+                const threeDaysMs = 3 * 24 * 60 * 60 * 1000; // 72 hours in milliseconds
+
+                // If 3 days have passed since last sync at 7 AM, run sync
+                if (timeSinceLastSync >= threeDaysMs) {
+                    console.log('Running scheduled sync at 7 AM after 3 days');
+                    localStorage.setItem('melidrop_last_sync_7am', now.toISOString());
+
+                    // Execute the sync
+                    setSyncRunning(true);
+                    setSyncResult('Ejecutando sincronización programada...');
+                    try {
+                        const res = await fetch(UPDATER_URL, {
+                            method: 'POST',
+                            headers: { 'Authorization': `Bearer ${ANON_KEY}`, 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ force: true }),
+                        });
+                        const data = await res.json();
+                        if (data.success) {
+                            const s = data.summary?.[0];
+                            if (s?.skipped)   setSyncResult(`⏳ Sincronización programada: no era necesaria aún.`);
+                            else if (s)       setSyncResult(`✅ Sincronización programada: ${s.updated} actualizados, ${s.errors} errores.`);
+                            else              setSyncResult('✅ Sincronización programada completada.');
+                            const { data: { user } } = await supabase.auth.getUser();
+                            if (user) {
+                                const { data: job } = await supabase.from('sync_jobs').select('*').eq('user_id', user.id).order('started_at', { ascending: false }).limit(1).maybeSingle();
+                                if (job) setSyncJob(job);
+                            }
+                        } else {
+                            setSyncResult(`❌ Error en sincronización programada: ${data.error}`);
+                        }
+                    } catch (e: any) {
+                        setSyncResult(`❌ Error de red en sincronización programada: ${e.message}`);
+                    } finally {
+                        setSyncRunning(false);
+                    }
+                }
+            };
+
+            // Check every hour if it's time to sync
+            const intervalId = setInterval(checkAndRunSync, 60 * 60 * 1000);
+
+            // Also check immediately in case the time has already passed this session
+            checkAndRunSync();
+
+            return intervalId;
+        };
+
+        const intervalId = scheduleAutomaticSync();
+        return () => clearInterval(intervalId);
     }, []);
 
     const loadProducts = async () => {
