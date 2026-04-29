@@ -66,8 +66,22 @@ class MeliService {
         const creds = this.getCredentials();
         if (!creds) {
             console.warn("meliService: No credentials found in localStorage");
+            const stored = localStorage.getItem('melidrop_meli_credentials');
+            console.warn('[Melidrop] Checking localStorage for melidrop_meli_credentials:', {
+                exists: !!stored,
+                raw: stored ? stored.substring(0, 100) : null
+            });
             return null;
         }
+
+        // Debug: show token expiration status
+        const expiresIn = creds.expiresAt - Date.now();
+        console.log('[Melidrop] getValidToken: Current token status', {
+            userId: creds.id,
+            expiresIn: Math.round(expiresIn / 1000) + ' seconds',
+            isExpired: expiresIn < 0,
+            willExpireSoon: expiresIn < 300000 // 5 minutes
+        });
 
         // Refresh if expiring soon (in less than 5 minutes)
         if (Date.now() + 300000 > creds.expiresAt) {
@@ -155,24 +169,30 @@ class MeliService {
             // If a customToken was provided it belongs to a different account (e.g. test user).
             // Refreshing the real user's token and retrying would publish to the wrong account.
             console.error('[Melidrop] Got 401 response:', { endpoint, hasCustomToken: !!customToken });
-            if (customToken) throw new Error('Token de usuario de prueba expirado. Reconecta el usuario en Configuración.');
-            console.warn("MeliService: Token expired (401), refreshing...");
-            const newToken = await this.refreshToken();
-            if (newToken) {
-                return fetch('/api/proxy', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        url: targetUrl,
-                        method: options.method || 'GET',
-                        headers: {
-                            'Authorization': `Bearer ${newToken}`,
-                            ...(options.headers || {})
-                        },
-                        body: options.body
-                    })
-                });
+            if (customToken) {
+                throw new Error('Token de usuario de prueba expirado. Reconecta el usuario en Configuración.');
             }
+
+            console.warn("MeliService: Real account token expired (401), attempting to refresh...");
+            const newToken = await this.refreshToken();
+            if (!newToken) {
+                throw new Error('Token expirado y no se pudo renovar automáticamente. Por favor, reconecta tu cuenta de MercadoLibre en Perfil.');
+            }
+
+            console.log('[Melidrop] Token refreshed successfully, retrying request...');
+            return fetch('/api/proxy', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    url: targetUrl,
+                    method: options.method || 'GET',
+                    headers: {
+                        'Authorization': `Bearer ${newToken}`,
+                        ...(options.headers || {})
+                    },
+                    body: options.body
+                })
+            });
         }
         if (response.status === 403) {
             const errBody = await response.clone().text();

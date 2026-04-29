@@ -159,9 +159,12 @@ export const TestProductsPage = () => {
         console.log('[Melidrop] handlePublishToReal: Using real credentials', {
             userId: realCreds.id,
             nickname: realCreds.nickname,
+            appId: realCreds.appId,
+            hasRefreshToken: !!realCreds.refreshToken,
             expiresAt: new Date(realCreds.expiresAt).toISOString(),
             tokenExpired: Date.now() > realCreds.expiresAt,
-            expiringIn5Min: Date.now() + 300000 > realCreds.expiresAt
+            expiringIn5Min: Date.now() + 300000 > realCreds.expiresAt,
+            allKeys: Object.keys(localStorage).filter(k => k.includes('meli') || k.includes('test')).map(k => ({ key: k, length: localStorage.getItem(k)?.length }))
         });
 
         try {
