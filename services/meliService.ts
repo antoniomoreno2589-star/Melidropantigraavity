@@ -126,6 +126,14 @@ class MeliService {
 
         const targetUrl = `${this.baseUrl}${endpoint}`;
 
+        // Debug logging
+        console.log('[Melidrop] fetchWithAuth:', {
+            endpoint,
+            hasCustomToken: !!customToken,
+            method: options.method || 'GET',
+            tokenPrefix: token.substring(0, 10) + '...'
+        });
+
         const response = await fetch('/api/proxy', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -146,6 +154,7 @@ class MeliService {
         if (response.status === 401) {
             // If a customToken was provided it belongs to a different account (e.g. test user).
             // Refreshing the real user's token and retrying would publish to the wrong account.
+            console.error('[Melidrop] Got 401 response:', { endpoint, hasCustomToken: !!customToken });
             if (customToken) throw new Error('Token de usuario de prueba expirado. Reconecta el usuario en Configuración.');
             console.warn("MeliService: Token expired (401), refreshing...");
             const newToken = await this.refreshToken();
@@ -843,6 +852,15 @@ class MeliService {
     async publishItem(itemData: any, isDraft: boolean = false, customToken?: string): Promise<any> {
         const creds = customToken ? null : this.getCredentials();
         if (!creds && !customToken) throw new Error("No credentials");
+
+        // Debug logging
+        console.log('[Melidrop] publishItem called:', {
+            hasCustomToken: !!customToken,
+            hasRealCreds: !!creds,
+            credsUserId: creds?.id,
+            isDraft
+        });
+
         const body = isDraft ? { ...itemData, status: 'paused' } : itemData;
         const response = await this.fetchWithAuth('/items', {
             method: 'POST',

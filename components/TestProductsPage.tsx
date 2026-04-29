@@ -156,6 +156,14 @@ export const TestProductsPage = () => {
             return;
         }
 
+        console.log('[Melidrop] handlePublishToReal: Using real credentials', {
+            userId: realCreds.id,
+            nickname: realCreds.nickname,
+            expiresAt: new Date(realCreds.expiresAt).toISOString(),
+            tokenExpired: Date.now() > realCreds.expiresAt,
+            expiringIn5Min: Date.now() + 300000 > realCreds.expiresAt
+        });
+
         try {
             // Extract description for separate posting (ML rejects description in POST /items)
             const payload = product.publishPayload;
