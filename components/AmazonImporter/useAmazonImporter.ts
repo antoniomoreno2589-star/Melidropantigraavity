@@ -120,14 +120,19 @@ export function useAmazonImporter() {
                     processed.categorySuggestion.search_term, marketplace
                 );
 
-                // Deduplicate images by Amazon image hash
-                const seenHashes = new Set<string>();
+                // Deduplicate images by Amazon image ID (between /images/I/ and first .)
+                const seenImageIds = new Set<string>();
                 const uniqueImages: typeof processed.images = [];
                 for (const img of processed.images) {
-                    const hashMatch = img.url.match(/\/images\/I\/([^./]+)/);
-                    const key = hashMatch ? hashMatch[1] : img.url.split('?')[0];
-                    if (!seenHashes.has(key)) {
-                        seenHashes.add(key);
+                    // Extract unique ID: string between /images/I/ and first .
+                    const idMatch = img.url.match(/\/images\/I\/([^.]+)\./);
+                    const imageId = idMatch ? idMatch[1] : null;
+
+                    // Deduplicate by ID if available, otherwise by full URL
+                    const dedupeKey = imageId || img.url;
+
+                    if (!seenImageIds.has(dedupeKey)) {
+                        seenImageIds.add(dedupeKey);
                         uniqueImages.push(img);
                     }
                 }
@@ -408,12 +413,18 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
         const descriptionText = amazonDescription
             ? `${configDescription}\n\n${amazonDescription}`.substring(0, 5000)
             : configDescription.substring(0, 5000);
-        // Deduplicate by normalized URL (strip size tokens + query strings)
-        const seenNormalized = new Set<string>();
+        // Deduplicate by Amazon image ID (unique identifier between /images/I/ and first .)
+        const seenAmazonIds = new Set<string>();
         const pictureUrls: string[] = [];
         for (const img of processed.images) {
-            const norm = img.url.replace(/\._[A-Za-z0-9_,]+\./, '.').split('?')[0];
-            if (!seenNormalized.has(norm)) { seenNormalized.add(norm); pictureUrls.push(img.url); }
+            const idMatch = img.url.match(/\/images\/I\/([^.]+)\./);
+            const amazonId = idMatch ? idMatch[1] : null;
+            const dedupeKey = amazonId || img.url;
+
+            if (!seenAmazonIds.has(dedupeKey)) {
+                seenAmazonIds.add(dedupeKey);
+                pictureUrls.push(img.url);
+            }
         }
         pictureUrls.splice(10);
 
@@ -500,12 +511,16 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
 
                     if (testToken) {
                         const imageIds: string[] = [];
-                        const seenUploadUrls = new Set<string>();
+                        const seenAmazonIds = new Set<string>();
                         for (const img of processed.images.slice(0, 10)) {
-                            // Always use img.url (original) as dedup key — consistent with buildItemPayload
-                            const dedupeKey = img.url.replace(/\._[A-Za-z0-9_,]+\./, '.').split('?')[0];
-                            if (seenUploadUrls.has(dedupeKey)) continue;
-                            seenUploadUrls.add(dedupeKey);
+                            // Deduplicate by Amazon image ID (unique identifier in URL)
+                            const idMatch = img.url.match(/\/images\/I\/([^.]+)\./);
+                            const amazonId = idMatch ? idMatch[1] : null;
+                            const dedupeKey = amazonId || img.url;
+
+                            if (seenAmazonIds.has(dedupeKey)) continue;
+                            seenAmazonIds.add(dedupeKey);
+
                             const id = img.cleanedUrl
                                 ? await meliService.uploadImageBinary(img.cleanedUrl, testToken)
                                 : await meliService.uploadImage(img.url, testToken);
@@ -635,12 +650,16 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
             }
 
             const imageIds: string[] = [];
-            const seenUploadUrls = new Set<string>();
+            const seenAmazonIds = new Set<string>();
             for (const img of processed.images.slice(0, 10)) {
-                // Always use img.url (original) as dedup key — consistent with buildItemPayload
-                const dedupeKey = img.url.replace(/\._[A-Za-z0-9_,]+\./, '.').split('?')[0];
-                if (seenUploadUrls.has(dedupeKey)) continue;
-                seenUploadUrls.add(dedupeKey);
+                // Deduplicate by Amazon image ID (unique identifier in URL)
+                const idMatch = img.url.match(/\/images\/I\/([^.]+)\./);
+                const amazonId = idMatch ? idMatch[1] : null;
+                const dedupeKey = amazonId || img.url;
+
+                if (seenAmazonIds.has(dedupeKey)) continue;
+                seenAmazonIds.add(dedupeKey);
+
                 const id = img.cleanedUrl
                     ? await meliService.uploadImageBinary(img.cleanedUrl, publishToken)
                     : await meliService.uploadImage(img.url, publishToken);
