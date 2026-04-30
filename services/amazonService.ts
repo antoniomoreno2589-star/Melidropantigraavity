@@ -139,26 +139,22 @@ class AmazonService {
             const summaries = catalogItem?.summaries?.[0];
             const attributes = catalogItem?.attributes;
 
-            // Collect all images from all groups, deduplicating by image hash
-            // Amazon CDN URL format: .../images/I/{HASH}._AC_SX679_.jpg or .../images/I/{HASH}.jpg
-            // The HASH (e.g. "71xyzABC") is the unique identifier — same hash = same image
-            const seenHashes = new Set<string>();
+            // Collect one image per variant group (MAIN, PT01, PT02, etc.), taking the highest resolution.
+            // Amazon returns multiple resolutions per variant — picking only the best avoids duplicates.
             const uniqueImages: string[] = [];
             if (Array.isArray(catalogItem?.images)) {
                 for (const imgGroup of catalogItem.images) {
-                    if (Array.isArray(imgGroup?.images)) {
-                        for (const img of imgGroup.images) {
-                            if (img?.link) {
-                                // Extract hash: the filename part before the first dot after /I/
-                                const hashMatch = img.link.match(/\/images\/I\/([^./]+)/);
-                                const hash = hashMatch ? hashMatch[1] : img.link;
-                                if (!seenHashes.has(hash)) {
-                                    seenHashes.add(hash);
-                                    // Store the highest-quality version: strip variant token to get base image
-                                    const cleanUrl = img.link.replace(/\._[A-Za-z0-9_,]+\./, '.');
-                                    uniqueImages.push(cleanUrl);
-                                }
-                            }
+                    if (Array.isArray(imgGroup?.images) && imgGroup.images.length > 0) {
+                        // Pick the highest resolution image in this variant group
+                        const best = imgGroup.images.reduce((prev: any, curr: any) => {
+                            const prevPx = (prev?.height || 0) * (prev?.width || 0);
+                            const currPx = (curr?.height || 0) * (curr?.width || 0);
+                            return currPx > prevPx ? curr : prev;
+                        });
+                        if (best?.link) {
+                            // Strip size/quality tokens to get the canonical base URL
+                            const cleanUrl = best.link.replace(/\._[A-Za-z0-9_,]+\./, '.');
+                            uniqueImages.push(cleanUrl);
                         }
                     }
                 }
