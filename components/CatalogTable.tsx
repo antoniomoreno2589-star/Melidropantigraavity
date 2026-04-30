@@ -199,11 +199,12 @@ export const CatalogTable: React.FC<CatalogTableProps> = ({ products, onUpdatePr
       const updatedProducts = await api.products.list();
       onBulkUpdate(updatedProducts);
     } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : String(error);
       console.error("Sync error:", error);
       if (syncLogId) {
-        await api.sync.finishSync(syncLogId, 0, (error as Error).message);
+        await api.sync.finishSync(syncLogId, 0, errorMsg);
       }
-      alert("Error al sincronizar publicaciones. Verifica tu conexión.");
+      alert(`Error al sincronizar publicaciones:\n${errorMsg}`);
     } finally {
       setIsSyncing(false);
     }

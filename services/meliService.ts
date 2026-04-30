@@ -320,55 +320,73 @@ class MeliService {
     }
 
     async syncItemsToSupabase(onProgress?: (phase: string, current: number, total: number) => void): Promise<number> {
-        const itemIds = await this.getUserItemIds((current, total) => {
-            if (onProgress) onProgress('searching', current, total);
-        });
-        const total = itemIds.length;
+        try {
+            const itemIds = await this.getUserItemIds((current, total) => {
+                if (onProgress) onProgress('searching', current, total);
+            });
+            console.log(`[Melidrop] Found ${itemIds.length} published items to sync`);
+            const total = itemIds.length;
 
-        let syncedCount = 0;
-        const chunkSize = 100;
+            if (itemIds.length === 0) {
+                console.log(`[Melidrop] No items to sync, skipping`);
+                return 0;
+            }
 
-        for (let i = 0; i < itemIds.length; i += chunkSize) {
-            const chunkIds = itemIds.slice(i, i + chunkSize);
-            const items = await this.getItemsDetails(chunkIds);
+            let syncedCount = 0;
+            const chunkSize = 100;
 
-            const productsToUpsert: any[] = items.map(item => {
-                const statusMap: Record<string, string> = {
-                    'active': 'active',
-                    'paused': 'paused',
-                };
+            for (let i = 0; i < itemIds.length; i += chunkSize) {
+                const chunkIds = itemIds.slice(i, i + chunkSize);
+                console.log(`[Melidrop] Fetching details for chunk ${Math.floor(i / chunkSize) + 1}, ids: ${chunkIds.length}`);
+                const items = await this.getItemsDetails(chunkIds);
 
-                let skuAttr = item.attributes?.find((attr: any) => attr.id === 'SELLER_SKU');
-                if (!skuAttr && item.variations) {
-                    for (const v of item.variations) {
-                        skuAttr = v.attributes?.find((attr: any) => attr.id === 'SELLER_SKU');
-                        if (skuAttr) break;
+                const productsToUpsert: any[] = items.map(item => {
+                    const statusMap: Record<string, string> = {
+                        'active': 'active',
+                        'paused': 'paused',
+                    };
+
+                    let skuAttr = item.attributes?.find((attr: any) => attr.id === 'SELLER_SKU');
+                    if (!skuAttr && item.variations) {
+                        for (const v of item.variations) {
+                            skuAttr = v.attributes?.find((attr: any) => attr.id === 'SELLER_SKU');
+                            if (skuAttr) break;
+                        }
+                    }
+                    const sku = skuAttr?.value_name || item.seller_custom_field || item.id;
+
+                    return {
+                        title: item.title,
+                        sku: sku,
+                        meli_id: item.id,
+                        price_mxn: item.price,
+                        cost_usd: 0,
+                        stock_meli: item.available_quantity,
+                        stock_provider: 0,
+                        status: statusMap[item.status] || 'draft',
+                        image_url: item.thumbnail ? item.thumbnail.replace("-I.jpg", "-V.jpg") : undefined
+                    };
+                });
+
+                if (productsToUpsert.length > 0) {
+                    console.log(`[Melidrop] Upserting ${productsToUpsert.length} products to Supabase`);
+                    try {
+                        await api.products.bulkUpsert(productsToUpsert);
+                        syncedCount += productsToUpsert.length;
+                        console.log(`[Melidrop] Upserted successfully, total synced: ${syncedCount}`);
+                        if (onProgress) onProgress('syncing', syncedCount, total);
+                    } catch (e) {
+                        console.error("[Melidrop] Error in bulkUpsert:", e);
+                        throw e;
                     }
                 }
-                const sku = skuAttr?.value_name || item.seller_custom_field || item.id;
-
-                return {
-                    title: item.title,
-                    sku: sku,
-                    meli_id: item.id,
-                    price_mxn: item.price,
-                    cost_usd: 0,
-                    stock_meli: item.available_quantity,
-                    stock_provider: 0,
-                    status: statusMap[item.status] || 'draft',
-                    image_url: item.thumbnail ? item.thumbnail.replace("-I.jpg", "-V.jpg") : undefined
-                };
-            });
-
-            try {
-                await api.products.bulkUpsert(productsToUpsert);
-                syncedCount += productsToUpsert.length;
-                if (onProgress) onProgress('syncing', syncedCount, total);
-            } catch (e) {
-                console.error("MeliService: Error in bulkUpsert:", e);
             }
+            console.log(`[Melidrop] Sync completed: ${syncedCount} products synced`);
+            return syncedCount;
+        } catch (err: any) {
+            console.error("[Melidrop] syncItemsToSupabase failed:", err);
+            throw new Error(`Sync failed: ${err?.message || String(err)}`);
         }
-        return syncedCount;
     }
 
     async getOrders(limit = 20) {
