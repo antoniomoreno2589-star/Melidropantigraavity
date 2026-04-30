@@ -340,13 +340,14 @@ export function useAmazonImporter() {
 
         // Attributes that ML expects as plain numbers (no units, no text)
         const NUMERIC_ATTRIBUTES = new Set([
-            'SHEETS_CAPACITY', 'HEIGHT', 'WIDTH', 'DEPTH', 'LENGTH',
+            'SHEETS_CAPACITY',
             'VOLTAGE', 'WATTAGE', 'AMPERAGE', 'FREQUENCY', 'CAPACITY',
             'UNITS_PER_PACK', 'PACK_QUANTITY', 'NUMBER_OF_ITEMS',
         ]);
 
-        // Attributes that require a number + unit (e.g. "39.09 cm")
+        // Attributes that require a number + unit (e.g. "81 cm")
         const DIMENSION_ATTRIBUTES = new Set([
+            'HEIGHT', 'WIDTH', 'DEPTH', 'LENGTH',
             'SELLER_PACKAGE_WIDTH', 'SELLER_PACKAGE_LENGTH', 'SELLER_PACKAGE_HEIGHT',
             'SELLER_PACKAGE_DEPTH', 'PACKAGE_WIDTH', 'PACKAGE_LENGTH', 'PACKAGE_HEIGHT',
         ]);
@@ -735,14 +736,37 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
 
         // Block if flagged as duplicate by step 4 validation
         if (validationResults[asin]?.isDuplicate) {
-            console.warn(`[Melidrop] ${asin} is a duplicate, skipping publish`);
+            console.warn(`[Melidrop] ${asin} is a duplicate (step 4), skipping publish`);
             setPublishResults(prev => ({ ...prev, [asin]: { error: `Ya existe en tus publicaciones (ID: ${validationResults[asin].duplicateId || 'desconocido'})` } }));
             setPublishingStatus(prev => ({ ...prev, [asin]: 'error' }));
             return;
         }
 
-        console.log(`[Melidrop] handlePublish starting for ${asin}: processed.images.length = ${processed.images?.length ?? 0}`);
+        // Supabase check: block if we already have this ASIN in our products table
         setPublishingStatus(prev => ({ ...prev, [asin]: 'loading' }));
+        try {
+            const { data: { user } } = await supabase.auth.getUser();
+            if (user) {
+                const { data: existing } = await supabase
+                    .from('products')
+                    .select('meli_id, status')
+                    .eq('user_id', user.id)
+                    .eq('sku', asin)
+                    .neq('status', 'closed')
+                    .limit(1)
+                    .maybeSingle();
+                if (existing?.meli_id) {
+                    console.warn(`[Melidrop] ${asin} found in Supabase (${existing.meli_id}), blocking publish`);
+                    setPublishResults(prev => ({ ...prev, [asin]: { error: `Ya publicado anteriormente (${existing.meli_id})` } }));
+                    setPublishingStatus(prev => ({ ...prev, [asin]: 'error' }));
+                    return;
+                }
+            }
+        } catch (sbCheckErr: any) {
+            console.warn(`[Melidrop] Supabase duplicate pre-check failed (non-blocking):`, sbCheckErr.message);
+        }
+
+        console.log(`[Melidrop] handlePublish starting for ${asin}: processed.images.length = ${processed.images?.length ?? 0}`);
         try {
             // Real account publishing always uses the real account token (getValidToken).
             // testUserCreds are only used in handleDryRun (sandbox). Never mix them here.
