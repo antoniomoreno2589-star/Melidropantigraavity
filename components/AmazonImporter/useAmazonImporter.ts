@@ -405,15 +405,9 @@ export function useAmazonImporter() {
             .substring(0, 60)
             .trim();
 
-        // Derive family_name for categories that require it
-        // Try specific attributes first, then fallback to title
+        // family_name is only used for towels with hood (specific ML variant requirement)
         const withHoodAttr = finalAttributes.find(a => a.id === 'WITH_HOOD')?.value_name;
-        let familyName = withHoodAttr === 'Sí'
-            ? 'Toalla con Capucha'
-            : finalAttributes.find(a =>
-                ['PAPER_SHREDDER_TYPE', 'ORGANIZER_TYPE', 'TYPE', 'CATEGORY', 'PRODUCT_TYPE'].includes(a.id)
-              )?.value_name
-            || safeTitle.split(/\s+/).slice(0, 2).join(' '); // Fallback: first 2 words of title
+        const familyName = withHoodAttr === 'Sí' ? 'Toalla con Capucha' : undefined;
 
         const configDescription = localStorage.getItem('melidrop_description_suffix') ||
             `==========================================
