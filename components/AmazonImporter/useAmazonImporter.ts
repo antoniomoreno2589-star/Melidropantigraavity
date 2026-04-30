@@ -337,12 +337,31 @@ export function useAmazonImporter() {
 
         // Attributes that ML expects as plain numbers (no units, no text)
         const NUMERIC_ATTRIBUTES = new Set([
-            'SHEETS_CAPACITY', 'WEIGHT', 'HEIGHT', 'WIDTH', 'DEPTH', 'LENGTH',
+            'SHEETS_CAPACITY', 'HEIGHT', 'WIDTH', 'DEPTH', 'LENGTH',
             'VOLTAGE', 'WATTAGE', 'AMPERAGE', 'FREQUENCY', 'CAPACITY',
             'UNITS_PER_PACK', 'PACK_QUANTITY', 'NUMBER_OF_ITEMS',
         ]);
 
+        // Attributes that require a number + unit (e.g. "39.09 cm")
+        const DIMENSION_ATTRIBUTES = new Set([
+            'SELLER_PACKAGE_WIDTH', 'SELLER_PACKAGE_LENGTH', 'SELLER_PACKAGE_HEIGHT',
+            'SELLER_PACKAGE_DEPTH', 'PACKAGE_WIDTH', 'PACKAGE_LENGTH', 'PACKAGE_HEIGHT',
+        ]);
+
+        const VALID_UNITS = ['nm', 'millas', 'mm', 'ft', 'cm', 'U', 'm', 'in', 'pulgadas', 'km', 'manos', 'µm', 'mil', 'yd', '"'];
+
         const sanitizeAttrValue = (id: string, value: string): string => {
+            if (DIMENSION_ATTRIBUTES.has(id)) {
+                // Must be "number unit" — add "cm" if unit is missing or unrecognized
+                const numMatch = value.match(/^([\d.]+)\s*(.*)$/);
+                if (numMatch) {
+                    const num = numMatch[1];
+                    const unit = numMatch[2].trim().toLowerCase();
+                    const validUnit = VALID_UNITS.find(u => u.toLowerCase() === unit);
+                    return validUnit ? `${num} ${validUnit}` : `${num} cm`;
+                }
+                return value;
+            }
             if (NUMERIC_ATTRIBUTES.has(id)) {
                 // Extract leading number (e.g. "8 hojas" → "8", "14.09 inches" → "14.09")
                 const match = value.match(/^[\d.]+/);
