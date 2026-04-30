@@ -139,21 +139,21 @@ class AmazonService {
             const summaries = catalogItem?.summaries?.[0];
             const attributes = catalogItem?.attributes;
 
-            // Collect one image per variant group (MAIN, PT01, PT02, etc.), taking the highest resolution.
-            // Amazon returns multiple resolutions per variant — picking only the best avoids duplicates.
+            // catalogItem.images is an array of marketplace-scoped groups.
+            // Each group's .images array holds one entry per variant (MAIN, PT01, PT02, …).
+            // Collect one URL per unique variant across all marketplace groups.
+            const seenVariants = new Set<string>();
             const uniqueImages: string[] = [];
             if (Array.isArray(catalogItem?.images)) {
                 for (const imgGroup of catalogItem.images) {
-                    if (Array.isArray(imgGroup?.images) && imgGroup.images.length > 0) {
-                        // Pick the highest resolution image in this variant group
-                        const best = imgGroup.images.reduce((prev: any, curr: any) => {
-                            const prevPx = (prev?.height || 0) * (prev?.width || 0);
-                            const currPx = (curr?.height || 0) * (curr?.width || 0);
-                            return currPx > prevPx ? curr : prev;
-                        });
-                        if (best?.link) {
-                            // Strip size/quality tokens to get the canonical base URL
-                            const cleanUrl = best.link.replace(/\._[A-Za-z0-9_,]+\./, '.');
+                    if (Array.isArray(imgGroup?.images)) {
+                        for (const img of imgGroup.images) {
+                            if (!img?.link || !img?.variant) continue;
+                            // Use variant name as dedup key — same angle may appear in multiple marketplace groups
+                            if (seenVariants.has(img.variant)) continue;
+                            seenVariants.add(img.variant);
+                            // Strip size/quality token to get the highest-quality base URL
+                            const cleanUrl = img.link.replace(/\._[A-Za-z0-9_,]+\./, '.');
                             uniqueImages.push(cleanUrl);
                         }
                     }
