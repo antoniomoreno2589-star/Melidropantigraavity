@@ -111,9 +111,11 @@ export function useAmazonImporter() {
         const results: ProcessedProduct[] = [];
 
         for (const product of validProducts) {
+            console.log(`[Melidrop] Processing ${product.asin}: received ${product.images?.length ?? 0} images from Amazon`);
             setProcessingStage(`Procesando "${product.title.substring(0, 30)}..."`);
 
             const processed = await aiImporterService.processProduct(product, marketplace, [], cleanImages);
+            console.log(`[Melidrop] ${product.asin}: aiImporterService returned ${processed.images?.length ?? 0} images`);
 
             setProcessingStage('Buscando categoría en MercadoLibre...');
             const mlPredictions = await meliService.predictCategory(
@@ -144,6 +146,7 @@ export function useAmazonImporter() {
                 }
             }
             processed.images = uniqueImages.slice(0, 10);
+            console.log(`[Melidrop] ${product.asin}: after deduplication = ${processed.images?.length ?? 0} images`);
             results.push(processed);
 
             // Clean title: remove brand, fix encoding artifacts, strip leading punctuation
@@ -532,6 +535,7 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
         const processed = processedProducts.find(p => p.asin === asin);
         if (!processed) return;
 
+        console.log(`[Melidrop] handlePublish starting for ${asin}: processed.images.length = ${processed.images?.length ?? 0}`);
         setPublishingStatus(prev => ({ ...prev, [asin]: 'loading' }));
         try {
             // ML tokens expire in 6h — always refresh test user token before publishing
@@ -561,6 +565,7 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
 
             const imageIds: string[] = [];
             const seenUploadUrls = new Set<string>();
+            console.log(`[Melidrop] Starting image upload loop for ${asin}, will iterate through ${Math.min(processed.images.length, 10)} images`);
             for (const img of processed.images.slice(0, 10)) {
                 const dedupeKey = img.cleanedUrl || img.url;
                 if (seenUploadUrls.has(dedupeKey)) continue;
@@ -568,12 +573,21 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
                 const id = img.cleanedUrl
                     ? await meliService.uploadImageBinary(img.cleanedUrl, publishToken)
                     : await meliService.uploadImage(img.url, publishToken);
-                if (id && !imageIds.includes(id)) imageIds.push(id);
+                if (id && !imageIds.includes(id)) {
+                    console.log(`[Melidrop] ${asin}: Successfully uploaded image, imageId=${id}`);
+                    imageIds.push(id);
+                } else if (!id) {
+                    console.warn(`[Melidrop] ${asin}: Image upload failed (no ID returned)`);
+                }
             }
+            console.log(`[Melidrop] ${asin}: Total images uploaded: ${imageIds.length}`);
 
             const payload = buildItemPayload(processed);
             if (imageIds.length > 0) {
                 (payload as any).pictures = imageIds.map((id: string) => ({ id }));
+                console.log(`[Melidrop] ${asin}: Setting pictures array with ${imageIds.length} images: ${imageIds.join(', ')}`);
+            } else {
+                console.warn(`[Melidrop] ${asin}: No images to upload! payload.pictures will not be set`);
             }
 
             const result = await meliService.publishItem(payload, isDraft, publishToken);
