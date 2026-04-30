@@ -335,6 +335,22 @@ export function useAmazonImporter() {
         const barcode = amazonAttrs.item_barcode?.[0]?.value || amazonAttrs.ean?.[0]?.value;
         const userHasBarcode = barcode && Object.values(attrs).includes(barcode);
 
+        // Attributes that ML expects as plain numbers (no units, no text)
+        const NUMERIC_ATTRIBUTES = new Set([
+            'SHEETS_CAPACITY', 'WEIGHT', 'HEIGHT', 'WIDTH', 'DEPTH', 'LENGTH',
+            'VOLTAGE', 'WATTAGE', 'AMPERAGE', 'FREQUENCY', 'CAPACITY',
+            'UNITS_PER_PACK', 'PACK_QUANTITY', 'NUMBER_OF_ITEMS',
+        ]);
+
+        const sanitizeAttrValue = (id: string, value: string): string => {
+            if (NUMERIC_ATTRIBUTES.has(id)) {
+                // Extract leading number (e.g. "8 hojas" → "8", "14.09 inches" → "14.09")
+                const match = value.match(/^[\d.]+/);
+                return match ? match[0] : value;
+            }
+            return value;
+        };
+
         const userAttrIds = new Set(Object.keys(attrs).filter(k => attrs[k]?.toString().trim()));
 
         const finalAttributes = [
@@ -346,7 +362,7 @@ export function useAmazonImporter() {
                     if (id !== 'SELLER_SKU') return true;
                     return false;
                 })
-                .map(([id, value_name]) => ({ id, value_name: value_name.toString().trim() })),
+                .map(([id, value_name]) => ({ id, value_name: sanitizeAttrValue(id, value_name.toString().trim()) })),
             { id: 'SELLER_SKU', value_name: processed.asin },
             ...(barcode && !userHasBarcode ? [{ id: 'UPC', value_name: barcode }] : []),
             // Required by ML for most categories — default to 1 unit per pack
@@ -692,37 +708,9 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
 
         setPublishingStatus(prev => ({ ...prev, [asin]: 'loading' }));
         try {
-            // ML tokens expire in 6h — refresh if possible, else use stored token
-            let publishToken: string | undefined;
-            if (testUserCreds?.access_token || (testUserCreds?.email && testUserCreds?.password)) {
-                try {
-                    if (testUserCreds.email && testUserCreds.password) {
-                        const fresh = await meliService.loginTestUser(testUserCreds.email, testUserCreds.password);
-                        if (fresh) {
-                            publishToken = fresh;
-                            const { data: { user } } = await supabase.auth.getUser();
-                            if (user) {
-                                const updated = {
-                                    ...testUserCreds,
-                                    access_token: fresh,
-                                    token_expires_at: new Date(Date.now() + 6 * 3600 * 1000).toISOString()
-                                };
-                                await supabase.from('user_connections').upsert(
-                                    { user_id: user.id, meli_test_user: updated },
-                                    { onConflict: 'user_id' }
-                                );
-                                setTestUserCreds(updated);
-                            }
-                        }
-                    } else {
-                        // OAuth-connected test user — use stored access_token directly
-                        publishToken = testUserCreds.access_token;
-                    }
-                } catch (refreshErr: any) {
-                    console.warn('[Melidrop] Test user token refresh failed:', refreshErr.message);
-                    publishToken = testUserCreds.access_token;
-                }
-            }
+            // Real account publishing always uses the real account token (getValidToken).
+            // testUserCreds are only used in handleDryRun (sandbox). Never mix them here.
+            const publishToken: string | undefined = undefined;
 
             const imageIds: string[] = [];
             const seenAmazonIds = new Set<string>();
