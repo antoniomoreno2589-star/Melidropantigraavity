@@ -749,7 +749,18 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
             // Log attributes being sent for debugging
             console.log(`[Melidrop] Publishing ${asin} with attributes:`, publishPayload.attributes?.map((a: any) => `${a.id}="${a.value_name}"`));
 
-            const result = await meliService.publishItem(publishPayload, isDraft, publishToken);
+            let result = await meliService.publishItem(publishPayload, isDraft, publishToken);
+
+            // Some ML categories require family_name and reject title when it's provided.
+            // Retry without title, using the original title as family_name instead.
+            if (result.error && result.cause?.some((c: any) => c.message?.includes('family_name'))) {
+                console.log(`[Melidrop] Category requires family_name — retrying without title`);
+                const familyPayload = { ...publishPayload };
+                const originalTitle = familyPayload.title;
+                delete familyPayload.title;
+                familyPayload.family_name = originalTitle;
+                result = await meliService.publishItem(familyPayload, isDraft, publishToken);
+            }
 
             console.log(`[Melidrop] Publication response for ${asin}:`, result);
 
