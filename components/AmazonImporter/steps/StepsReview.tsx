@@ -172,6 +172,7 @@ export function Step5Publish({
         setIsBulkProcessing(true);
         try {
             for (const asin of selectedAsins) {
+                if (validationResults[asin]?.isSkipped) continue;
                 await handlePublish(asin, false);
             }
         } finally {

@@ -535,6 +535,20 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
         const processed = processedProducts.find(p => p.asin === asin);
         if (!processed) return;
 
+        // Block if already successfully published in this session
+        if (publishResults[asin]?.id) {
+            console.warn(`[Melidrop] ${asin} already published this session (${publishResults[asin].id}), skipping`);
+            return;
+        }
+
+        // Block if flagged as duplicate by step 4 validation
+        if (validationResults[asin]?.isDuplicate) {
+            console.warn(`[Melidrop] ${asin} is a duplicate, skipping publish`);
+            setPublishResults(prev => ({ ...prev, [asin]: { error: `Ya existe en tus publicaciones (ID: ${validationResults[asin].duplicateId || 'desconocido'})` } }));
+            setPublishingStatus(prev => ({ ...prev, [asin]: 'error' }));
+            return;
+        }
+
         console.log(`[Melidrop] handlePublish starting for ${asin}: processed.images.length = ${processed.images?.length ?? 0}`);
         setPublishingStatus(prev => ({ ...prev, [asin]: 'loading' }));
         try {

@@ -880,20 +880,20 @@ class MeliService {
         const creds = this.getCredentials();
         if (!creds) return { isDuplicate: false };
         try {
-            // Search in user's items by custom field (ASIN stored as seller_custom_field)
-            // Search only in active or paused items of this user
-            const response = await this.fetchWithAuth(`/users/${creds.id}/items/search?seller_custom_field=${asin}&status=active,paused&limit=1`);
+            // Search all items (no status filter) — a freshly published item may be
+            // 'under_review' or 'inactive' and wouldn't appear in active/paused only.
+            const response = await this.fetchWithAuth(`/users/${creds.id}/items/search?seller_custom_field=${asin}&limit=5`);
             if (!response.ok) return { isDuplicate: false };
             const data = await response.json();
             if (data.results && data.results.length > 0) {
-                const itemId = data.results[0];
-                
-                // Double check: Fetch the item to verify the ASIN matches exactly
-                const itemRes = await this.fetchWithAuth(`/items/${itemId}?attributes=seller_custom_field,status`);
-                if (itemRes.ok) {
+                for (const itemId of data.results) {
+                    const itemRes = await this.fetchWithAuth(`/items/${itemId}?attributes=seller_custom_field,status`);
+                    if (!itemRes.ok) continue;
                     const itemData = await itemRes.json();
-                    if (itemData.seller_custom_field === asin && (itemData.status === 'active' || itemData.status === 'paused')) {
-                        return { isDuplicate: true, existingItem: { id: itemId } };
+                    // Consider any non-closed item as a duplicate
+                    if (itemData.seller_custom_field === asin && itemData.status !== 'closed') {
+                        console.log(`[Melidrop] Duplicate found: ${asin} → ${itemId} (status: ${itemData.status})`);
+                        return { isDuplicate: true, existingItem: { id: itemId, status: itemData.status } };
                     }
                 }
             }
