@@ -820,6 +820,7 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
                             currency:         product?.currency ?? 'USD',
                             description_text: descriptionText ?? null,
                             last_updated:     new Date().toISOString(),
+                            in_updater:       !isDraft,
                         }, { onConflict: 'meli_id' });
                         if (sbErr) console.warn('[Melidrop] Supabase upsert error:', sbErr.message);
                     }
