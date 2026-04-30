@@ -406,10 +406,14 @@ export function useAmazonImporter() {
             .trim();
 
         // Derive family_name for categories that require it
+        // Try specific attributes first, then fallback to title
         const withHoodAttr = finalAttributes.find(a => a.id === 'WITH_HOOD')?.value_name;
-        const familyName = withHoodAttr === 'Sí'
+        let familyName = withHoodAttr === 'Sí'
             ? 'Toalla con Capucha'
-            : undefined;
+            : finalAttributes.find(a =>
+                ['PAPER_SHREDDER_TYPE', 'ORGANIZER_TYPE', 'TYPE', 'CATEGORY', 'PRODUCT_TYPE'].includes(a.id)
+              )?.value_name
+            || safeTitle.split(/\s+/).slice(0, 2).join(' '); // Fallback: first 2 words of title
 
         const configDescription = localStorage.getItem('melidrop_description_suffix') ||
             `==========================================
@@ -467,6 +471,7 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
             seller_custom_field: processed.asin,
             pictures: pictureUrls.map(url => ({ source: url })),
             attributes: finalAttributes,
+            ...(familyName && { family_name: familyName }),
             sale_terms: [
                 { id: 'WARRANTY_TYPE', value_name: 'Garantía del vendedor' },
                 { id: 'WARRANTY_TIME', value_name: warrantyLabel },
