@@ -335,12 +335,18 @@ export function useAmazonImporter() {
         const barcode = amazonAttrs.item_barcode?.[0]?.value || amazonAttrs.ean?.[0]?.value;
         const userHasBarcode = barcode && Object.values(attrs).includes(barcode);
 
-        const userAttrIds = new Set(Object.keys(attrs).filter(k => attrs[k]));
+        const userAttrIds = new Set(Object.keys(attrs).filter(k => attrs[k]?.toString().trim()));
 
         const finalAttributes = [
             ...Object.entries(attrs)
-                .filter(([id, v]) => v && id !== 'SELLER_SKU')
-                .map(([id, value_name]) => ({ id, value_name })),
+                .filter(([id, v]) => {
+                    if (!v) return false;
+                    const strVal = v.toString().trim();
+                    if (!strVal) return false;
+                    if (id !== 'SELLER_SKU') return true;
+                    return false;
+                })
+                .map(([id, value_name]) => ({ id, value_name: value_name.toString().trim() })),
             { id: 'SELLER_SKU', value_name: processed.asin },
             ...(barcode && !userHasBarcode ? [{ id: 'UPC', value_name: barcode }] : []),
             // Required by ML for most categories — default to 1 unit per pack
@@ -753,6 +759,9 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
                 (publishPayload as any).pictures = imageIds.map((id: string) => ({ id }));
             }
 
+            // Log attributes being sent for debugging
+            console.log(`[Melidrop] Publishing ${asin} with attributes:`, publishPayload.attributes?.map((a: any) => `${a.id}="${a.value_name}"`));
+
             const result = await meliService.publishItem(publishPayload, isDraft, publishToken);
 
             console.log(`[Melidrop] Publication response for ${asin}:`, result);
@@ -767,7 +776,14 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
                         else causes.push(field + JSON.stringify(c));
                     });
                 }
-                const msg = causes.length > 0 ? `${result.error}\n• ${causes.join('\n• ')}` : result.error;
+
+                let suggestion = '';
+                if (result.error.includes('SHEETS_CAPACITY')) {
+                    suggestion = '\n\n💡 El atributo SHEETS_CAPACITY podría estar vacío o inválido. Verifica en el Paso 4 que todos los atributos requeridos tengan valores válidos.';
+                }
+
+                const msg = causes.length > 0 ? `${result.error}\n• ${causes.join('\n• ')}${suggestion}` : result.error + suggestion;
+                console.error(`[Melidrop] Publication error for ${asin}:`, { error: result.error, cause: result.cause, fullPayload: publishPayload });
                 setPublishResults(prev => ({ ...prev, [asin]: { error: msg, raw: result } }));
                 setPublishingStatus(prev => ({ ...prev, [asin]: 'error' }));
             } else {
