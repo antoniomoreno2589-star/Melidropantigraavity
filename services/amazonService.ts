@@ -169,6 +169,7 @@ class AmazonService {
             const brand = attributes?.brand?.[0]?.value || summaries?.brand || '';
 
             console.log(`amazonService.getProduct: asin=${asin}, title="${title}", images=${uniqueImages.length}`);
+            console.log(`[Melidrop] ${asin}: Amazon returned ${uniqueImages.length} deduplicated images`);
 
             return {
                 asin,

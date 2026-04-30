@@ -115,7 +115,9 @@ export function useAmazonImporter() {
         try {
             // Process AI + category predictions in parallel
             const processedWithCategories = await Promise.all(validProducts.map(async (product) => {
+                console.log(`[Melidrop] Processing ${product.asin}: received ${product.images?.length ?? 0} images from Amazon`);
                 const processed = await aiImporterService.processProduct(product, marketplace, [], cleanImages);
+                console.log(`[Melidrop] ${product.asin}: aiImporterService returned ${processed.images?.length ?? 0} images`);
                 const mlPredictions = await meliService.predictCategory(
                     processed.categorySuggestion.search_term, marketplace
                 );
@@ -137,6 +139,7 @@ export function useAmazonImporter() {
                     }
                 }
                 processed.images = uniqueImages.slice(0, 10);
+                console.log(`[Melidrop] ${product.asin}: after deduplication = ${processed.images?.length ?? 0} images`);
 
                 return { processed, mlPredictions };
             }));
@@ -724,6 +727,21 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
         const processed = processedProducts.find(p => p.asin === asin);
         if (!processed) return;
 
+        // Block if already successfully published in this session
+        if (publishResults[asin]?.id) {
+            console.warn(`[Melidrop] ${asin} already published this session (${publishResults[asin].id}), skipping`);
+            return;
+        }
+
+        // Block if flagged as duplicate by step 4 validation
+        if (validationResults[asin]?.isDuplicate) {
+            console.warn(`[Melidrop] ${asin} is a duplicate, skipping publish`);
+            setPublishResults(prev => ({ ...prev, [asin]: { error: `Ya existe en tus publicaciones (ID: ${validationResults[asin].duplicateId || 'desconocido'})` } }));
+            setPublishingStatus(prev => ({ ...prev, [asin]: 'error' }));
+            return;
+        }
+
+        console.log(`[Melidrop] handlePublish starting for ${asin}: processed.images.length = ${processed.images?.length ?? 0}`);
         setPublishingStatus(prev => ({ ...prev, [asin]: 'loading' }));
         try {
             // Real account publishing always uses the real account token (getValidToken).
@@ -732,6 +750,7 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
 
             const imageIds: string[] = [];
             const seenAmazonIds = new Set<string>();
+            console.log(`[Melidrop] Starting image upload loop for ${asin}, will iterate through ${Math.min(processed.images.length, 10)} images`);
             for (const img of processed.images.slice(0, 10)) {
                 // Deduplicate by Amazon image ID (unique identifier in URL)
                 const idMatch = img.url.match(/\/images\/I\/([^.]+)\./);
@@ -748,21 +767,28 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
                     // Resize if needed, then upload
                     const resizedUrl = await resizeImageIfNeeded(img.url);
                     if (resizedUrl.startsWith('data:')) {
-                        // dataURL from resize — upload as binary
                         id = await meliService.uploadImageBinary(resizedUrl, publishToken);
                     } else {
-                        // Original URL (didn't need resize) — upload as source
                         id = await meliService.uploadImage(resizedUrl, publishToken);
                     }
                 }
-                if (id && !imageIds.includes(id)) imageIds.push(id);
+                if (id && !imageIds.includes(id)) {
+                    console.log(`[Melidrop] ${asin}: Successfully uploaded image, imageId=${id}`);
+                    imageIds.push(id);
+                } else if (!id) {
+                    console.warn(`[Melidrop] ${asin}: Image upload failed (no ID returned)`);
+                }
             }
+            console.log(`[Melidrop] ${asin}: Total images uploaded: ${imageIds.length}`);
 
             const payload = buildItemPayload(processed);
             const descriptionText = payload.description?.plain_text;
             const publishPayload = { ...payload, description: undefined };
             if (imageIds.length > 0) {
                 (publishPayload as any).pictures = imageIds.map((id: string) => ({ id }));
+                console.log(`[Melidrop] ${asin}: Setting pictures array with ${imageIds.length} images: ${imageIds.join(', ')}`);
+            } else {
+                console.warn(`[Melidrop] ${asin}: No images to upload! publishPayload.pictures will not be set`);
             }
 
             // Log attributes being sent for debugging
