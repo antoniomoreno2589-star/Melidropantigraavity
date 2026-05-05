@@ -6,12 +6,13 @@ export const api = {
         async list(): Promise<Product[]> {
             let allProducts: any[] = [];
             let from = 0;
-            const step = 1000;
+            const step = 100; // Smaller pages load faster
 
             while (true) {
                 const { data, error } = await supabase
                     .from('products')
-                    .select('*')
+                    // Select only needed columns (not *)
+                    .select('id, title, sku, asin, meli_id, price_mxn, cost_usd, stock_provider, stock_meli, status, image_url, last_updated, in_updater')
                     .order('last_updated', { ascending: false })
                     .range(from, from + step - 1);
 
@@ -38,9 +39,9 @@ export const api = {
                 imageUrl: p.image_url,
                 lastUpdated: new Date(p.last_updated),
                 inUpdater: p.in_updater ?? false,
-                amazonSellerCount: p.amazon_seller_count ?? null,
-                soldByAmazon: p.sold_by_amazon ?? null,
-                amazonStock: p.amazon_stock ?? null,
+                amazonSellerCount: null,
+                soldByAmazon: null,
+                amazonStock: null,
             }));
         },
 
