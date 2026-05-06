@@ -428,9 +428,9 @@ export function useAmazonImporter() {
             .substring(0, 60)
             .trim();
 
-        // family_name is only used for towels with hood (specific ML variant requirement)
+        // family_name required for real ML accounts. Use specific attr if available, else title
         const withHoodAttr = finalAttributes.find(a => a.id === 'WITH_HOOD')?.value_name;
-        const familyName = withHoodAttr === 'Sí' ? 'Toalla con Capucha' : undefined;
+        const familyName = withHoodAttr === 'Sí' ? 'Toalla con Capucha' : safeTitle;
 
         const configDescription = localStorage.getItem('melidrop_description_suffix') ||
             `==========================================
