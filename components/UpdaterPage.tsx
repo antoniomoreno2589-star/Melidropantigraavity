@@ -131,7 +131,72 @@ export const UpdaterPage: React.FC = () => {
         };
 
         const intervalId = scheduleAutomaticSync();
-        return () => clearInterval(intervalId);
+
+        // Schedule automatic updater at 8 AM every day (for products marked in_updater)
+        const scheduleAutomaticUpdater = () => {
+            const lastUpdaterTime = localStorage.getItem('melidrop_last_updater_8am');
+            const lastUpdater = lastUpdaterTime ? new Date(lastUpdaterTime) : null;
+
+            const checkAndRunUpdater = async () => {
+                const now = new Date();
+                const currentHour = now.getHours();
+
+                // Check if we're at 8 AM (8:00 - 8:59)
+                if (currentHour !== 8) return;
+
+                const timeSinceLastUpdater = lastUpdater ? (now.getTime() - lastUpdater.getTime()) : Infinity;
+                const oneDayMs = 24 * 60 * 60 * 1000;
+
+                // If 1 day has passed since last updater at 8 AM, run updater
+                if (timeSinceLastUpdater >= oneDayMs) {
+                    console.log('Running scheduled updater at 8 AM');
+                    localStorage.setItem('melidrop_last_updater_8am', now.toISOString());
+
+                    // Execute the updater
+                    setSyncRunning(true);
+                    setSyncResult('Ejecutando actualización programada de productos...');
+                    try {
+                        const res = await fetch(UPDATER_URL, {
+                            method: 'POST',
+                            headers: { 'Authorization': `Bearer ${ANON_KEY}`, 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ force: true }),
+                        });
+                        const data = await res.json();
+                        if (data.success) {
+                            const s = data.summary?.[0];
+                            if (s?.skipped)   setSyncResult(`⏳ Actualización programada: no era necesaria aún.`);
+                            else if (s)       setSyncResult(`✅ Actualización programada: ${s.updated} actualizados, ${s.errors} errores.`);
+                            else              setSyncResult('✅ Actualización programada completada.');
+                            const { data: { user } } = await supabase.auth.getUser();
+                            if (user) {
+                                const { data: job } = await supabase.from('sync_jobs').select('*').eq('user_id', user.id).order('started_at', { ascending: false }).limit(1).maybeSingle();
+                                if (job) setSyncJob(job);
+                            }
+                        } else {
+                            setSyncResult(`❌ Error en actualización programada: ${data.error}`);
+                        }
+                    } catch (e: any) {
+                        setSyncResult(`❌ Error de red en actualización programada: ${e.message}`);
+                    } finally {
+                        setSyncRunning(false);
+                    }
+                }
+            };
+
+            // Check every hour if it's time to run updater
+            const updaterIntervalId = setInterval(checkAndRunUpdater, 60 * 60 * 1000);
+
+            // Also check immediately in case the time has already passed this session
+            checkAndRunUpdater();
+
+            return updaterIntervalId;
+        };
+
+        const updaterIntervalId = scheduleAutomaticUpdater();
+        return () => {
+            clearInterval(intervalId);
+            clearInterval(updaterIntervalId);
+        };
     }, []);
 
     const loadProducts = async () => {
