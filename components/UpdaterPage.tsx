@@ -202,8 +202,52 @@ export const UpdaterPage: React.FC = () => {
     const loadProducts = async () => {
         setLoading(true);
         try {
-            const data = await api.products.list();
-            setProducts(data);
+            // Load only products marked for updater - much faster than loading all 29k products
+            const { data: { user } } = await supabase.auth.getUser();
+            if (!user) return;
+
+            let allProducts: any[] = [];
+            let from = 0;
+            const step = 100;
+
+            while (true) {
+                const { data, error } = await supabase
+                    .from('products')
+                    .select('id, title, sku, asin, meli_id, price_mxn, cost_usd, stock_provider, stock_meli, status, image_url, last_updated, in_updater, amazon_seller_count, sold_by_amazon')
+                    .eq('user_id', user.id)
+                    .eq('in_updater', true)
+                    .neq('status', 'closed')
+                    .order('last_updated', { ascending: false })
+                    .range(from, from + step - 1);
+
+                if (error) throw error;
+                if (!data || data.length === 0) break;
+
+                allProducts = [...allProducts, ...data];
+                if (data.length < step) break;
+                from += step;
+            }
+
+            const mappedProducts: Product[] = allProducts.map(p => ({
+                id: p.id,
+                title: p.title,
+                sku: p.sku,
+                asin: p.asin,
+                meliId: p.meli_id,
+                priceMXN: p.price_mxn,
+                costUSD: p.cost_usd,
+                stockProvider: p.stock_provider,
+                stockMeli: p.stock_meli,
+                status: p.status,
+                imageUrl: p.image_url,
+                lastUpdated: new Date(p.last_updated),
+                inUpdater: p.in_updater ?? false,
+                amazonSellerCount: p.amazon_seller_count ?? null,
+                soldByAmazon: p.sold_by_amazon ?? null,
+                amazonStock: null,
+            }));
+
+            setProducts(mappedProducts);
         } catch (e) {
             console.error('Error loading products:', e);
         } finally {
