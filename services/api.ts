@@ -12,7 +12,7 @@ export const api = {
                 const { data, error } = await supabase
                     .from('products')
                     // Select only needed columns (not *)
-                    .select('id, title, sku, asin, meli_id, price_mxn, cost_usd, stock_provider, stock_meli, status, image_url, last_updated, in_updater, amazon_seller_count, sold_by_amazon, amazon_stock')
+                    .select('id, title, sku, asin, meli_id, price_mxn, cost_usd, stock_provider, stock_meli, status, image_url, last_updated, in_updater, amazon_seller_count, sold_by_amazon')
                     .order('last_updated', { ascending: false })
                     .range(from, from + step - 1);
 
@@ -41,7 +41,7 @@ export const api = {
                 inUpdater: p.in_updater ?? false,
                 amazonSellerCount: p.amazon_seller_count ?? null,
                 soldByAmazon: p.sold_by_amazon ?? null,
-                amazonStock: p.amazon_stock ?? null,
+                amazonStock: null,
             }));
         },
 
