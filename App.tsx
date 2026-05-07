@@ -80,7 +80,14 @@ const App = () => {
 
     const init = async () => {
       // 1. Load products in parallel (doesn't depend on credentials)
-      api.products.list().then(setProducts).catch(err => console.error('Error fetching products:', err));
+      try {
+        console.log('App: Starting product load...');
+        const loadedProducts = await api.products.list();
+        console.log(`App: Loaded ${loadedProducts.length} products`);
+        setProducts(loadedProducts);
+      } catch (err: any) {
+        console.error('App: Error fetching products:', err.message || err);
+      }
 
       // 2. Sync credentials and settings from Supabase FIRST
       try {
