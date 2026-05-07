@@ -46,6 +46,11 @@ export const UpdaterPage: React.FC = () => {
     const [excludeAmazon, setExcludeAmazon] = useState(false);
     const [amazonStockFilter, setAmazonStockFilter] = useState<'all' | 'in-stock' | 'out-of-stock' | 'no-data'>('all');
     const [page, setPage] = useState(1);
+
+    // "Todos los productos" tab — lazy search across ALL products in Supabase
+    const [allSearch, setAllSearch] = useState('');
+    const [allResults, setAllResults] = useState<Product[]>([]);
+    const [allLoading, setAllLoading] = useState(false);
     const PAGE_SIZE = 50;
     const [syncParams, setSyncParams] = useState<{ price: boolean; stock: boolean; shipping: boolean; description: boolean }>(() => {
         const saved = localStorage.getItem('melidrop_sync_params');
@@ -252,6 +257,52 @@ export const UpdaterPage: React.FC = () => {
             console.error('Error loading products:', e);
         } finally {
             setLoading(false);
+        }
+    };
+
+    const searchAllProducts = async (query: string) => {
+        setAllLoading(true);
+        try {
+            const { data: { user } } = await supabase.auth.getUser();
+            if (!user) return;
+
+            let q = supabase
+                .from('products')
+                .select('id, title, sku, asin, meli_id, price_mxn, status, image_url, last_updated, in_updater')
+                .eq('user_id', user.id)
+                .neq('status', 'closed')
+                .order('last_updated', { ascending: false })
+                .limit(50);
+
+            if (query.trim()) {
+                q = q.or(`title.ilike.%${query}%,sku.ilike.%${query}%,meli_id.ilike.%${query}%`);
+            }
+
+            const { data, error } = await q;
+            if (error) throw error;
+
+            setAllResults((data ?? []).map(p => ({
+                id: p.id,
+                title: p.title,
+                sku: p.sku,
+                asin: p.asin ?? '',
+                meliId: p.meli_id,
+                priceMXN: p.price_mxn,
+                costUSD: 0,
+                stockProvider: 0,
+                stockMeli: 0,
+                status: p.status,
+                imageUrl: p.image_url,
+                lastUpdated: new Date(p.last_updated),
+                inUpdater: p.in_updater ?? false,
+                amazonSellerCount: null,
+                soldByAmazon: null,
+                amazonStock: null,
+            })));
+        } catch (e) {
+            console.error('Error searching all products:', e);
+        } finally {
+            setAllLoading(false);
         }
     };
 
@@ -788,22 +839,84 @@ export const UpdaterPage: React.FC = () => {
                         <div className="text-center">Actualizador</div>
                     </div>
 
-                    {/* Loading */}
-                    {loading ? (
+                    {/* "Todos los productos" tab — lazy search */}
+                    {tab === 'all' && (
+                        <div className="p-4 flex flex-col gap-4">
+                            <div className="flex gap-2">
+                                <input
+                                    type="text"
+                                    value={allSearch}
+                                    onChange={e => setAllSearch(e.target.value)}
+                                    onKeyDown={e => e.key === 'Enter' && searchAllProducts(allSearch)}
+                                    placeholder="Busca por título, SKU o ID de ML y presiona Enter..."
+                                    className="flex-1 px-4 py-2 border border-slate-200 dark:border-slate-700 rounded-lg text-sm bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-primary/30"
+                                />
+                                <button
+                                    onClick={() => searchAllProducts(allSearch)}
+                                    disabled={allLoading}
+                                    className="px-4 py-2 bg-primary text-white rounded-lg text-sm font-bold hover:bg-primary/90 disabled:opacity-50"
+                                >
+                                    {allLoading ? 'Buscando...' : 'Buscar'}
+                                </button>
+                            </div>
+                            {allResults.length === 0 && !allLoading && (
+                                <p className="text-center text-slate-400 text-sm py-8">
+                                    Escribe algo y presiona Buscar para encontrar publicaciones y agregarlas al Actualizador.
+                                </p>
+                            )}
+                            {allResults.length > 0 && (
+                                <div className="divide-y divide-slate-100 dark:divide-slate-800 rounded-lg border border-slate-100 dark:border-slate-800">
+                                    {allResults.map(product => (
+                                        <div key={product.id} className="flex items-center gap-3 px-4 py-3 hover:bg-slate-50 dark:hover:bg-slate-800/50">
+                                            <img src={product.imageUrl || '/placeholder.png'} alt="" className="w-10 h-10 rounded object-cover bg-slate-100" />
+                                            <div className="flex-1 min-w-0">
+                                                <p className="text-sm font-semibold text-slate-800 dark:text-white truncate">{product.title}</p>
+                                                <p className="text-xs text-slate-400">{product.meliId} · {product.sku}</p>
+                                            </div>
+                                            <span className={`text-xs font-bold px-2 py-1 rounded-full ${STATUS_COLORS[product.status] || 'bg-slate-100 text-slate-500'}`}>
+                                                {STATUS_LABELS[product.status] || product.status}
+                                            </span>
+                                            <button
+                                                disabled={toggling.has(product.id)}
+                                                onClick={async () => {
+                                                    const newVal = !product.inUpdater;
+                                                    setToggling(prev => new Set(prev).add(product.id));
+                                                    try {
+                                                        await api.products.toggleUpdater(product.id, newVal);
+                                                        setAllResults(prev => prev.map(p => p.id === product.id ? { ...p, inUpdater: newVal } : p));
+                                                        if (newVal) {
+                                                            setProducts(prev => prev.some(p => p.id === product.id) ? prev : [{ ...product, inUpdater: true }, ...prev]);
+                                                        } else {
+                                                            setProducts(prev => prev.filter(p => p.id !== product.id));
+                                                        }
+                                                    } finally {
+                                                        setToggling(prev => { const s = new Set(prev); s.delete(product.id); return s; });
+                                                    }
+                                                }}
+                                                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold border transition-all ${product.inUpdater ? 'bg-primary/10 border-primary/30 text-primary' : 'bg-slate-100 dark:bg-slate-700 border-slate-200 dark:border-slate-600 text-slate-500'}`}
+                                            >
+                                                <span className="material-symbols-outlined text-sm">{product.inUpdater ? 'check_circle' : 'add_circle'}</span>
+                                                {product.inUpdater ? 'En Actualizador' : 'Agregar'}
+                                            </button>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+                        </div>
+                    )}
+
+                    {/* "En actualización" tab — product table */}
+                    {tab === 'enrolled' && loading ? (
                         <div className="flex flex-col items-center justify-center py-20 gap-3">
                             <span className="material-symbols-outlined text-4xl text-slate-300 animate-spin">sync</span>
                             <p className="text-slate-400 text-sm">Cargando productos...</p>
                         </div>
-                    ) : filtered.length === 0 ? (
+                    ) : tab === 'enrolled' && filtered.length === 0 ? (
                         <div className="flex flex-col items-center justify-center py-20 gap-3">
                             <span className="material-symbols-outlined text-5xl text-slate-300">autorenew</span>
-                            <p className="text-slate-500 font-bold">
-                                {tab === 'enrolled' ? 'No hay productos en el actualizador' : 'No se encontraron productos'}
-                            </p>
+                            <p className="text-slate-500 font-bold">No hay productos en el actualizador</p>
                             <p className="text-slate-400 text-sm text-center max-w-sm">
-                                {tab === 'enrolled'
-                                    ? 'Ve a "Todos los productos" para agregar productos al actualizador.'
-                                    : 'Intenta con otro término de búsqueda.'}
+                                Ve a "Todos los productos" para buscar y agregar publicaciones al actualizador.
                             </p>
                         </div>
                     ) : (
