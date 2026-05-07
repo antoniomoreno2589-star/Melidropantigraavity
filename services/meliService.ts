@@ -321,6 +321,11 @@ class MeliService {
 
     async syncItemsToSupabase(onProgress?: (phase: string, current: number, total: number) => void): Promise<number> {
         try {
+            const creds = this.getCredentials();
+            if (!creds) {
+                throw new Error('No estás autenticado con Mercado Libre. Por favor configura tus credenciales en Configuración.');
+            }
+
             const itemIds = await this.getUserItemIds((current, total) => {
                 if (onProgress) onProgress('searching', current, total);
             });
@@ -385,7 +390,19 @@ class MeliService {
             return syncedCount;
         } catch (err: any) {
             console.error("[Melidrop] syncItemsToSupabase failed:", err);
-            throw new Error(`Sync failed: ${err?.message || String(err)}`);
+            let errorMessage = 'Sync failed';
+            if (err instanceof Error) {
+                errorMessage = err.message;
+            } else if (typeof err === 'string') {
+                errorMessage = err;
+            } else if (err?.message) {
+                errorMessage = err.message;
+            } else if (err?.error_message) {
+                errorMessage = err.error_message;
+            } else if (err?.description) {
+                errorMessage = err.description;
+            }
+            throw new Error(errorMessage);
         }
     }
 
