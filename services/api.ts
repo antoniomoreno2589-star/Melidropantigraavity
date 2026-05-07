@@ -176,7 +176,8 @@ export const api = {
                 status: p.status,
                 image_url: (p as any).image_url,
                 last_updated: new Date().toISOString(),
-                in_updater: true,
+                // in_updater is NOT set here — sync must not override user's manual selection.
+                // New products default to false (DB default), existing products keep their value.
             }));
 
             const { error } = await supabase
