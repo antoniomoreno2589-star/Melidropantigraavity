@@ -215,6 +215,7 @@ export const UpdaterPage: React.FC = () => {
                     .from('products')
                     .select('id, title, sku, asin, meli_id, price_mxn, cost_usd, stock_provider, stock_meli, status, image_url, last_updated, in_updater, amazon_seller_count, sold_by_amazon')
                     .eq('user_id', user.id)
+                    .eq('published_by_app', true)
                     .eq('in_updater', true)
                     .neq('status', 'closed')
                     .order('last_updated', { ascending: false })

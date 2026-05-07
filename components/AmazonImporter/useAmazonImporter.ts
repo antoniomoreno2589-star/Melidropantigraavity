@@ -880,6 +880,7 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
                         const { error: sbErr } = await supabase.from('products').upsert({
                             user_id:          user.id,
                             meli_id:          result.id,
+                            asin:             processed.asin,
                             title:            result.title || publishPayload.title || processed.optimizedTitle,
                             sku:              processed.asin,
                             price_mxn:        publishPayload.price,
@@ -890,6 +891,7 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
                             description_text: descriptionText ?? null,
                             last_updated:     new Date().toISOString(),
                             in_updater:       !isDraft,
+                            published_by_app: true,
                         }, { onConflict: 'meli_id' });
                         if (sbErr) console.warn('[Melidrop] Supabase upsert error:', sbErr.message);
                     }
