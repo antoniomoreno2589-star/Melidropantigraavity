@@ -356,12 +356,15 @@ serve(async (req) => {
 
             let updated = 0, errors = 0;
 
+            console.log(`[amazon-ml-updater] Processing batch: ${products.length} products, syncParams=${JSON.stringify(syncParams)}`);
+
             for (const product of products) {
                 const currency = (product as any).currency ?? 'USD';
                 const meliId   = (product as any).meli_id;
+                const sku      = (product as any).sku;
                 const updatePayload: Record<string, unknown> = {};
 
-                const offers       = asinOffers[(product as any).sku];
+                const offers       = asinOffers[sku];
                 const sellerCount   = offers?.sellerCount ?? null;
                 const soldByAmazon  = offers?.soldByAmazon ?? null;
                 const amazonStock   = offers?.amazonStock ?? null;
@@ -398,7 +401,9 @@ serve(async (req) => {
                 }
 
                 if (Object.keys(updatePayload).length > 0) {
+                    console.log(`[amazon-ml-updater] meliId=${meliId}, sku=${sku}, payload=${JSON.stringify(updatePayload)}`);
                     const ok = await updateMeliItem(meliId, updatePayload, mlToken);
+                    console.log(`[amazon-ml-updater] meliId=${meliId} result=${ok ? 'SUCCESS' : 'FAILED'}`);
                     if (ok) {
                         const dbUpdate: any = { last_updated: new Date().toISOString() };
                         if (updatePayload.price)              dbUpdate.price_mxn           = updatePayload.price;
@@ -412,6 +417,8 @@ serve(async (req) => {
                     } else {
                         errors++;
                     }
+                } else {
+                    console.log(`[amazon-ml-updater] meliId=${meliId}, sku=${sku} - no changes needed`);
                 }
 
                 // Always save Amazon metadata (seller count, availability, stock) to track Amazon changes
