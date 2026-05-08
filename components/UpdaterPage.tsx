@@ -74,7 +74,6 @@ export const UpdaterPage: React.FC = () => {
         const freq = parseInt(localStorage.getItem('melidrop_sync_frequency_hours') || '24');
         setSyncFreqHours(freq);
 
-        // Schedule automatic sync at 7 AM every 3 days
         const scheduleAutomaticSync = () => {
             const lastSyncTime = localStorage.getItem('melidrop_last_sync_7am');
             const lastSync = lastSyncTime ? new Date(lastSyncTime) : null;
@@ -82,20 +81,11 @@ export const UpdaterPage: React.FC = () => {
             const checkAndRunSync = async () => {
                 const now = new Date();
                 const currentHour = now.getHours();
-                const currentMinute = now.getMinutes();
-
-                // Check if we're at 7 AM (7:00 - 7:59)
                 if (currentHour !== 7) return;
-
                 const timeSinceLastSync = lastSync ? (now.getTime() - lastSync.getTime()) : Infinity;
-                const threeDaysMs = 3 * 24 * 60 * 60 * 1000; // 72 hours in milliseconds
-
-                // If 3 days have passed since last sync at 7 AM, run sync
+                const threeDaysMs = 3 * 24 * 60 * 60 * 1000;
                 if (timeSinceLastSync >= threeDaysMs) {
-                    console.log('Running scheduled sync at 7 AM after 3 days');
                     localStorage.setItem('melidrop_last_sync_7am', now.toISOString());
-
-                    // Execute the sync
                     setSyncRunning(true);
                     setSyncResult('Ejecutando sincronización programada...');
                     try {
@@ -107,9 +97,10 @@ export const UpdaterPage: React.FC = () => {
                         const data = await res.json();
                         if (data.success) {
                             const s = data.summary?.[0];
-                            if (s?.skipped)   setSyncResult(`⏳ Sincronización programada: no era necesaria aún.`);
-                            else if (s)       setSyncResult(`✅ Sincronización programada: ${s.updated} actualizados, ${s.errors} errores.`);
-                            else              setSyncResult('✅ Sincronización programada completada.');
+                            if (!s) setSyncResult('✅ Sincronización programada completada.');
+                            else if (s.skipped) setSyncResult('⏳ Sincronización programada: no era necesaria aún.');
+                            else if (s.updated !== undefined) setSyncResult(`✅ Sincronización programada: ${s.updated} actualizados, ${s.errors} errores.`);
+                            else setSyncResult('✅ Sincronización programada completada.');
                             const { data: { user } } = await supabase.auth.getUser();
                             if (user) {
                                 const { data: job } = await supabase.from('sync_jobs').select('*').eq('user_id', user.id).order('started_at', { ascending: false }).limit(1).maybeSingle();
@@ -125,19 +116,11 @@ export const UpdaterPage: React.FC = () => {
                     }
                 }
             };
-
-            // Check every hour if it's time to sync
             const intervalId = setInterval(checkAndRunSync, 60 * 60 * 1000);
-
-            // Also check immediately in case the time has already passed this session
             checkAndRunSync();
-
             return intervalId;
         };
 
-        const intervalId = scheduleAutomaticSync();
-
-        // Schedule automatic updater at 8 AM every day (for products marked in_updater)
         const scheduleAutomaticUpdater = () => {
             const lastUpdaterTime = localStorage.getItem('melidrop_last_updater_8am');
             const lastUpdater = lastUpdaterTime ? new Date(lastUpdaterTime) : null;
@@ -145,19 +128,11 @@ export const UpdaterPage: React.FC = () => {
             const checkAndRunUpdater = async () => {
                 const now = new Date();
                 const currentHour = now.getHours();
-
-                // Check if we're at 8 AM (8:00 - 8:59)
                 if (currentHour !== 8) return;
-
                 const timeSinceLastUpdater = lastUpdater ? (now.getTime() - lastUpdater.getTime()) : Infinity;
                 const oneDayMs = 24 * 60 * 60 * 1000;
-
-                // If 1 day has passed since last updater at 8 AM, run updater
                 if (timeSinceLastUpdater >= oneDayMs) {
-                    console.log('Running scheduled updater at 8 AM');
                     localStorage.setItem('melidrop_last_updater_8am', now.toISOString());
-
-                    // Execute the updater
                     setSyncRunning(true);
                     setSyncResult('Ejecutando actualización programada de productos...');
                     try {
@@ -169,9 +144,10 @@ export const UpdaterPage: React.FC = () => {
                         const data = await res.json();
                         if (data.success) {
                             const s = data.summary?.[0];
-                            if (s?.skipped)   setSyncResult(`⏳ Actualización programada: no era necesaria aún.`);
-                            else if (s)       setSyncResult(`✅ Actualización programada: ${s.updated} actualizados, ${s.errors} errores.`);
-                            else              setSyncResult('✅ Actualización programada completada.');
+                            if (!s) setSyncResult('✅ Actualización programada completada.');
+                            else if (s.skipped) setSyncResult('⏳ Actualización programada: no era necesaria aún.');
+                            else if (s.updated !== undefined) setSyncResult(`✅ Actualización programada: ${s.updated} actualizados, ${s.errors} errores.`);
+                            else setSyncResult('✅ Actualización programada completada.');
                             const { data: { user } } = await supabase.auth.getUser();
                             if (user) {
                                 const { data: job } = await supabase.from('sync_jobs').select('*').eq('user_id', user.id).order('started_at', { ascending: false }).limit(1).maybeSingle();
@@ -187,16 +163,12 @@ export const UpdaterPage: React.FC = () => {
                     }
                 }
             };
-
-            // Check every hour if it's time to run updater
             const updaterIntervalId = setInterval(checkAndRunUpdater, 60 * 60 * 1000);
-
-            // Also check immediately in case the time has already passed this session
             checkAndRunUpdater();
-
             return updaterIntervalId;
         };
 
+        const intervalId = scheduleAutomaticSync();
         const updaterIntervalId = scheduleAutomaticUpdater();
         return () => {
             clearInterval(intervalId);
@@ -207,7 +179,6 @@ export const UpdaterPage: React.FC = () => {
     const loadProducts = async () => {
         setLoading(true);
         try {
-            // Load only products marked for updater - much faster than loading all 29k products
             const { data: { user } } = await supabase.auth.getUser();
             if (!user) return;
 
@@ -387,11 +358,9 @@ export const UpdaterPage: React.FC = () => {
         try {
             await api.products.toggleUpdater(product.id, newValue);
             if (newValue) {
-                // Moving from "Sin actualización" → "En actualización"
                 setNotEnrolledProducts(prev => prev.filter(p => p.id !== product.id));
                 setProducts(prev => [{ ...product, inUpdater: true }, ...prev]);
             } else {
-                // Moving from "En actualización" → "Sin actualización"
                 setProducts(prev => prev.filter(p => p.id !== product.id));
                 if (notEnrolledLoaded) {
                     setNotEnrolledProducts(prev => [{ ...product, inUpdater: false }, ...prev]);
@@ -458,9 +427,17 @@ export const UpdaterPage: React.FC = () => {
             const data = await res.json();
             if (data.success) {
                 const s = data.summary?.[0];
-                if (s?.skipped)   setSyncResult(`⏳ No es necesario aún (próxima sincronización en ${syncFreqHours}h).`);
-                else if (s)       setSyncResult(`✅ Lote procesado: ${s.updated} actualizados, ${s.errors} errores. Offset: ${s.offset}/${syncJob?.total_products ?? '?'}`);
-                else              setSyncResult('✅ Sincronización ejecutada (sin productos pendientes).');
+                if (!s) {
+                    setSyncResult('✅ Sincronización ejecutada (sin cambios).');
+                } else if (s.skipped) {
+                    setSyncResult(`⏳ No es necesario aún (próxima sincronización en ${syncFreqHours}h).`);
+                } else if (s.completed === true) {
+                    setSyncResult('✅ Sincronización completada (todos los productos procesados).');
+                } else if (s.updated !== undefined || s.errors !== undefined) {
+                    setSyncResult(`✅ Lote procesado: ${s.updated ?? 0} actualizados, ${s.errors ?? 0} errores. Offset: ${s.offset ?? '?'}/${syncJob?.total_products ?? '?'}`);
+                } else {
+                    setSyncResult('✅ Lote procesado sin cambios.');
+                }
                 const { data: { user } } = await supabase.auth.getUser();
                 if (user) {
                     const { data: job } = await supabase.from('sync_jobs').select('*').eq('user_id', user.id).order('started_at', { ascending: false }).limit(1).maybeSingle();
@@ -732,7 +709,6 @@ export const UpdaterPage: React.FC = () => {
                             ))}
                         </div>
                     </div>
-                    {/* Seller count filter */}
                     <div className="flex items-center gap-3 flex-wrap">
                         <span className="text-xs font-black text-slate-500 uppercase flex items-center gap-1">
                             <span className="material-symbols-outlined text-[16px] text-amber-500">storefront</span>
@@ -775,7 +751,6 @@ export const UpdaterPage: React.FC = () => {
                             </span>
                         )}
                     </div>
-                    {/* Amazon stock filter */}
                     <div className="flex items-center gap-3 flex-wrap">
                         <span className="text-xs font-black text-slate-500 uppercase flex items-center gap-1">
                             <span className="material-symbols-outlined text-[16px] text-blue-500">inventory_2</span>
@@ -805,43 +780,24 @@ export const UpdaterPage: React.FC = () => {
                     <div className="flex items-center justify-between px-4 py-3 bg-primary/5 border border-primary/20 rounded-xl animate-fade-in">
                         <span className="text-sm font-bold text-primary">{selected.size} producto{selected.size !== 1 ? 's' : ''} seleccionado{selected.size !== 1 ? 's' : ''}</span>
                         <div className="flex gap-2">
-                            <button
-                                onClick={() => handleBulkToggle(true)}
-                                disabled={bulkLoading}
-                                className="flex items-center gap-1.5 px-3 py-1.5 bg-primary text-white rounded-lg text-xs font-bold hover:bg-primary-dark transition-all disabled:opacity-50"
-                            >
+                            <button onClick={() => handleBulkToggle(true)} disabled={bulkLoading} className="flex items-center gap-1.5 px-3 py-1.5 bg-primary text-white rounded-lg text-xs font-bold hover:bg-primary-dark transition-all disabled:opacity-50">
                                 <span className="material-symbols-outlined text-[16px]">add_circle</span>
                                 Agregar al actualizador
                             </button>
-                            <button
-                                onClick={() => handleBulkToggle(false)}
-                                disabled={bulkLoading}
-                                className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-200 rounded-lg text-xs font-bold hover:bg-slate-300 dark:hover:bg-slate-600 transition-all disabled:opacity-50"
-                            >
+                            <button onClick={() => handleBulkToggle(false)} disabled={bulkLoading} className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-200 rounded-lg text-xs font-bold hover:bg-slate-300 dark:hover:bg-slate-600 transition-all disabled:opacity-50">
                                 <span className="material-symbols-outlined text-[16px]">remove_circle</span>
                                 Quitar del actualizador
                             </button>
-                            <button
-                                onClick={() => setSelected(new Set())}
-                                className="px-3 py-1.5 text-slate-500 hover:text-slate-700 text-xs font-bold"
-                            >
-                                Cancelar
-                            </button>
+                            <button onClick={() => setSelected(new Set())} className="px-3 py-1.5 text-slate-500 hover:text-slate-700 text-xs font-bold">Cancelar</button>
                         </div>
                     </div>
                 )}
 
                 {/* Table */}
                 <div className="bg-surface-light dark:bg-surface-dark rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 overflow-hidden">
-                    {/* Table Header */}
                     <div className="grid grid-cols-[auto_56px_1fr_auto_auto_auto_auto_auto] gap-3 px-4 py-3 bg-slate-50 dark:bg-slate-800/50 border-b border-slate-200 dark:border-slate-700 text-xs font-bold text-slate-500 uppercase tracking-wider">
                         <div className="flex items-center">
-                            <input
-                                type="checkbox"
-                                checked={paginated.length > 0 && selected.size === paginated.length}
-                                onChange={toggleSelectAll}
-                                className="w-4 h-4 rounded border-slate-300 text-primary cursor-pointer"
-                            />
+                            <input type="checkbox" checked={paginated.length > 0 && selected.size === paginated.length} onChange={toggleSelectAll} className="w-4 h-4 rounded border-slate-300 text-primary cursor-pointer" />
                         </div>
                         <div></div>
                         <div>Producto</div>
@@ -852,7 +808,6 @@ export const UpdaterPage: React.FC = () => {
                         <div className="text-center">Actualizador</div>
                     </div>
 
-                    {/* Loading state */}
                     {(tab === 'enrolled' && loading) || (tab === 'all' && notEnrolledLoading) ? (
                         <div className="flex flex-col items-center justify-center py-20 gap-3">
                             <span className="material-symbols-outlined text-4xl text-slate-300 animate-spin">sync</span>
@@ -877,17 +832,9 @@ export const UpdaterPage: React.FC = () => {
                                     key={product.id}
                                     className={`grid grid-cols-[auto_56px_1fr_auto_auto_auto_auto_auto] gap-3 px-4 py-3 items-center hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors ${selected.has(product.id) ? 'bg-primary/5 dark:bg-primary/10' : ''}`}
                                 >
-                                    {/* Checkbox */}
                                     <div>
-                                        <input
-                                            type="checkbox"
-                                            checked={selected.has(product.id)}
-                                            onChange={() => toggleSelect(product.id)}
-                                            className="w-4 h-4 rounded border-slate-300 text-primary cursor-pointer"
-                                        />
+                                        <input type="checkbox" checked={selected.has(product.id)} onChange={() => toggleSelect(product.id)} className="w-4 h-4 rounded border-slate-300 text-primary cursor-pointer" />
                                     </div>
-
-                                    {/* Image */}
                                     <div className="w-12 h-12 rounded-lg overflow-hidden bg-slate-100 dark:bg-slate-800 flex-shrink-0">
                                         {product.imageUrl ? (
                                             <img src={product.imageUrl} alt="" className="w-full h-full object-contain" />
@@ -897,8 +844,6 @@ export const UpdaterPage: React.FC = () => {
                                             </div>
                                         )}
                                     </div>
-
-                                    {/* Title + Meta */}
                                     <div className="min-w-0">
                                         <p className="text-sm font-semibold text-slate-900 dark:text-white truncate leading-tight">{product.title}</p>
                                         <div className="flex items-center gap-2 mt-0.5 flex-wrap">
@@ -907,22 +852,16 @@ export const UpdaterPage: React.FC = () => {
                                             {product.meliId && <span className="text-xs text-slate-400 font-mono">ML: {product.meliId}</span>}
                                         </div>
                                     </div>
-
-                                    {/* Status */}
                                     <div className="hidden sm:block">
                                         <span className={`px-2 py-0.5 rounded-full text-xs font-bold whitespace-nowrap ${STATUS_COLORS[product.status] || STATUS_COLORS.inactive}`}>
                                             {STATUS_LABELS[product.status] || product.status}
                                         </span>
                                     </div>
-
-                                    {/* Price */}
                                     <div className="hidden md:block text-right">
                                         <span className="text-sm font-bold text-slate-700 dark:text-slate-200 whitespace-nowrap">
                                             ${product.priceMXN?.toLocaleString('es-MX', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
                                         </span>
                                     </div>
-
-                                    {/* Seller count + Amazon badge */}
                                     <div className="hidden lg:flex justify-center items-center gap-1">
                                         {product.amazonSellerCount === null || product.amazonSellerCount === undefined ? (
                                             <span className="text-xs text-slate-300 dark:text-slate-600">—</span>
@@ -937,33 +876,20 @@ export const UpdaterPage: React.FC = () => {
                                                     {product.amazonSellerCount}
                                                 </span>
                                                 {product.soldByAmazon === true && (
-                                                    <span
-                                                        title="Amazon vende este producto"
-                                                        className="px-1.5 py-0.5 rounded text-[10px] font-black bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-400"
-                                                    >
-                                                        AMZ
-                                                    </span>
+                                                    <span title="Amazon vende este producto" className="px-1.5 py-0.5 rounded text-[10px] font-black bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-400">AMZ</span>
                                                 )}
                                             </>
                                         )}
                                     </div>
-
-                                    {/* Amazon stock */}
                                     <div className="hidden xl:flex justify-center">
                                         {product.amazonStock === null || product.amazonStock === undefined ? (
                                             <span className="text-xs text-slate-300 dark:text-slate-600">—</span>
                                         ) : product.amazonStock === 0 ? (
-                                            <span className="px-2 py-0.5 rounded-full text-xs font-black bg-red-100 text-red-600 dark:bg-red-900/40 dark:text-red-400">
-                                                ❌ Sin Stock
-                                            </span>
+                                            <span className="px-2 py-0.5 rounded-full text-xs font-black bg-red-100 text-red-600 dark:bg-red-900/40 dark:text-red-400">❌ Sin Stock</span>
                                         ) : (
-                                            <span className="px-2 py-0.5 rounded-full text-xs font-black bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-400">
-                                                📦 {product.amazonStock}
-                                            </span>
+                                            <span className="px-2 py-0.5 rounded-full text-xs font-black bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-400">📦 {product.amazonStock}</span>
                                         )}
                                     </div>
-
-                                    {/* Toggle */}
                                     <div className="flex justify-center">
                                         <button
                                             onClick={() => handleToggle(product)}
@@ -979,28 +905,17 @@ export const UpdaterPage: React.FC = () => {
                         </div>
                     )}
 
-                    {/* Pagination */}
                     {!loading && filtered.length > PAGE_SIZE && (
                         <div className="flex items-center justify-between px-4 py-3 border-t border-slate-200 dark:border-slate-700 bg-slate-50/50 dark:bg-slate-800/30">
                             <span className="text-xs text-slate-500">
                                 Mostrando {((page - 1) * PAGE_SIZE) + 1}–{Math.min(page * PAGE_SIZE, filtered.length)} de {filtered.length.toLocaleString()} productos
                             </span>
                             <div className="flex items-center gap-1">
-                                <button
-                                    onClick={() => setPage(p => Math.max(1, p - 1))}
-                                    disabled={page === 1}
-                                    className="p-1.5 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-700 disabled:opacity-30 transition-colors"
-                                >
+                                <button onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page === 1} className="p-1.5 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-700 disabled:opacity-30 transition-colors">
                                     <span className="material-symbols-outlined text-[18px]">chevron_left</span>
                                 </button>
-                                <span className="text-xs font-bold text-slate-600 dark:text-slate-300 px-2">
-                                    {page} / {totalPages}
-                                </span>
-                                <button
-                                    onClick={() => setPage(p => Math.min(totalPages, p + 1))}
-                                    disabled={page === totalPages}
-                                    className="p-1.5 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-700 disabled:opacity-30 transition-colors"
-                                >
+                                <span className="text-xs font-bold text-slate-600 dark:text-slate-300 px-2">{page} / {totalPages}</span>
+                                <button onClick={() => setPage(p => Math.min(totalPages, p + 1))} disabled={page === totalPages} className="p-1.5 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-700 disabled:opacity-30 transition-colors">
                                     <span className="material-symbols-outlined text-[18px]">chevron_right</span>
                                 </button>
                             </div>

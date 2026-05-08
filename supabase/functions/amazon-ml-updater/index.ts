@@ -1,21 +1,6 @@
 // amazon-ml-updater — Edge Function
 //
 // Processes ONE batch of products per invocation (150 s limit).
-// Enable pg_cron in Supabase Dashboard, then schedule via SQL Editor:
-//
-//   SELECT cron.schedule(
-//     'amazon-ml-updater', '*/10 * * * *',
-//     'SELECT net.http_post(
-//       url, headers, body
-//     ) FROM (VALUES (
-//       ''https://<project>.supabase.co/functions/v1/amazon-ml-updater'',
-//       jsonb_build_object(''Authorization'', ''Bearer <anon_key>''),
-//       ''{}''::jsonb
-//     )) t(url, headers, body)'
-//   );
-//
-// Progress is tracked in sync_jobs so each invocation resumes where
-// the previous one left off.
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
@@ -25,13 +10,10 @@ const LWA_URL   = "https://api.amazon.com/auth/o2/token";
 const BATCH_SIZE = 200;
 const PRICE_CONCURRENCY = 20;
 
-const MARKETPLACE_USA = "ATVPDKIKX0DER"; // Amazon USA  (prices in USD)
-const MARKETPLACE_MXN = "A1AM78C64UM0Y8"; // Amazon Mexico (prices in MXN)
-
-const AMAZON_SELLER_USA = "A1G99GVHAT2WD8"; // Amazon.com retail seller ID
-const AMAZON_SELLER_MXN = "AVDBXBAVVSXLQ";  // Amazon.com.mx retail seller ID
-
-// ── Amazon helpers ──────────────────────────────────────────────────────────
+const MARKETPLACE_USA = "ATVPDKIKX0DER";
+const MARKETPLACE_MXN = "A1AM78C64UM0Y8";
+const AMAZON_SELLER_USA = "A1G99GVHAT2WD8";
+const AMAZON_SELLER_MXN = "AVDBXBAVVSXLQ";
 
 async function getAmazonToken(creds: any): Promise<string> {
     const params = new URLSearchParams({
@@ -70,11 +52,9 @@ async function fetchAmazonOffers(
             headers: { "x-amz-access-token": accessToken, "Content-Type": "application/json" },
         });
         if (!res.ok) {
-            // 404 or similar = ASIN doesn't exist — treat as 0 stock (pause product)
             if (res.status === 404 || res.status === 400) {
                 return { price: null, sellerCount: 0, soldByAmazon: false, amazonStock: 0 };
             }
-            // Other errors = API issue, return null to preserve existing data
             return { price: null, sellerCount: 0, soldByAmazon: false, amazonStock: null };
         }
         const data = await res.json();
@@ -116,8 +96,6 @@ async function fetchOffersBatch(
     }
     return offers;
 }
-
-// ── MercadoLibre helpers ────────────────────────────────────────────────────
 
 async function refreshMeliToken(creds: any): Promise<string> {
     const res = await fetch(`${MELI_API}/oauth/token`, {
@@ -167,8 +145,6 @@ async function updateMeliDescription(
     return res.ok;
 }
 
-// ── Pricing calculation ─────────────────────────────────────────────────────
-
 function calculateMxnPrice(
     cost: number,
     currency: string,
@@ -192,14 +168,10 @@ function calculateMxnPrice(
         : (usaRules?.length ? usaRules : defaultUsaRules);
     const r = rules.find(rule => cost >= rule.min && (rule.max === null || cost <= rule.max))
         ?? rules[rules.length - 1];
-    // MXN source: Amazon Mexico price is already MXN — apply margin directly.
-    // USD source: Amazon USA price → convert to MXN, then apply margin.
     return isMXN
         ? Math.ceil(cost * (1 + r.margin / 100))
         : Math.ceil(cost * exchangeRate * (1 + r.margin / 100));
 }
-
-// ── Main handler ────────────────────────────────────────────────────────────
 
 const corsHeaders = {
     "Access-Control-Allow-Origin": "*",
@@ -226,7 +198,6 @@ serve(async (req) => {
     }
 
     try {
-        // 1. Get all users that have both ML and Amazon credentials
         const { data: connections, error: connErr } = await supabase
             .from("user_connections")
             .select("user_id, meli_credentials, amazon_credentials, exchange_rate, margin_rules")
@@ -257,7 +228,6 @@ serve(async (req) => {
 
             if (!meliCreds?.token || !amazonCreds?.refreshToken) continue;
 
-            // 2. Check for an active job or decide if a new cycle should start
             const { data: activeJob } = await supabase
                 .from("sync_jobs")
                 .select("*")
@@ -308,7 +278,6 @@ serve(async (req) => {
 
             const offset = job.next_offset as number;
 
-            // 3. Fetch next batch — only in_updater products that are published on ML
             const { data: products } = await supabase
                 .from("products")
                 .select("meli_id, sku, price_mxn, stock_meli, currency, description_text")
@@ -328,7 +297,6 @@ serve(async (req) => {
                 continue;
             }
 
-            // 4. Fetch Amazon prices — USD ASINs → Amazon USA, MXN ASINs → Amazon Mexico
             const endpoint = {
                 na: "https://sellingpartnerapi-na.amazon.com",
                 eu: "https://sellingpartnerapi-eu.amazon.com",
@@ -346,7 +314,6 @@ serve(async (req) => {
             ]);
             const asinOffers: Record<string, AmazonOffers> = { ...usdOffers, ...mxnOffers };
 
-            // 5. Get a valid ML token
             let mlToken: string;
             try {
                 mlToken = await getValidMeliToken(meliCreds);
@@ -356,17 +323,19 @@ serve(async (req) => {
 
             let updated = 0, errors = 0;
 
+            console.log(`[amazon-ml-updater] Processing batch: ${products.length} products, syncParams=${JSON.stringify(syncParams)}`);
+
             for (const product of products) {
                 const currency = (product as any).currency ?? 'USD';
                 const meliId   = (product as any).meli_id;
+                const sku      = (product as any).sku;
                 const updatePayload: Record<string, unknown> = {};
 
-                const offers       = asinOffers[(product as any).sku];
+                const offers       = asinOffers[sku];
                 const sellerCount   = offers?.sellerCount ?? null;
                 const soldByAmazon  = offers?.soldByAmazon ?? null;
                 const amazonStock   = offers?.amazonStock ?? null;
 
-                // Auto-pause if Amazon stock is 0
                 if (amazonStock === 0) {
                     updatePayload.status = "paused";
                 }
@@ -383,13 +352,11 @@ serve(async (req) => {
                 }
 
                 if (syncParams.stock && amazonStock !== 0) {
-                    // Use minimum of Amazon stock and default config to reflect real availability
                     const stockToSync = amazonStock !== null ? Math.min(amazonStock, defaultStock) : defaultStock;
                     updatePayload.available_quantity = stockToSync;
                 }
 
                 if (syncParams.shipping) {
-                    // Apply handling_time based on product currency
                     const isMxnProduct = currency?.toUpperCase() === 'MXN';
                     const totalHandlingTime = isMxnProduct ? handlingTimeMx : handlingTimeUsa;
                     updatePayload.sale_terms = [
@@ -398,7 +365,9 @@ serve(async (req) => {
                 }
 
                 if (Object.keys(updatePayload).length > 0) {
+                    console.log(`[amazon-ml-updater] meliId=${meliId}, sku=${sku}, payload=${JSON.stringify(updatePayload)}`);
                     const ok = await updateMeliItem(meliId, updatePayload, mlToken);
+                    console.log(`[amazon-ml-updater] meliId=${meliId} result=${ok ? 'SUCCESS' : 'FAILED'}`);
                     if (ok) {
                         const dbUpdate: any = { last_updated: new Date().toISOString() };
                         if (updatePayload.price)              dbUpdate.price_mxn           = updatePayload.price;
@@ -412,24 +381,23 @@ serve(async (req) => {
                     } else {
                         errors++;
                     }
+                } else {
+                    console.log(`[amazon-ml-updater] meliId=${meliId}, sku=${sku} - no changes needed`);
                 }
 
-                // Always save Amazon metadata (seller count, availability, stock) to track Amazon changes
                 const metaUpdate: any = { last_updated: new Date().toISOString() };
                 if (sellerCount !== null)   metaUpdate.amazon_seller_count = sellerCount;
                 if (soldByAmazon !== null)  metaUpdate.sold_by_amazon      = soldByAmazon;
                 if (amazonStock !== null)   metaUpdate.amazon_stock        = amazonStock;
-                if (Object.keys(metaUpdate).length > 1) {  // More than just last_updated
+                if (Object.keys(metaUpdate).length > 1) {
                     await supabase.from("products").update(metaUpdate).eq("meli_id", meliId);
                 }
 
-                // Description lives on a separate ML endpoint — update independently
                 if (syncParams.description && (product as any).description_text) {
                     await updateMeliDescription(meliId, (product as any).description_text, mlToken);
                 }
             }
 
-            // 6. Update job progress
             const newOffset      = offset + products.length;
             const isComplete     = newOffset >= (job.total_products as number);
             const jobUpdate: any = {
@@ -445,7 +413,6 @@ serve(async (req) => {
             }
             await supabase.from("sync_jobs").update(jobUpdate).eq("id", job.id);
 
-            // 7. Log to sync_logs when complete
             if (isComplete) {
                 await supabase.from("sync_logs").insert({
                     status:        "success",
