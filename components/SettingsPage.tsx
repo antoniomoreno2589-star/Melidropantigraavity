@@ -103,7 +103,7 @@ Este producto ha sido seleccionado cuidadosamente para ofrecerte la mejor calida
 
 ¿Por qué elegirnos?
 
-Factura disponible: Al realizar tu compra, solicítanos la factura y con gusto te la enviaremos.
+Factura disponible: Al realizar tu compra, solícitanos la factura y con gusto te la enviaremos.
 Garantía de 30 días: Si no quedas satisfecho con el producto o presenta algún defecto, puedes realizar devoluciones sin problema durante los primeros 30 días.
 Compra con confianza, estamos comprometidos en ofrecerte productos de excelente calidad y un servicio de atención al cliente sobresaliente.
 
@@ -134,7 +134,6 @@ export const SettingsPage = () => {
     }, []);
 
     useEffect(() => {
-        // When OAuth succeeds, reload testUser from Supabase after a short delay
         if (testUserStatus?.startsWith('✅ Usuario de prueba conectado')) {
             const timer = setTimeout(() => {
                 const fetchTestUser = async () => {
@@ -176,7 +175,6 @@ export const SettingsPage = () => {
             return;
         }
 
-        // Generate PKCE (required by ML apps that have it enabled)
         const array = new Uint8Array(32);
         window.crypto.getRandomValues(array);
         const verifier = btoa(String.fromCharCode(...Array.from(array))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
@@ -195,34 +193,12 @@ export const SettingsPage = () => {
         }
 
         setTestUserLoading(true);
-        setTestUserStatus('Iniciá sesión en la ventana emergente con las credenciales del usuario de prueba...');
+        setTestUserStatus('Inicia sesión en la ventana emergente con las credenciales del usuario de prueba...');
 
         const handleMessage = async (event: MessageEvent) => {
-            console.log("📨 postMessage received in SettingsPage", {
-                type: event.data?.type,
-                state: event.data?.state,
-                originMatch: event.origin === window.location.origin,
-                eventOrigin: event.origin,
-                windowOrigin: window.location.origin
-            });
+            if (event.origin !== window.location.origin) return;
+            if (event.data?.type !== 'ml_oauth_code' || event.data?.state !== 'test_user') return;
 
-            if (event.origin !== window.location.origin) {
-                console.warn("❌ Origin mismatch - rejecting message", {
-                    eventOrigin: event.origin,
-                    windowOrigin: window.location.origin
-                });
-                return;
-            }
-
-            if (event.data?.type !== 'ml_oauth_code' || event.data?.state !== 'test_user') {
-                console.warn("❌ Invalid message type or state - rejecting", {
-                    type: event.data?.type,
-                    state: event.data?.state
-                });
-                return;
-            }
-
-            console.log("✅ Valid test user OAuth message received - processing");
             window.removeEventListener('message', handleMessage);
             clearInterval(pollTimer);
             clearInterval(lsPollTimer);
@@ -279,42 +255,28 @@ export const SettingsPage = () => {
         };
 
         window.addEventListener('message', handleMessage);
-        console.log("✅ postMessage listener attached in SettingsPage");
 
-        // Clear any stale OAuth result from a previous attempt
         localStorage.removeItem('ml_test_oauth_result');
 
-        // Channel 2: BroadcastChannel listener (works without window.opener)
         let bc: BroadcastChannel | null = null;
         try {
             bc = new BroadcastChannel('ml_test_oauth');
             bc.onmessage = (ev) => {
-                console.log("📻 BroadcastChannel message received", ev.data);
-                handleMessage(new MessageEvent('message', {
-                    data: ev.data,
-                    origin: window.location.origin
-                }));
+                handleMessage(new MessageEvent('message', { data: ev.data, origin: window.location.origin }));
             };
-            console.log("✅ BroadcastChannel listener attached");
         } catch (e) {
             console.warn("BroadcastChannel not supported:", e);
         }
 
-        // Channel 3: localStorage polling (most reliable fallback)
         const lsPollTimer = setInterval(() => {
             const raw = localStorage.getItem('ml_test_oauth_result');
             if (raw) {
                 try {
                     const data = JSON.parse(raw);
-                    console.log("💾 Found OAuth result in localStorage", data);
                     localStorage.removeItem('ml_test_oauth_result');
                     clearInterval(lsPollTimer);
-                    handleMessage(new MessageEvent('message', {
-                        data,
-                        origin: window.location.origin
-                    }));
+                    handleMessage(new MessageEvent('message', { data, origin: window.location.origin }));
                 } catch (e) {
-                    console.error("Error parsing localStorage OAuth result:", e);
                     localStorage.removeItem('ml_test_oauth_result');
                 }
             }
@@ -323,8 +285,6 @@ export const SettingsPage = () => {
         const pollTimer = setInterval(() => {
             if (popup.closed) {
                 clearInterval(pollTimer);
-                // Keep lsPollTimer running for a few more seconds in case localStorage
-                // was written just before the popup closed
                 setTimeout(() => {
                     clearInterval(lsPollTimer);
                     window.removeEventListener('message', handleMessage);
@@ -335,9 +295,7 @@ export const SettingsPage = () => {
             }
         }, 1000);
 
-        // Timeout: If no message received after 60 seconds, close popup and show error
         const timeoutId = setTimeout(() => {
-            console.error("❌ Timeout: No message received after 60s. Closing popup.");
             window.removeEventListener('message', handleMessage);
             clearInterval(pollTimer);
             clearInterval(lsPollTimer);
@@ -389,8 +347,6 @@ export const SettingsPage = () => {
         setTestUserLoading(true);
         setTestUserStatus('Intentando resetear password del test user existente...');
         try {
-            // Step 1: Reset password using main account token via proxy
-            const creds = JSON.parse(localStorage.getItem('melidrop_meli_credentials') || '{}');
             const mainToken = await meliService.getValidToken();
             if (!mainToken) throw new Error('No hay token de la cuenta principal de ML. Conecta primero tu cuenta real.');
 
@@ -426,10 +382,7 @@ export const SettingsPage = () => {
         return saved ? JSON.parse(saved) : [{ id: 1, min: 0, max: 300, margin: 150 }, { id: 2, min: 301, max: 600, margin: 130 }, { id: 3, min: 601, max: null, margin: 80 }];
     });
     const [exchangeRate, setExchangeRate] = useState<number>(() => parseFloat(localStorage.getItem('melidrop_exchange_rate') || '18.24'));
-    const [usaHandlingTime, setUsaHandlingTime] = useState<number>(() => parseInt(localStorage.getItem('melidrop_handling_time_usa') || '7'));
-    const [mxHandlingTime, setMxHandlingTime] = useState<number>(() => parseInt(localStorage.getItem('melidrop_handling_time_mx') || '3'));
-    const [usaDeliveryDays, setUsaDeliveryDays] = useState<number>(() => parseInt(localStorage.getItem('melidrop_amazon_delivery_usa') || '5'));
-    const [mxDeliveryDays, setMxDeliveryDays] = useState<number>(() => parseInt(localStorage.getItem('melidrop_amazon_delivery_mx') || '3'));
+    const [prepDays, setPrepDays] = useState<number>(() => parseInt(localStorage.getItem('melidrop_prep_days') || '3'));
     const [postalCode, setPostalCode] = useState<string>(() => localStorage.getItem('melidrop_postal_code') || '');
     const [usaDefaultMargin, setUsaDefaultMargin] = useState<number>(30);
     const [mxDefaultMargin, setMxDefaultMargin] = useState<number>(20);
@@ -444,13 +397,12 @@ export const SettingsPage = () => {
     const [descriptionSuffix, setDescriptionSuffix] = useState<string>(() =>
         localStorage.getItem('melidrop_description_suffix') ?? DEFAULT_DESCRIPTION_SUFFIX
     );
+
     const updateDolarOnline = async () => {
         setIsUpdatingDolar(true);
         try {
-            // Real API call to get live exchange rate USD/MXN
             const response = await fetch('https://open.er-api.com/v6/latest/USD');
             const data = await response.json();
-
             if (data.result === "success" && data.rates && data.rates.MXN) {
                 const liveRate = parseFloat(data.rates.MXN.toFixed(2));
                 setExchangeRate(liveRate);
@@ -460,7 +412,6 @@ export const SettingsPage = () => {
                 throw new Error("No se pudo obtener la tasa de MXN");
             }
         } catch (error) {
-            console.error("Error fetching dollar rate:", error);
             alert("Error al conectar con el servidor financiero. Intente de nuevo más tarde.");
         } finally {
             setIsUpdatingDolar(false);
@@ -473,7 +424,6 @@ export const SettingsPage = () => {
         setIsDetecting(true);
         setDetectStatus('Consultando tiempos de entrega en Amazon...');
         try {
-            // Grab a sample ASIN from the user's product catalog
             const { data: { user } } = await supabase.auth.getUser();
             let sampleAsin: string | null = null;
             if (user) {
@@ -490,9 +440,7 @@ export const SettingsPage = () => {
             if (!sampleAsin) { setDetectStatus('❌ No hay productos con ASIN en tu catálogo. Importa uno primero.'); return; }
 
             const { mxDays, usaDays } = await amazonService.estimateDelivery(sampleAsin);
-            setMxDeliveryDays(mxDays);
-            setUsaDeliveryDays(usaDays);
-            setDetectStatus(`✅ Amazon MX → tu bodega: ${mxDays} día(s) · Amazon USA → tu bodega: ${usaDays} día(s) (estimado internacional). Revisa y guarda.`);
+            setDetectStatus(`✅ Amazon MX entrega en ~${mxDays} día(s) · Amazon USA entrega en ~${usaDays} día(s). El actualizador usará estos tiempos automáticamente por producto.`);
         } catch (e: any) {
             setDetectStatus(`❌ Error: ${e.message}`);
         } finally {
@@ -505,10 +453,7 @@ export const SettingsPage = () => {
         localStorage.setItem('melidrop_mx_rules', JSON.stringify(mxRules));
         localStorage.setItem('melidrop_exchange_rate', exchangeRate.toString());
         localStorage.setItem('melidrop_global_filters', globalFilters);
-        localStorage.setItem('melidrop_handling_time_usa', usaHandlingTime.toString());
-        localStorage.setItem('melidrop_handling_time_mx', mxHandlingTime.toString());
-        localStorage.setItem('melidrop_amazon_delivery_usa', usaDeliveryDays.toString());
-        localStorage.setItem('melidrop_amazon_delivery_mx', mxDeliveryDays.toString());
+        localStorage.setItem('melidrop_prep_days', prepDays.toString());
         localStorage.setItem('melidrop_postal_code', postalCode);
         localStorage.setItem('melidrop_warranty_months', warrantyMonths.toString());
         localStorage.setItem('melidrop_description_suffix', descriptionSuffix);
@@ -523,8 +468,7 @@ export const SettingsPage = () => {
                 margin_rules: {
                     ...existingRules,
                     usa: usaRules, mx: mxRules, filters: globalFilters,
-                    handling_time_usa: usaHandlingTime, handling_time_mx: mxHandlingTime,
-                    amazon_delivery_usa: usaDeliveryDays, amazon_delivery_mx: mxDeliveryDays,
+                    prep_days: prepDays,
                     postal_code: postalCode,
                     warranty_months: warrantyMonths,
                 }
@@ -543,12 +487,10 @@ export const SettingsPage = () => {
                 </div>
 
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-                    {/* AMAZON CONNECT CARD */}
                     <div className="lg:col-span-2">
                         <AmazonConnect />
                     </div>
 
-                    {/* POSTAL CODE */}
                     <div className="lg:col-span-2 bg-surface-light dark:bg-surface-dark rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 p-6 flex flex-col gap-4">
                         <div className="flex flex-col sm:flex-row items-start sm:items-center gap-4">
                             <div className="p-2 rounded-lg bg-indigo-100 text-indigo-600 flex-shrink-0">
@@ -633,40 +575,21 @@ export const SettingsPage = () => {
                             <div className="flex flex-col gap-2">
                                 <label className="text-xs font-semibold text-slate-500 uppercase flex items-center gap-1">
                                     <span className="material-symbols-outlined text-[14px] text-amber-500">schedule</span>
-                                    Días de Preparación (Amazon USA)
-                                </label>
-                                <div className="flex items-center gap-3">
-                                    <div className="relative flex-1">
-                                        <input
-                                            className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg px-3 py-2 text-sm font-black"
-                                            type="number" min="1" max="60"
-                                            value={usaHandlingTime}
-                                            onChange={(e) => setUsaHandlingTime(Math.max(1, parseInt(e.target.value) || 1))}
-                                        />
-                                        <span className="absolute right-3 top-2 text-slate-400 text-xs">días</span>
-                                    </div>
-                                </div>
-                                <p className="text-[10px] text-slate-400 italic">Días de tu proceso interno antes de enviar al cliente.</p>
-                            </div>
-                            <div className="flex flex-col gap-2">
-                                <label className="text-xs font-semibold text-slate-500 uppercase flex items-center gap-1">
-                                    <span className="material-symbols-outlined text-[14px] text-blue-500">local_shipping</span>
-                                    Amazon USA → Tu bodega (días de entrega)
+                                    Días de Preparación (tu bodega)
                                 </label>
                                 <div className="relative">
                                     <input
                                         className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg px-3 py-2 text-sm font-black"
-                                        type="number" min="1" max="30"
-                                        value={usaDeliveryDays}
-                                        onChange={(e) => setUsaDeliveryDays(Math.max(1, parseInt(e.target.value) || 1))}
+                                        type="number" min="0" max="30"
+                                        value={prepDays}
+                                        onChange={(e) => setPrepDays(Math.max(0, parseInt(e.target.value) || 0))}
                                     />
                                     <span className="absolute right-3 top-2 text-slate-400 text-xs">días</span>
                                 </div>
-                                <div className="bg-slate-100 dark:bg-slate-800 rounded-lg px-3 py-2 flex items-center justify-between">
-                                    <span className="text-xs text-slate-500">Total handling_time en ML:</span>
-                                    <span className="text-sm font-black text-primary">{usaDeliveryDays + usaHandlingTime} días</span>
+                                <div className="bg-blue-50 dark:bg-blue-900/20 rounded-lg px-3 py-2 flex items-center gap-2">
+                                    <span className="material-symbols-outlined text-[14px] text-blue-500">info</span>
+                                    <span className="text-xs text-blue-600 dark:text-blue-400">El tiempo de Amazon se obtiene automáticamente por producto. ML mostrará: días Amazon + {prepDays} días tuyos.</span>
                                 </div>
-                                <p className="text-[10px] text-slate-400 italic">ML esperará este total antes de exigirte el envío al cliente.</p>
                             </div>
                         </div>
                         <div className="p-4 bg-slate-50 dark:bg-slate-800/50 border-t border-slate-100 dark:border-slate-800">
@@ -698,38 +621,21 @@ export const SettingsPage = () => {
                             <div className="flex flex-col gap-2">
                                 <label className="text-xs font-semibold text-slate-500 uppercase flex items-center gap-1">
                                     <span className="material-symbols-outlined text-[14px] text-amber-500">schedule</span>
-                                    Días de Preparación (Amazon MX)
+                                    Días de Preparación (tu bodega)
                                 </label>
                                 <div className="relative">
                                     <input
                                         className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg px-3 py-2 text-sm font-black"
-                                        type="number" min="1" max="30"
-                                        value={mxHandlingTime}
-                                        onChange={(e) => setMxHandlingTime(Math.max(1, parseInt(e.target.value) || 1))}
+                                        type="number" min="0" max="30"
+                                        value={prepDays}
+                                        onChange={(e) => setPrepDays(Math.max(0, parseInt(e.target.value) || 0))}
                                     />
                                     <span className="absolute right-3 top-2 text-slate-400 text-xs">días</span>
                                 </div>
-                                <p className="text-[10px] text-slate-400 italic">Días de tu proceso interno antes de enviar al cliente.</p>
-                            </div>
-                            <div className="flex flex-col gap-2">
-                                <label className="text-xs font-semibold text-slate-500 uppercase flex items-center gap-1">
-                                    <span className="material-symbols-outlined text-[14px] text-blue-500">local_shipping</span>
-                                    Amazon MX → Tu bodega (días de entrega)
-                                </label>
-                                <div className="relative">
-                                    <input
-                                        className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg px-3 py-2 text-sm font-black"
-                                        type="number" min="1" max="30"
-                                        value={mxDeliveryDays}
-                                        onChange={(e) => setMxDeliveryDays(Math.max(1, parseInt(e.target.value) || 1))}
-                                    />
-                                    <span className="absolute right-3 top-2 text-slate-400 text-xs">días</span>
+                                <div className="bg-blue-50 dark:bg-blue-900/20 rounded-lg px-3 py-2 flex items-center gap-2">
+                                    <span className="material-symbols-outlined text-[14px] text-blue-500">info</span>
+                                    <span className="text-xs text-blue-600 dark:text-blue-400">El tiempo de Amazon se obtiene automáticamente por producto. ML mostrará: días Amazon + {prepDays} días tuyos.</span>
                                 </div>
-                                <div className="bg-slate-100 dark:bg-slate-800 rounded-lg px-3 py-2 flex items-center justify-between">
-                                    <span className="text-xs text-slate-500">Total handling_time en ML:</span>
-                                    <span className="text-sm font-black text-primary">{mxDeliveryDays + mxHandlingTime} días</span>
-                                </div>
-                                <p className="text-[10px] text-slate-400 italic">ML esperará este total antes de exigirte el envío al cliente.</p>
                             </div>
                         </div>
                         <div className="p-4 bg-slate-50 dark:bg-slate-800/50 border-t border-slate-100 dark:border-slate-800">
@@ -764,12 +670,12 @@ export const SettingsPage = () => {
                                         <p className="text-xs text-green-600 mt-0.5">Conectado: {new Date(testUser.connected_at).toLocaleDateString('es-MX')}</p>
                                     </div>
                                     <div className="flex gap-3">
-                                    <button onClick={handleVerifyTestUser} className="text-xs text-green-600 hover:text-green-800 font-bold flex items-center gap-1">
-                                        <span className="material-symbols-outlined text-[14px]">check_circle</span>Verificar token
-                                    </button>
-                                    <button onClick={handleConnectTestUser} disabled={testUserLoading} className="text-xs text-blue-500 hover:text-blue-700 font-bold flex items-center gap-1">
-                                        <span className="material-symbols-outlined text-[14px]">refresh</span>Renovar token
-                                    </button>
+                                        <button onClick={handleVerifyTestUser} className="text-xs text-green-600 hover:text-green-800 font-bold flex items-center gap-1">
+                                            <span className="material-symbols-outlined text-[14px]">check_circle</span>Verificar token
+                                        </button>
+                                        <button onClick={handleConnectTestUser} disabled={testUserLoading} className="text-xs text-blue-500 hover:text-blue-700 font-bold flex items-center gap-1">
+                                            <span className="material-symbols-outlined text-[14px]">refresh</span>Renovar token
+                                        </button>
                                     </div>
                                     <button onClick={handleDisconnectTestUser} className="w-fit text-xs text-red-500 hover:text-red-700 font-bold flex items-center gap-1">
                                         <span className="material-symbols-outlined text-[14px]">link_off</span>Desconectar usuario de prueba
@@ -809,8 +715,6 @@ export const SettingsPage = () => {
                                         {testUserLoading ? <span className="w-4 h-4 rounded-full border-2 border-white/30 border-t-white animate-spin" /> : <span className="material-symbols-outlined text-[18px]">open_in_new</span>}
                                         Conectar con OAuth
                                     </button>
-
-                                    {/* Recover existing test user */}
                                     <div className="border-t border-slate-200 dark:border-slate-700 pt-4 space-y-3">
                                         <p className="text-xs font-bold text-slate-500 uppercase tracking-wider">¿Ya tienes un test user pero perdiste el password?</p>
                                         <div className="space-y-2">
@@ -848,7 +752,6 @@ export const SettingsPage = () => {
                         </div>
                     </section>
 
-                    {/* DEBUG: TEST USER STATUS */}
                     <div className="lg:col-span-2 bg-blue-50 dark:bg-blue-950/20 border border-blue-200 dark:border-blue-800 rounded-xl p-6 flex flex-col gap-4">
                         <div className="flex items-center gap-3">
                             <span className="material-symbols-outlined text-blue-600 dark:text-blue-400">bug_report</span>
