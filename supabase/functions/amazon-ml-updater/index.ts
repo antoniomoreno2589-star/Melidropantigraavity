@@ -37,6 +37,7 @@ interface AmazonOffers {
     sellerCount: number;
     soldByAmazon: boolean;
     amazonStock: number | null;
+    shippingDays: number | null;
 }
 
 async function fetchAmazonOffers(
@@ -53,9 +54,9 @@ async function fetchAmazonOffers(
         });
         if (!res.ok) {
             if (res.status === 404 || res.status === 400) {
-                return { price: null, sellerCount: 0, soldByAmazon: false, amazonStock: 0 };
+                return { price: null, sellerCount: 0, soldByAmazon: false, amazonStock: 0, shippingDays: null };
             }
-            return { price: null, sellerCount: 0, soldByAmazon: false, amazonStock: null };
+            return { price: null, sellerCount: 0, soldByAmazon: false, amazonStock: null, shippingDays: null };
         }
         const data = await res.json();
         const summary = data?.payload?.Summary;
@@ -65,13 +66,19 @@ async function fetchAmazonOffers(
         const price = lowestNew?.ListingPrice?.Amount ?? null;
         const sellerCount = (summary?.NumberOfOffers ?? [])
             .reduce((sum: number, o: any) => sum + (o.offerCount ?? 0), 0);
-        const amazonOffer = (data?.payload?.Offers ?? [])
-            .find((o: any) => o.SellerId === amazonSellerId);
+        const allOffers = data?.payload?.Offers ?? [];
+        const amazonOffer = allOffers.find((o: any) => o.SellerId === amazonSellerId);
         const soldByAmazon = !!amazonOffer;
         const amazonStock = amazonOffer?.QuantityOnHand ?? null;
-        return { price, sellerCount, soldByAmazon, amazonStock };
+
+        // Extract shipping days from Amazon's offer, then buy box, then first offer
+        const shippingSource = amazonOffer ?? allOffers.find((o: any) => o.IsBuyBoxWinner) ?? allOffers[0];
+        const maxHours = shippingSource?.ShippingTime?.maximumHours ?? null;
+        const shippingDays = maxHours !== null ? Math.ceil(maxHours / 24) : null;
+
+        return { price, sellerCount, soldByAmazon, amazonStock, shippingDays };
     } catch {
-        return { price: null, sellerCount: 0, soldByAmazon: false, amazonStock: null };
+        return { price: null, sellerCount: 0, soldByAmazon: false, amazonStock: null, shippingDays: null };
     }
 }
 
@@ -223,8 +230,7 @@ serve(async (req) => {
             const usaRules        = settings.usa            ?? [];
             const mxRules         = settings.mx             ?? [];
             const freqHours       = settings.sync_frequency_hours ?? 24;
-            const handlingTimeUsa = (settings.handling_time_usa ?? 7) + (settings.amazon_delivery_usa ?? 5);
-            const handlingTimeMx  = (settings.handling_time_mx  ?? 3) + (settings.amazon_delivery_mx  ?? 3);
+            const prepDays        = settings.prep_days ?? settings.handling_time_mx ?? 3;
 
             if (!meliCreds?.token || !amazonCreds?.refreshToken) continue;
 
@@ -357,11 +363,14 @@ serve(async (req) => {
                 }
 
                 if (syncParams.shipping) {
-                    const isMxnProduct = currency?.toUpperCase() === 'MXN';
-                    const totalHandlingTime = isMxnProduct ? handlingTimeMx : handlingTimeUsa;
-                    updatePayload.sale_terms = [
-                        { id: "MANUFACTURING_TIME", value_name: `${totalHandlingTime} días` }
-                    ];
+                    const amazonShippingDays = offers?.shippingDays ?? null;
+                    if (amazonShippingDays !== null) {
+                        const totalHandlingTime = amazonShippingDays + prepDays;
+                        updatePayload.sale_terms = [
+                            { id: "MANUFACTURING_TIME", value_name: `${totalHandlingTime} días` }
+                        ];
+                        console.log(`[amazon-ml-updater] meliId=${meliId} shippingDays=${amazonShippingDays} + prepDays=${prepDays} = ${totalHandlingTime}`);
+                    }
                 }
 
                 if (Object.keys(updatePayload).length > 0) {
