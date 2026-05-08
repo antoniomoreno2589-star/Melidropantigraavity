@@ -221,9 +221,17 @@ export const UpdaterPage: React.FC = () => {
             const data = await res.json();
             if (data.success) {
                 const s = data.summary?.[0];
-                if (s?.skipped)   setSyncResult(`⏳ No es necesario aún (próxima sincronización en ${syncFreqHours}h).`);
-                else if (s)       setSyncResult(`✅ Lote procesado: ${s.updated} actualizados, ${s.errors} errores. Offset: ${s.offset}/${syncJob?.total_products ?? '?'}`);
-                else              setSyncResult('✅ Sincronización ejecutada (sin productos pendientes).');
+                if (!s) {
+                    setSyncResult('✅ Sincronización ejecutada (sin cambios).');
+                } else if (s.skipped) {
+                    setSyncResult(`⏳ No es necesario aún (próxima sincronización en ${syncFreqHours}h).`);
+                } else if (s.completed === true) {
+                    setSyncResult('✅ Sincronización completada (todos los productos procesados).');
+                } else if (s.updated !== undefined || s.errors !== undefined) {
+                    setSyncResult(`✅ Lote procesado: ${s.updated ?? 0} actualizados, ${s.errors ?? 0} errores. Offset: ${s.offset ?? '?'}/${syncJob?.total_products ?? '?'}`);
+                } else {
+                    setSyncResult('✅ Lote procesado sin cambios.');
+                }
                 const { data: { user } } = await supabase.auth.getUser();
                 if (user) {
                     const { data: job } = await supabase.from('sync_jobs').select('*').eq('user_id', user.id).order('started_at', { ascending: false }).limit(1).maybeSingle();
