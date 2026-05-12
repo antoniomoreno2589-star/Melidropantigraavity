@@ -73,8 +73,10 @@ async function fetchAmazonOffers(
 
         // Extract shipping days from Amazon's offer, then buy box, then first offer
         const shippingSource = amazonOffer ?? allOffers.find((o: any) => o.IsBuyBoxWinner) ?? allOffers[0];
-        const maxHours = shippingSource?.ShippingTime?.maximumHours ?? null;
-        const shippingDays = maxHours !== null ? Math.ceil(maxHours / 24) : null;
+        const st = shippingSource?.ShippingTime;
+        console.log(`[fetchAmazonOffers] asin=${asin} ShippingTime=${JSON.stringify(st)} offersCount=${allOffers.length}`);
+        const rawHours = st?.maximumHours ?? st?.minimumHours ?? null;
+        const shippingDays = rawHours !== null ? Math.ceil(rawHours / 24) : null;
 
         return { price, sellerCount, soldByAmazon, amazonStock, shippingDays };
     } catch {
@@ -370,6 +372,8 @@ serve(async (req) => {
                             { id: "MANUFACTURING_TIME", value_name: `${totalHandlingTime} días` }
                         ];
                         console.log(`[amazon-ml-updater] meliId=${meliId} shippingDays=${amazonShippingDays} + prepDays=${prepDays} = ${totalHandlingTime}`);
+                    } else {
+                        console.log(`[amazon-ml-updater] meliId=${meliId} shippingDays=null (no ShippingTime from Amazon), skipping shipping update`);
                     }
                 }
 
