@@ -40,6 +40,45 @@ interface AmazonOffers {
     shippingDays: number | null;
 }
 
+async function fetchAmazonShippingDays(asin: string): Promise<number | null> {
+    try {
+        const url = `https://www.amazon.com.mx/dp/${asin}`;
+        const res = await fetch(url, {
+            headers: {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "Accept-Language": "es-MX,es;q=0.9",
+            },
+        });
+        if (!res.ok) return null;
+
+        const html = await res.text();
+
+        // Buscar "Llega en X a Y días", "Envío en X a Y días"
+        const patterns = [
+            /Llega en (\d+)\s+a\s+(\d+)\s+días/i,
+            /Envío en (\d+)\s+a\s+(\d+)\s+días/i,
+            /(\d+)\s+a\s+(\d+)\s+días/i,
+        ];
+
+        for (const pattern of patterns) {
+            const match = html.match(pattern);
+            if (match) {
+                const min = parseInt(match[1]);
+                const max = parseInt(match[2]);
+                const days = Math.max(min, max);
+                console.log(`[fetchAmazonShippingDays] asin=${asin} found: ${days} days`);
+                return days;
+            }
+        }
+
+        console.log(`[fetchAmazonShippingDays] asin=${asin} no pattern found`);
+        return null;
+    } catch (e) {
+        console.error(`[fetchAmazonShippingDays] asin=${asin}:`, e);
+        return null;
+    }
+}
+
 async function fetchAmazonOffers(
     endpoint: string,
     asin: string,
@@ -71,14 +110,7 @@ async function fetchAmazonOffers(
         const soldByAmazon = !!amazonOffer;
         const amazonStock = amazonOffer?.QuantityOnHand ?? null;
 
-        // Extract shipping days from Amazon's offer, then buy box, then first offer
-        const shippingSource = amazonOffer ?? allOffers.find((o: any) => o.IsBuyBoxWinner) ?? allOffers[0];
-        const st = shippingSource?.ShippingTime;
-        console.log(`[fetchAmazonOffers] asin=${asin} ShippingTime=${JSON.stringify(st)} offersCount=${allOffers.length}`);
-        const rawHours = st?.maximumHours ?? st?.minimumHours ?? null;
-        const shippingDays = rawHours !== null ? Math.ceil(rawHours / 24) : null;
-
-        return { price, sellerCount, soldByAmazon, amazonStock, shippingDays };
+        return { price, sellerCount, soldByAmazon, amazonStock, shippingDays: null };
     } catch {
         return { price: null, sellerCount: 0, soldByAmazon: false, amazonStock: null, shippingDays: null };
     }
@@ -288,7 +320,7 @@ serve(async (req) => {
 
             const { data: products } = await supabase
                 .from("products")
-                .select("meli_id, sku, price_mxn, stock_meli, currency, description_text")
+                .select("id, meli_id, sku, price_mxn, stock_meli, currency, description_text, shipping_days, shipping_days_updated_at")
                 .eq("user_id", userId)
                 .eq("in_updater", true)
                 .not("meli_id", "is", null)
@@ -337,12 +369,30 @@ serve(async (req) => {
                 const currency = (product as any).currency ?? 'USD';
                 const meliId   = (product as any).meli_id;
                 const sku      = (product as any).sku;
+                const productId = (product as any).id;
                 const updatePayload: Record<string, unknown> = {};
 
                 const offers       = asinOffers[sku];
                 const sellerCount   = offers?.sellerCount ?? null;
                 const soldByAmazon  = offers?.soldByAmazon ?? null;
                 const amazonStock   = offers?.amazonStock ?? null;
+
+                // Shipping days cache logic (7 days TTL)
+                let cachedShippingDays = (product as any).shipping_days ?? null;
+                const updatedAt = (product as any).shipping_days_updated_at;
+                const isStale = !updatedAt || (Date.now() - new Date(updatedAt).getTime()) > 7 * 24 * 60 * 60 * 1000;
+
+                if (cachedShippingDays === null || isStale) {
+                    console.log(`[amazon-ml-updater] Fetching shipping days for ${sku} (cache stale=${isStale})`);
+                    const scrapedDays = await fetchAmazonShippingDays(sku);
+                    if (scrapedDays !== null) {
+                        cachedShippingDays = scrapedDays;
+                        await supabase.from("products").update({
+                            shipping_days: scrapedDays,
+                            shipping_days_updated_at: new Date().toISOString()
+                        }).eq("id", productId);
+                    }
+                }
 
                 if (amazonStock === 0) {
                     updatePayload.status = "paused";
@@ -365,15 +415,12 @@ serve(async (req) => {
                 }
 
                 if (syncParams.shipping) {
-                    const amazonShippingDays = offers?.shippingDays ?? null;
-                    if (amazonShippingDays !== null) {
-                        const totalHandlingTime = amazonShippingDays + prepDays;
+                    if (cachedShippingDays !== null) {
+                        const totalHandlingTime = cachedShippingDays + prepDays;
                         updatePayload.sale_terms = [
                             { id: "MANUFACTURING_TIME", value_name: `${totalHandlingTime} días` }
                         ];
-                        console.log(`[amazon-ml-updater] meliId=${meliId} shippingDays=${amazonShippingDays} + prepDays=${prepDays} = ${totalHandlingTime}`);
-                    } else {
-                        console.log(`[amazon-ml-updater] meliId=${meliId} shippingDays=null (no ShippingTime from Amazon), skipping shipping update`);
+                        console.log(`[amazon-ml-updater] meliId=${meliId} shipping=${cachedShippingDays} + prep=${prepDays} = ${totalHandlingTime}`);
                     }
                 }
 
