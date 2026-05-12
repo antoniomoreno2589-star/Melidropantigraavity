@@ -1,21 +1,6 @@
 // amazon-ml-updater — Edge Function
 //
 // Processes ONE batch of products per invocation (150 s limit).
-// Enable pg_cron in Supabase Dashboard, then schedule via SQL Editor:
-//
-//   SELECT cron.schedule(
-//     'amazon-ml-updater', '*/10 * * * *',
-//     'SELECT net.http_post(
-//       url, headers, body
-//     ) FROM (VALUES (
-//       ''https://<project>.supabase.co/functions/v1/amazon-ml-updater'',
-//       jsonb_build_object(''Authorization'', ''Bearer <anon_key>''),
-//       ''{}''::jsonb
-//     )) t(url, headers, body)'
-//   );
-//
-// Progress is tracked in sync_jobs so each invocation resumes where
-// the previous one left off.
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
@@ -25,13 +10,10 @@ const LWA_URL   = "https://api.amazon.com/auth/o2/token";
 const BATCH_SIZE = 200;
 const PRICE_CONCURRENCY = 20;
 
-const MARKETPLACE_USA = "ATVPDKIKX0DER"; // Amazon USA  (prices in USD)
-const MARKETPLACE_MXN = "A1AM78C64UM0Y8"; // Amazon Mexico (prices in MXN)
-
-const AMAZON_SELLER_USA = "A1G99GVHAT2WD8"; // Amazon.com retail seller ID
-const AMAZON_SELLER_MXN = "AVDBXBAVVSXLQ";  // Amazon.com.mx retail seller ID
-
-// ── Amazon helpers ──────────────────────────────────────────────────────────
+const MARKETPLACE_USA = "ATVPDKIKX0DER";
+const MARKETPLACE_MXN = "A1AM78C64UM0Y8";
+const AMAZON_SELLER_USA = "A1G99GVHAT2WD8";
+const AMAZON_SELLER_MXN = "AVDBXBAVVSXLQ";
 
 async function getAmazonToken(creds: any): Promise<string> {
     const params = new URLSearchParams({
@@ -55,6 +37,128 @@ interface AmazonOffers {
     sellerCount: number;
     soldByAmazon: boolean;
     amazonStock: number | null;
+    shippingDays: number | null;
+}
+
+const MONTHS: Record<string, number> = {
+    'enero': 0, 'febrero': 1, 'marzo': 2, 'abril': 3, 'mayo': 4, 'junio': 5,
+    'julio': 6, 'agosto': 7, 'septiembre': 8, 'octubre': 9, 'noviembre': 10, 'diciembre': 11,
+};
+
+function dateToShippingDays(day: number, month: number): number {
+    const now = new Date();
+    const delivery = new Date(now.getFullYear(), month, day, 23, 59, 59);
+    if (delivery < now) delivery.setFullYear(now.getFullYear() + 1);
+    return Math.ceil((delivery.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+}
+
+async function buildAmazonSession(postalCode: string): Promise<string> {
+    const ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
+    const baseHeaders = {
+        "User-Agent": ua,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language": "es-MX,es;q=0.9",
+        "Accept-Encoding": "gzip, deflate, br",
+    };
+
+    const cookies: Map<string, string> = new Map();
+    const parseCookies = (header: string | null) => {
+        if (!header) return;
+        header.split(/,(?=[A-Za-z_-]+=)/).forEach(c => {
+            const [nameVal] = c.split(';');
+            const eq = nameVal.indexOf('=');
+            if (eq > 0) cookies.set(nameVal.substring(0, eq).trim(), nameVal.substring(eq + 1).trim());
+        });
+    };
+
+    try {
+        const homeRes = await fetch("https://www.amazon.com.mx/", { headers: baseHeaders, redirect: "follow" });
+        parseCookies(homeRes.headers.get("set-cookie"));
+
+        const zipRes = await fetch(
+            `https://www.amazon.com.mx/gp/delivery/ajax/address-change.html?addressID=&isCosmetic=0&postalCode=${postalCode}&stateOrRegionCode=VER&countryCode=MX`,
+            {
+                headers: {
+                    ...baseHeaders,
+                    "Cookie": Array.from(cookies.entries()).map(([k, v]) => `${k}=${v}`).join('; '),
+                    "X-Requested-With": "XMLHttpRequest",
+                    "Referer": "https://www.amazon.com.mx/",
+                },
+            }
+        );
+        parseCookies(zipRes.headers.get("set-cookie"));
+    } catch { /* ignore */ }
+
+    return Array.from(cookies.entries()).map(([k, v]) => `${k}=${v}`).join('; ');
+}
+
+async function fetchAmazonShippingDays(asin: string, postalCode = "06600"): Promise<number | null> {
+    try {
+        const cookieStr = await buildAmazonSession(postalCode);
+        const res = await fetch(`https://www.amazon.com.mx/dp/${asin}`, {
+            headers: {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+                "Accept-Language": "es-MX,es;q=0.9",
+                "Referer": "https://www.amazon.com.mx/",
+                "Cookie": cookieStr,
+            },
+        });
+        console.log(`[scrape] asin=${asin} status=${res.status} cookies=${cookieStr.length}`);
+        if (!res.ok) return null;
+
+        const html = await res.text();
+        console.log(`[scrape] asin=${asin} htmlLen=${html.length} snippet=${html.substring(0, 300).replace(/\s+/g, ' ')}`);
+
+        // Pattern 1: date range "entre el martes 27 de mayo y el miércoles 11 de junio"
+        const rangeDate = html.match(
+            /entre\s+el\s+(?:\w+,?\s+)?(\d{1,2})\s+de\s+(enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre)[^<]{0,30}y\s+el\s+(?:\w+,?\s+)?(\d{1,2})\s+de\s+(enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre)/i
+        );
+        if (rangeDate) {
+            const d1 = dateToShippingDays(parseInt(rangeDate[1]), MONTHS[rangeDate[2].toLowerCase()] ?? 0);
+            const d2 = dateToShippingDays(parseInt(rangeDate[3]), MONTHS[rangeDate[4].toLowerCase()] ?? 0);
+            const days = Math.max(d1, d2);
+            console.log(`[scrape] asin=${asin} date-range → ${days} days`);
+            return days;
+        }
+
+        // Pattern 2: single date "Lo recibirás el martes 20 de mayo" / "Recíbelo el ..."
+        const singleDate = html.match(
+            /(?:recibir[aá]s?|recibes|llegar[aá]|recibe|Rec[ií]belo)\s+(?:el\s+)?(?:\w+,?\s+)?(\d{1,2})\s+de\s+(enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre)/i
+        );
+        if (singleDate) {
+            const days = dateToShippingDays(parseInt(singleDate[1]), MONTHS[singleDate[2].toLowerCase()] ?? 0);
+            console.log(`[scrape] asin=${asin} single-date → ${days} days`);
+            return days;
+        }
+
+        // Pattern 3: "X a Y días" range
+        const dayRanges = [
+            /Llega en (\d+)\s+a\s+(\d+)\s+d[ií]as/i,
+            /Env[ií]o en (\d+)\s+a\s+(\d+)\s+d[ií]as/i,
+            /(\d+)\s+a\s+(\d+)\s+d[ií]as/i,
+        ];
+        for (const p of dayRanges) {
+            const m = html.match(p);
+            if (m) {
+                const days = Math.max(parseInt(m[1]), parseInt(m[2]));
+                console.log(`[scrape] asin=${asin} days-range → ${days} days`);
+                return days;
+            }
+        }
+
+        // Debug: show context near delivery words
+        const idx = html.search(/recibir[aá]|recibes|entrega|llegará|d[ií]as h[aá]bil/i);
+        if (idx >= 0) {
+            console.log(`[scrape] asin=${asin} context: ${html.substring(Math.max(0, idx - 50), idx + 300).replace(/\s+/g, ' ')}`);
+        } else {
+            console.log(`[scrape] asin=${asin} NO delivery keywords in HTML`);
+        }
+        return null;
+    } catch (e) {
+        console.error(`[scrape] asin=${asin}:`, e);
+        return null;
+    }
 }
 
 async function fetchAmazonOffers(
@@ -70,12 +174,10 @@ async function fetchAmazonOffers(
             headers: { "x-amz-access-token": accessToken, "Content-Type": "application/json" },
         });
         if (!res.ok) {
-            // 404 or similar = ASIN doesn't exist — treat as 0 stock (pause product)
             if (res.status === 404 || res.status === 400) {
-                return { price: null, sellerCount: 0, soldByAmazon: false, amazonStock: 0 };
+                return { price: null, sellerCount: 0, soldByAmazon: false, amazonStock: 0, shippingDays: null };
             }
-            // Other errors = API issue, return null to preserve existing data
-            return { price: null, sellerCount: 0, soldByAmazon: false, amazonStock: null };
+            return { price: null, sellerCount: 0, soldByAmazon: false, amazonStock: null, shippingDays: null };
         }
         const data = await res.json();
         const summary = data?.payload?.Summary;
@@ -85,13 +187,14 @@ async function fetchAmazonOffers(
         const price = lowestNew?.ListingPrice?.Amount ?? null;
         const sellerCount = (summary?.NumberOfOffers ?? [])
             .reduce((sum: number, o: any) => sum + (o.offerCount ?? 0), 0);
-        const amazonOffer = (data?.payload?.Offers ?? [])
-            .find((o: any) => o.SellerId === amazonSellerId);
+        const allOffers = data?.payload?.Offers ?? [];
+        const amazonOffer = allOffers.find((o: any) => o.SellerId === amazonSellerId);
         const soldByAmazon = !!amazonOffer;
         const amazonStock = amazonOffer?.QuantityOnHand ?? null;
-        return { price, sellerCount, soldByAmazon, amazonStock };
+
+        return { price, sellerCount, soldByAmazon, amazonStock, shippingDays: null };
     } catch {
-        return { price: null, sellerCount: 0, soldByAmazon: false, amazonStock: null };
+        return { price: null, sellerCount: 0, soldByAmazon: false, amazonStock: null, shippingDays: null };
     }
 }
 
@@ -116,8 +219,6 @@ async function fetchOffersBatch(
     }
     return offers;
 }
-
-// ── MercadoLibre helpers ────────────────────────────────────────────────────
 
 async function refreshMeliToken(creds: any): Promise<string> {
     const res = await fetch(`${MELI_API}/oauth/token`, {
@@ -167,8 +268,6 @@ async function updateMeliDescription(
     return res.ok;
 }
 
-// ── Pricing calculation ─────────────────────────────────────────────────────
-
 function calculateMxnPrice(
     cost: number,
     currency: string,
@@ -192,14 +291,10 @@ function calculateMxnPrice(
         : (usaRules?.length ? usaRules : defaultUsaRules);
     const r = rules.find(rule => cost >= rule.min && (rule.max === null || cost <= rule.max))
         ?? rules[rules.length - 1];
-    // MXN source: Amazon Mexico price is already MXN — apply margin directly.
-    // USD source: Amazon USA price → convert to MXN, then apply margin.
     return isMXN
         ? Math.ceil(cost * (1 + r.margin / 100))
         : Math.ceil(cost * exchangeRate * (1 + r.margin / 100));
 }
-
-// ── Main handler ────────────────────────────────────────────────────────────
 
 const corsHeaders = {
     "Access-Control-Allow-Origin": "*",
@@ -218,15 +313,47 @@ serve(async (req) => {
     );
 
     let forceRun = false;
+    let debugScrape = false;
+    let debugAsin = "";
+    let debugPostalCode = "06600";
     try {
         const body = await req.json().catch(() => ({}));
         forceRun = body.force === true;
-    } catch {
-        // Ignore parse errors
+        debugScrape = body.debug_scrape === true;
+        if (body.asin) debugAsin = body.asin;
+        if (body.postal_code) debugPostalCode = body.postal_code;
+    } catch { /* ignore */ }
+
+    // Debug mode: scrape a single ASIN and return raw result without running full update
+    if (debugScrape) {
+        const asin = debugAsin || "B09JYC1VR4";
+        const cookieStr = await buildAmazonSession(debugPostalCode);
+        const res = await fetch(`https://www.amazon.com.mx/dp/${asin}`, {
+            headers: {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+                "Accept-Language": "es-MX,es;q=0.9",
+                "Referer": "https://www.amazon.com.mx/",
+                "Cookie": cookieStr,
+            },
+        });
+        const html = await res.text();
+        const idx = html.search(/recibir[aá]|recibes|entrega|llegará|d[ií]as h[aá]bil/i);
+        const deliveryContext = idx >= 0 ? html.substring(Math.max(0, idx - 100), idx + 500) : "";
+        const shippingDays = await fetchAmazonShippingDays(asin, debugPostalCode);
+        return new Response(JSON.stringify({
+            asin,
+            postal_code: debugPostalCode,
+            status: res.status,
+            htmlLen: html.length,
+            snippet: html.substring(0, 500).replace(/\s+/g, ' '),
+            delivery_context: deliveryContext.replace(/\s+/g, ' '),
+            parsed_shipping_days: shippingDays,
+            cookies_set: cookieStr.length,
+        }), { headers: corsHeaders });
     }
 
     try {
-        // 1. Get all users that have both ML and Amazon credentials
         const { data: connections, error: connErr } = await supabase
             .from("user_connections")
             .select("user_id, meli_credentials, amazon_credentials, exchange_rate, margin_rules")
@@ -252,12 +379,11 @@ serve(async (req) => {
             const usaRules        = settings.usa            ?? [];
             const mxRules         = settings.mx             ?? [];
             const freqHours       = settings.sync_frequency_hours ?? 24;
-            const handlingTimeUsa = (settings.handling_time_usa ?? 7) + (settings.amazon_delivery_usa ?? 5);
-            const handlingTimeMx  = (settings.handling_time_mx  ?? 3) + (settings.amazon_delivery_mx  ?? 3);
+            const prepDays        = settings.prep_days ?? settings.handling_time_mx ?? 3;
+            const postalCode      = settings.postal_code ?? "06600";
 
             if (!meliCreds?.token || !amazonCreds?.refreshToken) continue;
 
-            // 2. Check for an active job or decide if a new cycle should start
             const { data: activeJob } = await supabase
                 .from("sync_jobs")
                 .select("*")
@@ -308,10 +434,9 @@ serve(async (req) => {
 
             const offset = job.next_offset as number;
 
-            // 3. Fetch next batch — only in_updater products that are published on ML
             const { data: products } = await supabase
                 .from("products")
-                .select("meli_id, sku, price_mxn, stock_meli, currency, description_text")
+                .select("id, meli_id, sku, price_mxn, stock_meli, currency, description_text, shipping_days, shipping_days_updated_at")
                 .eq("user_id", userId)
                 .eq("in_updater", true)
                 .not("meli_id", "is", null)
@@ -328,7 +453,6 @@ serve(async (req) => {
                 continue;
             }
 
-            // 4. Fetch Amazon prices — USD ASINs → Amazon USA, MXN ASINs → Amazon Mexico
             const endpoint = {
                 na: "https://sellingpartnerapi-na.amazon.com",
                 eu: "https://sellingpartnerapi-eu.amazon.com",
@@ -346,7 +470,6 @@ serve(async (req) => {
             ]);
             const asinOffers: Record<string, AmazonOffers> = { ...usdOffers, ...mxnOffers };
 
-            // 5. Get a valid ML token
             let mlToken: string;
             try {
                 mlToken = await getValidMeliToken(meliCreds);
@@ -362,6 +485,7 @@ serve(async (req) => {
                 const currency = (product as any).currency ?? 'USD';
                 const meliId   = (product as any).meli_id;
                 const sku      = (product as any).sku;
+                const productId = (product as any).id;
                 const updatePayload: Record<string, unknown> = {};
 
                 const offers       = asinOffers[sku];
@@ -369,7 +493,23 @@ serve(async (req) => {
                 const soldByAmazon  = offers?.soldByAmazon ?? null;
                 const amazonStock   = offers?.amazonStock ?? null;
 
-                // Auto-pause if Amazon stock is 0
+                // Shipping days cache logic (7 days TTL)
+                let cachedShippingDays = (product as any).shipping_days ?? null;
+                const updatedAt = (product as any).shipping_days_updated_at;
+                const isStale = !updatedAt || (Date.now() - new Date(updatedAt).getTime()) > 7 * 24 * 60 * 60 * 1000;
+
+                if (cachedShippingDays === null || isStale) {
+                    console.log(`[amazon-ml-updater] Fetching shipping days for ${sku} (cache stale=${isStale})`);
+                    const scrapedDays = await fetchAmazonShippingDays(sku, postalCode);
+                    if (scrapedDays !== null) {
+                        cachedShippingDays = scrapedDays;
+                        await supabase.from("products").update({
+                            shipping_days: scrapedDays,
+                            shipping_days_updated_at: new Date().toISOString()
+                        }).eq("id", productId);
+                    }
+                }
+
                 if (amazonStock === 0) {
                     updatePayload.status = "paused";
                 }
@@ -386,18 +526,18 @@ serve(async (req) => {
                 }
 
                 if (syncParams.stock && amazonStock !== 0) {
-                    // Use minimum of Amazon stock and default config to reflect real availability
                     const stockToSync = amazonStock !== null ? Math.min(amazonStock, defaultStock) : defaultStock;
                     updatePayload.available_quantity = stockToSync;
                 }
 
                 if (syncParams.shipping) {
-                    // Apply handling_time based on product currency
-                    const isMxnProduct = currency?.toUpperCase() === 'MXN';
-                    const totalHandlingTime = isMxnProduct ? handlingTimeMx : handlingTimeUsa;
-                    updatePayload.sale_terms = [
-                        { id: "MANUFACTURING_TIME", value_name: `${totalHandlingTime} días` }
-                    ];
+                    if (cachedShippingDays !== null) {
+                        const totalHandlingTime = cachedShippingDays + prepDays;
+                        updatePayload.sale_terms = [
+                            { id: "MANUFACTURING_TIME", value_name: `${totalHandlingTime} días` }
+                        ];
+                        console.log(`[amazon-ml-updater] meliId=${meliId} shipping=${cachedShippingDays} + prep=${prepDays} = ${totalHandlingTime}`);
+                    }
                 }
 
                 if (Object.keys(updatePayload).length > 0) {
@@ -421,22 +561,19 @@ serve(async (req) => {
                     console.log(`[amazon-ml-updater] meliId=${meliId}, sku=${sku} - no changes needed`);
                 }
 
-                // Always save Amazon metadata (seller count, availability, stock) to track Amazon changes
                 const metaUpdate: any = { last_updated: new Date().toISOString() };
                 if (sellerCount !== null)   metaUpdate.amazon_seller_count = sellerCount;
                 if (soldByAmazon !== null)  metaUpdate.sold_by_amazon      = soldByAmazon;
                 if (amazonStock !== null)   metaUpdate.amazon_stock        = amazonStock;
-                if (Object.keys(metaUpdate).length > 1) {  // More than just last_updated
+                if (Object.keys(metaUpdate).length > 1) {
                     await supabase.from("products").update(metaUpdate).eq("meli_id", meliId);
                 }
 
-                // Description lives on a separate ML endpoint — update independently
                 if (syncParams.description && (product as any).description_text) {
                     await updateMeliDescription(meliId, (product as any).description_text, mlToken);
                 }
             }
 
-            // 6. Update job progress
             const newOffset      = offset + products.length;
             const isComplete     = newOffset >= (job.total_products as number);
             const jobUpdate: any = {
@@ -452,7 +589,6 @@ serve(async (req) => {
             }
             await supabase.from("sync_jobs").update(jobUpdate).eq("id", job.id);
 
-            // 7. Log to sync_logs when complete
             if (isComplete) {
                 await supabase.from("sync_logs").insert({
                     status:        "success",
