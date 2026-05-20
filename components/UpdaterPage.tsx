@@ -419,10 +419,11 @@ export const UpdaterPage: React.FC = () => {
         setSyncRunning(true);
         setSyncResult('Ejecutando sincronización...');
         try {
+            const { data: { user } } = await supabase.auth.getUser();
             const res = await fetch(UPDATER_URL, {
                 method: 'POST',
                 headers: { 'Authorization': `Bearer ${ANON_KEY}`, 'Content-Type': 'application/json' },
-                body: JSON.stringify({ force: true }),
+                body: JSON.stringify({ force: true, userId: user?.id }),
             });
             const data = await res.json();
             if (data.success) {
@@ -437,11 +438,10 @@ export const UpdaterPage: React.FC = () => {
                     const hasErrors = (s.errors ?? 0) > 0;
                     const icon = hasErrors ? '⚠️' : '✅';
                     const errorDetail = hasErrors && s.firstError ? `\nError ML: ${s.firstError}` : '';
-                    setSyncResult(`${icon} Lote procesado: ${s.updated ?? 0} actualizados, ${s.errors ?? 0} errores. Offset: ${s.offset ?? '?'}/${syncJob?.total_products ?? '?'}${errorDetail}`);
+                    setSyncResult(`${icon} Lote procesado: ${s.updated ?? 0} actualizados, ${s.errors ?? 0} errores.${errorDetail}`);
                 } else {
                     setSyncResult('✅ Lote procesado sin cambios.');
                 }
-                const { data: { user } } = await supabase.auth.getUser();
                 if (user) {
                     const { data: job } = await supabase.from('sync_jobs').select('*').eq('user_id', user.id).order('started_at', { ascending: false }).limit(1).maybeSingle();
                     if (job) setSyncJob(job);

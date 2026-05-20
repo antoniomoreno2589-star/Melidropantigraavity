@@ -236,9 +236,11 @@ serve(async (req) => {
     );
 
     let forceRun = false;
+    let targetUserId: string | null = null;
     try {
         const body = await req.json().catch(() => ({}));
         forceRun = body.force === true;
+        targetUserId = body.userId ?? null;
     } catch {
         // Ignore parse errors
     }
@@ -259,6 +261,9 @@ serve(async (req) => {
 
         for (const conn of connections) {
             const userId        = conn.user_id;
+
+            // When a specific user triggers a manual sync, only process that user
+            if (targetUserId && userId !== targetUserId) continue;
             const meliCreds     = conn.meli_credentials as any;
             const amazonCreds   = conn.amazon_credentials as any;
             const settings      = (conn.margin_rules ?? {}) as any;
