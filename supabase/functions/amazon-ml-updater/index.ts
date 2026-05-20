@@ -472,6 +472,13 @@ serve(async (req) => {
                             : (settings.amazon_delivery_usa ?? null);
                         cachedShippingDays = fallback;
                         console.log(`[amazon-ml-updater] Scraping failed for ${sku}, fallback delivery days=${fallback}`);
+                        // Persist fallback so we don't re-scrape every run (7-day TTL applies)
+                        if (fallback !== null) {
+                            await supabase.from("products").update({
+                                shipping_days: fallback,
+                                shipping_days_updated_at: new Date().toISOString()
+                            }).eq("id", productId);
+                        }
                     }
                 }
 
