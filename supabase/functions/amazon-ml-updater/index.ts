@@ -461,7 +461,6 @@ serve(async (req) => {
                         if (updatePayload.status)             dbUpdate.status               = updatePayload.status;
                         if (sellerCount !== null)             dbUpdate.amazon_seller_count  = sellerCount;
                         if (soldByAmazon !== null)            dbUpdate.sold_by_amazon       = soldByAmazon;
-                        if (amazonStock !== null)             dbUpdate.amazon_stock         = amazonStock;
                         await supabase.from("products").update(dbUpdate).eq("meli_id", meliId);
                         updated++;
                     } else {
@@ -475,7 +474,6 @@ serve(async (req) => {
                 const metaUpdate: any = { last_updated: new Date().toISOString() };
                 if (sellerCount !== null)   metaUpdate.amazon_seller_count = sellerCount;
                 if (soldByAmazon !== null)  metaUpdate.sold_by_amazon      = soldByAmazon;
-                if (amazonStock !== null)   metaUpdate.amazon_stock        = amazonStock;
                 if (Object.keys(metaUpdate).length > 1) {
                     await supabase.from("products").update(metaUpdate).eq("meli_id", meliId);
                 }
