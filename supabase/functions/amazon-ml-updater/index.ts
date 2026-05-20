@@ -89,6 +89,19 @@ async function fetchAmazonShippingDays(asin: string, postalCode?: string | null)
             }
         }
 
+        // Word-number patterns: "Dos días", "Tres días", etc. (Amazon Prime)
+        const wordToNum: Record<string, number> = {
+            'un': 1, 'uno': 1, 'dos': 2, 'tres': 3, 'cuatro': 4, 'cinco': 5,
+            'seis': 6, 'siete': 7, 'ocho': 8, 'nueve': 9, 'diez': 10,
+        };
+        const wordPattern = /(un|uno|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez)\s+d[ií]as/i;
+        const wordMatch = html.match(wordPattern);
+        if (wordMatch) {
+            const days = wordToNum[wordMatch[1].toLowerCase()];
+            console.log(`[fetchAmazonShippingDays] asin=${asin} zip=${postalCode} word match "${wordMatch[1]}": ${days} days`);
+            return days;
+        }
+
         console.log(`[fetchAmazonShippingDays] asin=${asin} zip=${postalCode} no pattern found`);
         return null;
     } catch (e) {
