@@ -40,38 +40,56 @@ interface AmazonOffers {
     shippingDays: number | null;
 }
 
-async function fetchAmazonShippingDays(asin: string): Promise<number | null> {
+async function fetchAmazonShippingDays(asin: string, postalCode?: string | null): Promise<number | null> {
     try {
-        const url = `https://www.amazon.com.mx/dp/${asin}`;
+        const baseUrl = `https://www.amazon.com.mx/dp/${asin}`;
+        const url = postalCode ? `${baseUrl}?deliveryZip=${postalCode}` : baseUrl;
         const res = await fetch(url, {
             headers: {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
                 "Accept-Language": "es-MX,es;q=0.9",
+                ...(postalCode ? { "Cookie": `lc-acbmx=es_MX; i18n-prefs=MXN; zip=${postalCode}` } : {}),
             },
         });
         if (!res.ok) return null;
 
         const html = await res.text();
 
-        // Buscar "Llega en X a Y días", "Envío en X a Y días"
-        const patterns = [
-            /Llega en (\d+)\s+a\s+(\d+)\s+días/i,
-            /Envío en (\d+)\s+a\s+(\d+)\s+días/i,
-            /(\d+)\s+a\s+(\d+)\s+días/i,
+        // Range patterns: "X a Y días"
+        const rangePatterns = [
+            /Llega en (\d+)\s+a\s+(\d+)\s+d[ií]as/i,
+            /Env[ií]o en (\d+)\s+a\s+(\d+)\s+d[ií]as/i,
+            /Rec[ií]belo en (\d+)\s+a\s+(\d+)\s+d[ií]as/i,
+            /(\d+)\s+a\s+(\d+)\s+d[ií]as hábiles/i,
+            /(\d+)\s+a\s+(\d+)\s+d[ií]as/i,
         ];
-
-        for (const pattern of patterns) {
+        for (const pattern of rangePatterns) {
             const match = html.match(pattern);
             if (match) {
-                const min = parseInt(match[1]);
-                const max = parseInt(match[2]);
-                const days = Math.max(min, max);
-                console.log(`[fetchAmazonShippingDays] asin=${asin} found: ${days} days`);
+                const days = Math.max(parseInt(match[1]), parseInt(match[2]));
+                console.log(`[fetchAmazonShippingDays] asin=${asin} zip=${postalCode} range match: ${days} days`);
                 return days;
             }
         }
 
-        console.log(`[fetchAmazonShippingDays] asin=${asin} no pattern found`);
+        // Single-number patterns: "en X días"
+        const singlePatterns = [
+            /Llega en (\d+)\s+d[ií]as/i,
+            /Env[ií]o en (\d+)\s+d[ií]as/i,
+            /Rec[ií]belo en (\d+)\s+d[ií]as/i,
+            /en (\d+)\s+d[ií]as/i,
+        ];
+        for (const pattern of singlePatterns) {
+            const match = html.match(pattern);
+            if (match) {
+                const days = parseInt(match[1]);
+                console.log(`[fetchAmazonShippingDays] asin=${asin} zip=${postalCode} single match: ${days} days`);
+                return days;
+            }
+        }
+
+        console.log(`[fetchAmazonShippingDays] asin=${asin} zip=${postalCode} no pattern found`);
         return null;
     } catch (e) {
         console.error(`[fetchAmazonShippingDays] asin=${asin}:`, e);
@@ -282,6 +300,7 @@ serve(async (req) => {
             const mxRules         = settings.mx             ?? [];
             const freqHours       = settings.sync_frequency_hours ?? 24;
             const prepDays        = settings.prep_days ?? settings.handling_time_mx ?? 3;
+            const postalCode      = settings.postal_code ?? null;
 
             if (!meliCreds?.token || !amazonCreds?.refreshToken) continue;
 
@@ -412,7 +431,7 @@ serve(async (req) => {
 
                 if (cachedShippingDays === null || isStale) {
                     console.log(`[amazon-ml-updater] Fetching shipping days for ${sku} (cache stale=${isStale})`);
-                    const scrapedDays = await fetchAmazonShippingDays(sku);
+                    const scrapedDays = await fetchAmazonShippingDays(sku, postalCode);
                     if (scrapedDays !== null) {
                         cachedShippingDays = scrapedDays;
                         await supabase.from("products").update({
