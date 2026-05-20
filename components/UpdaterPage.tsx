@@ -805,7 +805,7 @@ export const UpdaterPage: React.FC = () => {
 
                 {/* Table */}
                 <div className="bg-surface-light dark:bg-surface-dark rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 overflow-hidden">
-                    <div className="grid grid-cols-[auto_56px_1fr_auto_auto_auto_auto_auto] gap-3 px-4 py-3 bg-slate-50 dark:bg-slate-800/50 border-b border-slate-200 dark:border-slate-700 text-xs font-bold text-slate-500 uppercase tracking-wider">
+                    <div className="grid grid-cols-[auto_56px_1fr_100px_110px_96px_88px_76px] gap-3 px-4 py-3 bg-slate-50 dark:bg-slate-800/50 border-b border-slate-200 dark:border-slate-700 text-xs font-bold text-slate-500 uppercase tracking-wider">
                         <div className="flex items-center">
                             <input type="checkbox" checked={paginated.length > 0 && selected.size === paginated.length} onChange={toggleSelectAll} className="w-4 h-4 rounded border-slate-300 text-primary cursor-pointer" />
                         </div>
@@ -840,7 +840,7 @@ export const UpdaterPage: React.FC = () => {
                             {paginated.map(product => (
                                 <div
                                     key={product.id}
-                                    className={`grid grid-cols-[auto_56px_1fr_auto_auto_auto_auto_auto] gap-3 px-4 py-3 items-center hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors ${selected.has(product.id) ? 'bg-primary/5 dark:bg-primary/10' : ''}`}
+                                    className={`grid grid-cols-[auto_56px_1fr_100px_110px_96px_88px_76px] gap-3 px-4 py-3 items-center hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors ${selected.has(product.id) ? 'bg-primary/5 dark:bg-primary/10' : ''}`}
                                 >
                                     <div>
                                         <input type="checkbox" checked={selected.has(product.id)} onChange={() => toggleSelect(product.id)} className="w-4 h-4 rounded border-slate-300 text-primary cursor-pointer" />

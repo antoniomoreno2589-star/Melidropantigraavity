@@ -436,6 +436,11 @@ serve(async (req) => {
                 const sellerCount   = offers?.sellerCount ?? null;
                 const soldByAmazon  = offers?.soldByAmazon ?? null;
                 const amazonStock   = offers?.amazonStock ?? null;
+                // True when Amazon responded but product has no price, no stock, and no sellers
+                const isUnavailableOnAmazon = offers !== undefined
+                    && offers.price === null
+                    && offers.amazonStock === null
+                    && offers.sellerCount === 0;
 
                 // Shipping days cache logic (7 days TTL)
                 let cachedShippingDays = (product as any).shipping_days ?? null;
@@ -461,8 +466,9 @@ serve(async (req) => {
                     }
                 }
 
-                if (amazonStock === 0) {
+                if (amazonStock === 0 || isUnavailableOnAmazon) {
                     updatePayload.status = "paused";
+                    console.log(`[amazon-ml-updater] meliId=${meliId} pausing — ${isUnavailableOnAmazon ? 'product unavailable on Amazon' : 'Amazon stock = 0'}`);
                 }
 
                 if (syncParams.price) {
@@ -483,7 +489,7 @@ serve(async (req) => {
                     }
                 }
 
-                if (syncParams.stock && amazonStock !== 0) {
+                if (syncParams.stock && amazonStock !== 0 && !isUnavailableOnAmazon) {
                     const stockToSync = amazonStock !== null ? Math.min(amazonStock, defaultStock) : defaultStock;
                     updatePayload.available_quantity = stockToSync;
                 }
