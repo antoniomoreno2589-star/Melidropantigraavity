@@ -388,6 +388,7 @@ serve(async (req) => {
             }
 
             let updated = 0, errors = 0, firstError: string | undefined;
+            const debugItems: any[] = [];
 
             console.log(`[amazon-ml-updater] Processing batch: ${products.length} products, syncParams=${JSON.stringify(syncParams)}`);
 
@@ -397,6 +398,7 @@ serve(async (req) => {
                 const sku      = (product as any).sku;
                 const productId = (product as any).id;
                 const updatePayload: Record<string, unknown> = {};
+                const debug: any = { sku, meliId, currency };
 
                 const offers       = asinOffers[sku];
                 const sellerCount   = offers?.sellerCount ?? null;
@@ -426,12 +428,19 @@ serve(async (req) => {
 
                 if (syncParams.price) {
                     const amazonPrice = offers?.price ?? null;
+                    debug.amazonPrice = amazonPrice;
                     if (amazonPrice) {
                         const newMxn     = calculateMxnPrice(amazonPrice, currency, exchangeRate, usaRules, mxRules);
                         const currentMxn = (product as any).price_mxn ?? 0;
+                        debug.newMxn     = newMxn;
+                        debug.currentMxn = currentMxn;
                         if (newMxn !== currentMxn && (allowDecrease || newMxn > currentMxn)) {
                             updatePayload.price = newMxn;
+                        } else {
+                            debug.priceBlocked = newMxn < currentMxn ? "decrease_blocked" : "same_value";
                         }
+                    } else {
+                        debug.priceBlocked = "no_amazon_price";
                     }
                 }
 
@@ -439,6 +448,8 @@ serve(async (req) => {
                     const stockToSync = amazonStock !== null ? Math.min(amazonStock, defaultStock) : defaultStock;
                     updatePayload.available_quantity = stockToSync;
                 }
+                debug.amazonStock  = amazonStock;
+                debug.payloadKeys  = Object.keys(updatePayload);
 
                 if (syncParams.shipping) {
                     if (cachedShippingDays !== null) {
@@ -453,6 +464,7 @@ serve(async (req) => {
                 if (Object.keys(updatePayload).length > 0) {
                     console.log(`[amazon-ml-updater] meliId=${meliId}, sku=${sku}, payload=${JSON.stringify(updatePayload)}`);
                     const result = await updateMeliItem(meliId, updatePayload, mlToken);
+                    debug.mlResult = result.ok ? "ok" : `error: ${result.error}`;
                     console.log(`[amazon-ml-updater] meliId=${meliId} result=${result.ok ? 'SUCCESS' : `FAILED: ${result.error}`}`);
                     if (result.ok) {
                         const dbUpdate: any = { last_updated: new Date().toISOString() };
@@ -468,8 +480,10 @@ serve(async (req) => {
                         if (!firstError) firstError = result.error;
                     }
                 } else {
+                    debug.mlResult = "skipped_no_changes";
                     console.log(`[amazon-ml-updater] meliId=${meliId}, sku=${sku} - no changes needed`);
                 }
+                debugItems.push(debug);
 
                 const metaUpdate: any = { last_updated: new Date().toISOString() };
                 if (sellerCount !== null)   metaUpdate.amazon_seller_count = sellerCount;
@@ -507,7 +521,7 @@ serve(async (req) => {
                 });
             }
 
-            summary.push({ userId, updated, errors, firstError, offset: newOffset, complete: isComplete });
+            summary.push({ userId, updated, errors, firstError, offset: newOffset, complete: isComplete, debug: debugItems });
         }
 
         return new Response(JSON.stringify({ success: true, summary }), { headers: corsHeaders });
