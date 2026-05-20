@@ -40,6 +40,86 @@ interface AmazonOffers {
     shippingDays: number | null;
 }
 
+async function fetchAmazonShippingDays(asin: string, postalCode?: string | null): Promise<number | null> {
+    try {
+        const baseUrl = `https://www.amazon.com.mx/dp/${asin}`;
+        const url = postalCode ? `${baseUrl}?deliveryZip=${postalCode}` : baseUrl;
+        const res = await fetch(url, {
+            headers: {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "es-MX,es;q=0.9",
+                ...(postalCode ? { "Cookie": `lc-acbmx=es_MX; i18n-prefs=MXN; zip=${postalCode}` } : {}),
+            },
+        });
+        if (!res.ok) return null;
+
+        const html = await res.text();
+
+        // "Entrega hoy" / "Llega hoy" → 0 days, "Entrega mañana" / "Llega mañana" → 1 day
+        if (/(llega|entrega|recibe|recíbelo|envío)\s+hoy/i.test(html)) {
+            console.log(`[fetchAmazonShippingDays] asin=${asin} today match: 0 days`);
+            return 0;
+        }
+        if (/(llega|entrega|recibe|recíbelo|envío)\s+mañana/i.test(html)) {
+            console.log(`[fetchAmazonShippingDays] asin=${asin} tomorrow match: 1 day`);
+            return 1;
+        }
+
+        // Range patterns: "X a Y días"
+        const rangePatterns = [
+            /Llega en (\d+)\s+a\s+(\d+)\s+d[ií]as/i,
+            /Env[ií]o en (\d+)\s+a\s+(\d+)\s+d[ií]as/i,
+            /Rec[ií]belo en (\d+)\s+a\s+(\d+)\s+d[ií]as/i,
+            /(\d+)\s+a\s+(\d+)\s+d[ií]as hábiles/i,
+            /(\d+)\s+a\s+(\d+)\s+d[ií]as/i,
+        ];
+        for (const pattern of rangePatterns) {
+            const match = html.match(pattern);
+            if (match) {
+                const days = Math.max(parseInt(match[1]), parseInt(match[2]));
+                console.log(`[fetchAmazonShippingDays] asin=${asin} range match: ${days} days`);
+                return days;
+            }
+        }
+
+        // Single-number patterns: "en X días"
+        const singlePatterns = [
+            /Llega en (\d+)\s+d[ií]as/i,
+            /Env[ií]o en (\d+)\s+d[ií]as/i,
+            /Rec[ií]belo en (\d+)\s+d[ií]as/i,
+            /en (\d+)\s+d[ií]as/i,
+        ];
+        for (const pattern of singlePatterns) {
+            const match = html.match(pattern);
+            if (match) {
+                const days = parseInt(match[1]);
+                console.log(`[fetchAmazonShippingDays] asin=${asin} single match: ${days} days`);
+                return days;
+            }
+        }
+
+        // Word-number patterns: "Dos días", "Tres días", etc.
+        const wordToNum: Record<string, number> = {
+            'un': 1, 'uno': 1, 'dos': 2, 'tres': 3, 'cuatro': 4, 'cinco': 5,
+            'seis': 6, 'siete': 7, 'ocho': 8, 'nueve': 9, 'diez': 10,
+        };
+        const wordPattern = /(un|uno|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez)\s+d[ií]as/i;
+        const wordMatch = html.match(wordPattern);
+        if (wordMatch) {
+            const days = wordToNum[wordMatch[1].toLowerCase()];
+            console.log(`[fetchAmazonShippingDays] asin=${asin} word match "${wordMatch[1]}": ${days} days`);
+            return days;
+        }
+
+        console.log(`[fetchAmazonShippingDays] asin=${asin} no pattern found`);
+        return null;
+    } catch (e) {
+        console.error(`[fetchAmazonShippingDays] asin=${asin}:`, e);
+        return null;
+    }
+}
+
 async function fetchAmazonOffers(
     endpoint: string,
     asin: string,
@@ -379,34 +459,33 @@ serve(async (req) => {
                     && offers.price === null
                     && offers.sellerCount === 0;
 
-                // Shipping days: use SP API's ShippingTime.maximumHours (already fetched, scales to any catalog size)
-                // Cache in DB with 7-day TTL to avoid recalculating every run
+                // Shipping days: scrape Amazon.com.mx for actual delivery time, cache 7 days
                 let cachedShippingDays = (product as any).shipping_days ?? null;
                 const updatedAt = (product as any).shipping_days_updated_at;
                 const isStale = !updatedAt || (Date.now() - new Date(updatedAt).getTime()) > 7 * 24 * 60 * 60 * 1000;
 
                 if (cachedShippingDays === null || isStale) {
-                    const apiDays = offers?.shippingDays ?? null;
-                    if (apiDays !== null) {
-                        cachedShippingDays = apiDays;
+                    const scrapedDays = await fetchAmazonShippingDays(sku, settings.postal_code ?? null);
+                    if (scrapedDays !== null) {
+                        cachedShippingDays = scrapedDays;
                         await supabase.from("products").update({
-                            shipping_days: apiDays,
+                            shipping_days: scrapedDays,
                             shipping_days_updated_at: new Date().toISOString()
                         }).eq("id", productId);
-                        console.log(`[amazon-ml-updater] ${sku} shipping_days from SP API: ${apiDays}`);
                     } else {
-                        // SP API didn't provide ShippingTime — fall back to configured default
+                        // Scraping failed (bot block or no pattern) — use configured default
                         const fallback = currency === 'MXN'
                             ? (settings.amazon_delivery_mx ?? null)
                             : (settings.amazon_delivery_usa ?? null);
                         cachedShippingDays = fallback;
+                        // Persist fallback so we don't re-scrape every run (TTL still applies)
                         if (fallback !== null) {
                             await supabase.from("products").update({
                                 shipping_days: fallback,
                                 shipping_days_updated_at: new Date().toISOString()
                             }).eq("id", productId);
                         }
-                        console.log(`[amazon-ml-updater] ${sku} shipping_days fallback: ${fallback}`);
+                        console.log(`[amazon-ml-updater] ${sku} scraping failed, fallback: ${fallback}`);
                     }
                 }
 
