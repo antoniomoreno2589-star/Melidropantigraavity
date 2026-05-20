@@ -53,6 +53,7 @@ async function fetchAmazonShippingDays(asin: string, postalCode?: string | null)
                 query: asin,
                 geo_location: postalCode ?? "06600",
                 domain: "com.mx",
+                render: "html",
             };
             const res = await fetch("https://realtime.oxylabs.io/v1/queries", {
                 method: "POST",
