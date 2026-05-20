@@ -419,6 +419,13 @@ serve(async (req) => {
                             shipping_days: scrapedDays,
                             shipping_days_updated_at: new Date().toISOString()
                         }).eq("id", productId);
+                    } else {
+                        // Scraping failed — fall back to configured Amazon delivery time
+                        const fallback = currency === 'MXN'
+                            ? (settings.amazon_delivery_mx ?? null)
+                            : (settings.amazon_delivery_usa ?? null);
+                        cachedShippingDays = fallback;
+                        console.log(`[amazon-ml-updater] Scraping failed for ${sku}, fallback delivery days=${fallback}`);
                     }
                 }
 
@@ -448,8 +455,8 @@ serve(async (req) => {
                     const stockToSync = amazonStock !== null ? Math.min(amazonStock, defaultStock) : defaultStock;
                     updatePayload.available_quantity = stockToSync;
                 }
-                debug.amazonStock  = amazonStock;
-                debug.payloadKeys  = Object.keys(updatePayload);
+                debug.amazonStock   = amazonStock;
+                debug.shippingDays  = cachedShippingDays;
 
                 if (syncParams.shipping) {
                     if (cachedShippingDays !== null) {
@@ -460,6 +467,7 @@ serve(async (req) => {
                         console.log(`[amazon-ml-updater] meliId=${meliId} shipping=${cachedShippingDays} + prep=${prepDays} = ${totalHandlingTime}`);
                     }
                 }
+                debug.payloadKeys = Object.keys(updatePayload);
 
                 if (Object.keys(updatePayload).length > 0) {
                     console.log(`[amazon-ml-updater] meliId=${meliId}, sku=${sku}, payload=${JSON.stringify(updatePayload)}`);

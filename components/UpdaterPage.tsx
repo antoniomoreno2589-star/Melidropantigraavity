@@ -442,7 +442,8 @@ export const UpdaterPage: React.FC = () => {
                         const price = d.amazonPrice != null
                             ? `Amazon: $${d.amazonPrice} → ${d.newMxn ?? '?'} MXN${d.priceBlocked ? ` (${d.priceBlocked})` : ''}`
                             : `Precio: ${d.priceBlocked ?? 'sin precio Amazon'}`;
-                        return `[${d.sku}] ${price} | stock Amazon: ${d.amazonStock ?? 'null'} | payload: [${(d.payloadKeys ?? []).join(', ')}] | ML: ${d.mlResult ?? '?'}`;
+                        const ship = d.shippingDays != null ? `envío: ${d.shippingDays}d` : 'envío: sin datos';
+                        return `[${d.sku}] ${price} | stock: ${d.amazonStock ?? 'null'} | ${ship} | payload: [${(d.payloadKeys ?? []).join(', ')}] | ML: ${d.mlResult ?? '?'}`;
                     }).join('\n');
                     setSyncResult(`${icon} Lote procesado: ${s.updated ?? 0} actualizados, ${s.errors ?? 0} errores.${errorDetail}${debugLines ? '\n' + debugLines : ''}`);
                 } else {
