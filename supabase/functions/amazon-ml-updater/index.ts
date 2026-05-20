@@ -48,18 +48,13 @@ async function fetchAmazonShippingDays(asin: string, postalCode?: string | null)
         const oxylabsPass = Deno.env.get("OXYLABS_PASSWORD");
 
         if (oxylabsUser && oxylabsPass) {
-            const targetUrl = postalCode
-                ? `https://www.amazon.com.mx/dp/${asin}?deliveryZip=${postalCode}`
-                : `https://www.amazon.com.mx/dp/${asin}`;
             const body: Record<string, unknown> = {
-                source: "universal",
-                url: targetUrl,
-                geo_location: "Mexico",
+                source: "amazon_product",
+                query: asin,
+                geo_location: postalCode ?? "06600",
+                domain: "com.mx",
             };
-            if (postalCode) {
-                body.headers = { "Cookie": `lc-acbmx=es_MX; i18n-prefs=MXN; zip=${postalCode}` };
-            }
-            const res = await fetch("https://realtime.oxylabs.io/v1/querys", {
+            const res = await fetch("https://realtime.oxylabs.io/v1/queries", {
                 method: "POST",
                 headers: {
                     "Content-Type": "application/json",
