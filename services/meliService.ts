@@ -1023,7 +1023,7 @@ class MeliService {
         }
     }
 
-    async updateItem(meliId: string, payload: { price?: number; available_quantity?: number; description?: { plain_text: string } }): Promise<{ ok: boolean; error?: string }> {
+    async updateItem(meliId: string, payload: { price?: number; available_quantity?: number; description?: { plain_text: string }; title?: string }): Promise<{ ok: boolean; error?: string }> {
         try {
             const response = await this.fetchWithAuth(`/items/${meliId}`, {
                 method: 'PUT',
