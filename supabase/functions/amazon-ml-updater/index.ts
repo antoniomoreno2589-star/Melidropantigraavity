@@ -42,19 +42,53 @@ interface AmazonOffers {
 
 async function fetchAmazonShippingDays(asin: string, postalCode?: string | null): Promise<number | null> {
     try {
-        const baseUrl = `https://www.amazon.com.mx/dp/${asin}`;
-        const url = postalCode ? `${baseUrl}?deliveryZip=${postalCode}` : baseUrl;
-        const res = await fetch(url, {
-            headers: {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                "Accept-Language": "es-MX,es;q=0.9",
-                ...(postalCode ? { "Cookie": `lc-acbmx=es_MX; i18n-prefs=MXN; zip=${postalCode}` } : {}),
-            },
-        });
-        if (!res.ok) return null;
+        let html: string;
 
-        const html = await res.text();
+        const oxylabsUser = Deno.env.get("OXYLABS_USERNAME");
+        const oxylabsPass = Deno.env.get("OXYLABS_PASSWORD");
+
+        if (oxylabsUser && oxylabsPass) {
+            const targetUrl = postalCode
+                ? `https://www.amazon.com.mx/dp/${asin}?deliveryZip=${postalCode}`
+                : `https://www.amazon.com.mx/dp/${asin}`;
+            const body: Record<string, unknown> = {
+                source: "universal",
+                url: targetUrl,
+                geo_location: "Mexico",
+            };
+            if (postalCode) {
+                body.headers = { "Cookie": `lc-acbmx=es_MX; i18n-prefs=MXN; zip=${postalCode}` };
+            }
+            const res = await fetch("https://realtime.oxylabs.io/v1/querys", {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    "Authorization": `Basic ${btoa(`${oxylabsUser}:${oxylabsPass}`)}`,
+                },
+                body: JSON.stringify(body),
+            });
+            if (!res.ok) {
+                console.log(`[fetchAmazonShippingDays] Oxylabs error ${res.status} for ${asin}`);
+                return null;
+            }
+            const data = await res.json();
+            html = data?.results?.[0]?.content ?? "";
+            if (!html) return null;
+        } else {
+            // Direct scraping fallback (may be bot-blocked from datacenter IPs)
+            const baseUrl = `https://www.amazon.com.mx/dp/${asin}`;
+            const url = postalCode ? `${baseUrl}?deliveryZip=${postalCode}` : baseUrl;
+            const res = await fetch(url, {
+                headers: {
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                    "Accept-Language": "es-MX,es;q=0.9",
+                    ...(postalCode ? { "Cookie": `lc-acbmx=es_MXN; i18n-prefs=MXN; zip=${postalCode}` } : {}),
+                },
+            });
+            if (!res.ok) return null;
+            html = await res.text();
+        }
 
         // "Entrega hoy" / "Llega hoy" → 0 days, "Entrega mañana" / "Llega mañana" → 1 day
         if (/(llega|entrega|recibe|recíbelo|envío)\s+hoy/i.test(html)) {
