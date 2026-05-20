@@ -177,6 +177,17 @@ const App = () => {
     try {
       await api.products.update(updatedProduct);
       setProducts(prev => prev.map(p => p.id === updatedProduct.id ? updatedProduct : p));
+
+      if (updatedProduct.meliId) {
+        const result = await meliService.updateItem(updatedProduct.meliId, {
+          title: updatedProduct.title,
+          price: updatedProduct.priceMXN,
+          available_quantity: updatedProduct.stockMeli,
+        });
+        if (!result.ok) {
+          alert(`Guardado localmente, pero falló la actualización en Mercado Libre: ${result.error}`);
+        }
+      }
     } catch (e) {
       console.error("Error updating product", e);
     }
