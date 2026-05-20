@@ -436,10 +436,9 @@ serve(async (req) => {
                 const sellerCount   = offers?.sellerCount ?? null;
                 const soldByAmazon  = offers?.soldByAmazon ?? null;
                 const amazonStock   = offers?.amazonStock ?? null;
-                // True when Amazon responded but product has no price, no stock, and no sellers
+                // True when Amazon responded but the product has no listing (404, removed, no offers)
                 const isUnavailableOnAmazon = offers !== undefined
                     && offers.price === null
-                    && offers.amazonStock === null
                     && offers.sellerCount === 0;
 
                 // Shipping days cache logic (7 days TTL)
