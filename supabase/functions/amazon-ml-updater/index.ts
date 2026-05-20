@@ -519,6 +519,7 @@ serve(async (req) => {
                         if (updatePayload.status)             dbUpdate.status               = updatePayload.status;
                         if (sellerCount !== null)             dbUpdate.amazon_seller_count  = sellerCount;
                         if (soldByAmazon !== null)            dbUpdate.sold_by_amazon       = soldByAmazon;
+                        dbUpdate.amazon_available = !isUnavailableOnAmazon;
                         await supabase.from("products").update(dbUpdate).eq("meli_id", meliId);
                         updated++;
                     } else {

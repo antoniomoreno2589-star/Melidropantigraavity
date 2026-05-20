@@ -45,6 +45,7 @@ export const UpdaterPage: React.FC = () => {
     const [maxSellers, setMaxSellers] = useState<number | null>(null);
     const [excludeAmazon, setExcludeAmazon] = useState(false);
     const [amazonStockFilter, setAmazonStockFilter] = useState<'all' | 'in-stock' | 'out-of-stock' | 'no-data'>('all');
+    const [notOnAmazon, setNotOnAmazon] = useState(false);
     const [page, setPage] = useState(1);
 
     // "Sin actualización" tab — products with in_updater=false
@@ -189,7 +190,7 @@ export const UpdaterPage: React.FC = () => {
             while (true) {
                 const { data, error } = await supabase
                     .from('products')
-                    .select('id, title, sku, asin, meli_id, price_mxn, cost_usd, stock_provider, stock_meli, status, image_url, last_updated, in_updater, amazon_seller_count, sold_by_amazon')
+                    .select('id, title, sku, asin, meli_id, price_mxn, cost_usd, stock_provider, stock_meli, status, image_url, last_updated, in_updater, amazon_seller_count, sold_by_amazon, amazon_available')
                     .eq('user_id', user.id)
                     .eq('in_updater', true)
                     .neq('status', 'closed')
@@ -221,6 +222,7 @@ export const UpdaterPage: React.FC = () => {
                 amazonSellerCount: p.amazon_seller_count ?? null,
                 soldByAmazon: p.sold_by_amazon ?? null,
                 amazonStock: null,
+                amazonAvailable: p.amazon_available ?? null,
             }));
 
             setProducts(mappedProducts);
@@ -244,7 +246,7 @@ export const UpdaterPage: React.FC = () => {
             while (true) {
                 const { data, error } = await supabase
                     .from('products')
-                    .select('id, title, sku, asin, meli_id, price_mxn, cost_usd, stock_provider, stock_meli, status, image_url, last_updated, in_updater, amazon_seller_count, sold_by_amazon')
+                    .select('id, title, sku, asin, meli_id, price_mxn, cost_usd, stock_provider, stock_meli, status, image_url, last_updated, in_updater, amazon_seller_count, sold_by_amazon, amazon_available')
                     .eq('user_id', user.id)
                     .eq('in_updater', false)
                     .neq('status', 'closed')
@@ -275,6 +277,7 @@ export const UpdaterPage: React.FC = () => {
                 amazonSellerCount: p.amazon_seller_count ?? null,
                 soldByAmazon: p.sold_by_amazon ?? null,
                 amazonStock: null,
+                amazonAvailable: p.amazon_available ?? null,
             })));
             setNotEnrolledLoaded(true);
         } catch (e) {
@@ -330,6 +333,10 @@ export const UpdaterPage: React.FC = () => {
             }
         }
 
+        if (notOnAmazon) {
+            list = list.filter(p => p.amazonAvailable === false);
+        }
+
         if (search.trim()) {
             const q = search.toLowerCase();
             list = list.filter(p =>
@@ -341,7 +348,7 @@ export const UpdaterPage: React.FC = () => {
         }
 
         return list;
-    }, [products, notEnrolledProducts, tab, statusFilter, search, maxSellers, excludeAmazon, amazonStockFilter]);
+    }, [products, notEnrolledProducts, tab, statusFilter, search, maxSellers, excludeAmazon, amazonStockFilter, notOnAmazon]);
 
     const paginated = useMemo(() => {
         const start = (page - 1) * PAGE_SIZE;
@@ -760,6 +767,20 @@ export const UpdaterPage: React.FC = () => {
                                 Amazon no vende estos {filtered.length} productos
                             </span>
                         )}
+                        <button
+                            onClick={() => { setNotOnAmazon(v => !v); setPage(1); }}
+                            className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all border flex items-center gap-1.5 ${notOnAmazon
+                                ? 'bg-red-500 text-white border-red-500'
+                                : 'bg-surface-light dark:bg-surface-dark border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:border-red-400'}`}
+                        >
+                            <span className="material-symbols-outlined text-[14px]">block</span>
+                            No en Amazon
+                        </button>
+                        {notOnAmazon && (
+                            <span className="text-xs text-red-600 font-bold">
+                                {filtered.length} producto{filtered.length !== 1 ? 's' : ''} no disponible{filtered.length !== 1 ? 's' : ''} en Amazon
+                            </span>
+                        )}
                     </div>
                     <div className="flex items-center gap-3 flex-wrap">
                         <span className="text-xs font-black text-slate-500 uppercase flex items-center gap-1">
@@ -863,9 +884,16 @@ export const UpdaterPage: React.FC = () => {
                                         </div>
                                     </div>
                                     <div className="hidden sm:block">
-                                        <span className={`px-2 py-0.5 rounded-full text-xs font-bold whitespace-nowrap ${STATUS_COLORS[product.status] || STATUS_COLORS.inactive}`}>
-                                            {STATUS_LABELS[product.status] || product.status}
-                                        </span>
+                                        {product.amazonAvailable === false ? (
+                                            <span className="px-2 py-0.5 rounded-full text-xs font-bold whitespace-nowrap bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-400 flex items-center gap-1">
+                                                <span className="material-symbols-outlined text-[12px]">block</span>
+                                                No en Amazon
+                                            </span>
+                                        ) : (
+                                            <span className={`px-2 py-0.5 rounded-full text-xs font-bold whitespace-nowrap ${STATUS_COLORS[product.status] || STATUS_COLORS.inactive}`}>
+                                                {STATUS_LABELS[product.status] || product.status}
+                                            </span>
+                                        )}
                                     </div>
                                     <div className="hidden md:block text-right">
                                         <span className="text-sm font-bold text-slate-700 dark:text-slate-200 whitespace-nowrap">

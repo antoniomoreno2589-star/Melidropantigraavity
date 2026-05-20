@@ -15,6 +15,7 @@ export interface Product {
   amazonSellerCount?: number | null; // Number of sellers on Amazon (null = not yet synced)
   soldByAmazon?: boolean | null;     // Whether Amazon itself is a seller (null = not yet synced)
   amazonStock?: number | null;       // Amazon inventory available (null = not yet synced, 0 = out of stock)
+  amazonAvailable?: boolean | null;  // false = product not found/unavailable on Amazon
 }
 
 export interface Order {
