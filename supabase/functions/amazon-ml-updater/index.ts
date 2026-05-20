@@ -77,10 +77,12 @@ async function fetchAmazonOffers(
             ?? amazonOffer?.BuyingPrice?.ListingPrice?.Amount
             ?? null;
 
-        // ShippingTime.maximumHours = total estimated delivery time (Amazon includes transit)
+        // ShippingTime.maximumHours: 0 means FBA Prime (ships immediately from warehouse),
+        // which doesn't tell us customer delivery time — treat as null and use configured default.
+        // Only use positive values (non-FBA merchants who declare a ship window).
         const shippingOffer = amazonOffer ?? allOffers[0] ?? null;
         const maxHours = shippingOffer?.ShippingTime?.maximumHours;
-        const shippingDays = (maxHours !== undefined && maxHours !== null)
+        const shippingDays = (maxHours !== undefined && maxHours !== null && maxHours > 0)
             ? Math.ceil(maxHours / 24)
             : null;
 
