@@ -56,6 +56,16 @@ async function fetchAmazonShippingDays(asin: string, postalCode?: string | null)
 
         const html = await res.text();
 
+        // "Entrega hoy" / "Llega hoy" → 0 days, "Entrega mañana" / "Llega mañana" → 1 day
+        if (/(llega|entrega|recibe|recíbelo|envío)\s+hoy/i.test(html)) {
+            console.log(`[fetchAmazonShippingDays] asin=${asin} zip=${postalCode} today match: 0 days`);
+            return 0;
+        }
+        if (/(llega|entrega|recibe|recíbelo|envío)\s+mañana/i.test(html)) {
+            console.log(`[fetchAmazonShippingDays] asin=${asin} zip=${postalCode} tomorrow match: 1 day`);
+            return 1;
+        }
+
         // Range patterns: "X a Y días"
         const rangePatterns = [
             /Llega en (\d+)\s+a\s+(\d+)\s+d[ií]as/i,

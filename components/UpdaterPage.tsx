@@ -444,15 +444,8 @@ export const UpdaterPage: React.FC = () => {
                 } else if (s.updated !== undefined || s.errors !== undefined) {
                     const hasErrors = (s.errors ?? 0) > 0;
                     const icon = hasErrors ? '⚠️' : '✅';
-                    const errorDetail = hasErrors && s.firstError ? `\nError ML: ${s.firstError}` : '';
-                    const debugLines = (s.debug ?? []).map((d: any) => {
-                        const price = d.amazonPrice != null
-                            ? `Amazon: $${d.amazonPrice} → ${d.newMxn ?? '?'} MXN${d.priceBlocked ? ` (${d.priceBlocked})` : ''}`
-                            : `Precio: ${d.priceBlocked ?? 'sin precio Amazon'}`;
-                        const ship = d.shippingDays != null ? `envío: ${d.shippingDays}d` : 'envío: sin datos';
-                        return `[${d.sku}] ${price} | stock: ${d.amazonStock ?? 'null'} | ${ship} | payload: [${(d.payloadKeys ?? []).join(', ')}] | ML: ${d.mlResult ?? '?'}`;
-                    }).join('\n');
-                    setSyncResult(`${icon} Lote procesado: ${s.updated ?? 0} actualizados, ${s.errors ?? 0} errores.${errorDetail}${debugLines ? '\n' + debugLines : ''}`);
+                    const errorDetail = hasErrors && s.firstError ? ` — ${s.firstError}` : '';
+                    setSyncResult(`${icon} Lote procesado: ${s.updated ?? 0} actualizados, ${s.errors ?? 0} errores.${errorDetail}`);
                 } else {
                     setSyncResult('✅ Lote procesado sin cambios.');
                 }
