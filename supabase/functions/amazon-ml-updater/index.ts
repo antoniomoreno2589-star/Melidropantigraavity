@@ -102,14 +102,21 @@ async function fetchAmazonOffers(
         const lowestNew = summary?.LowestPrices?.find(
             (p: any) => p.condition === "new" && p.fulfillmentChannel === "Amazon"
         ) ?? summary?.LowestPrices?.[0];
-        const price = lowestNew?.ListingPrice?.Amount ?? null;
-        const sellerCount = (summary?.NumberOfOffers ?? [])
-            .reduce((sum: number, o: any) => sum + (o.offerCount ?? 0), 0);
         const allOffers = data?.payload?.Offers ?? [];
         const amazonOffer = allOffers.find((o: any) => o.SellerId === amazonSellerId);
         const soldByAmazon = !!amazonOffer;
         const amazonStock = amazonOffer?.QuantityOnHand ?? null;
+        const sellerCount = (summary?.NumberOfOffers ?? [])
+            .reduce((sum: number, o: any) => sum + (o.offerCount ?? 0), 0)
+            || allOffers.length;
 
+        // LowestPrices can be empty when Amazon is the sole seller — fall back to the offer's own price
+        const price = lowestNew?.ListingPrice?.Amount
+            ?? amazonOffer?.ListingPrice?.Amount
+            ?? amazonOffer?.BuyingPrice?.ListingPrice?.Amount
+            ?? null;
+
+        console.log(`[fetchAmazonOffers] asin=${asin} price=${price} sellerCount=${sellerCount} soldByAmazon=${soldByAmazon} amazonStock=${amazonStock}`);
         return { price, sellerCount, soldByAmazon, amazonStock, shippingDays: null };
     } catch {
         return { price: null, sellerCount: 0, soldByAmazon: false, amazonStock: null, shippingDays: null };
