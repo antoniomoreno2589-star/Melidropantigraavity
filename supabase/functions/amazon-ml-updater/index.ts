@@ -164,13 +164,18 @@ async function updateMeliItem(
     meliId: string,
     payload: Record<string, unknown>,
     token: string
-): Promise<boolean> {
+): Promise<{ ok: boolean; error?: string }> {
     const res = await fetch(`${MELI_API}/items/${meliId}`, {
         method:  "PUT",
         headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
         body:    JSON.stringify(payload),
     });
-    return res.ok;
+    if (!res.ok) {
+        const body = await res.text().catch(() => `HTTP ${res.status}`);
+        console.error(`[amazon-ml-updater] ML update failed for ${meliId}: ${res.status} - ${body}`);
+        return { ok: false, error: `ML ${res.status}: ${body.slice(0, 300)}` };
+    }
+    return { ok: true };
 }
 
 async function updateMeliDescription(
@@ -268,6 +273,15 @@ serve(async (req) => {
 
             if (!meliCreds?.token || !amazonCreds?.refreshToken) continue;
 
+            // When force=true, abandon stale running jobs so we restart from offset 0
+            if (forceRun) {
+                await supabase
+                    .from("sync_jobs")
+                    .update({ status: "abandoned", finished_at: new Date().toISOString() })
+                    .eq("user_id", userId)
+                    .eq("status", "running");
+            }
+
             const { data: activeJob } = await supabase
                 .from("sync_jobs")
                 .select("*")
@@ -361,7 +375,7 @@ serve(async (req) => {
                 mlToken = meliCreds.token;
             }
 
-            let updated = 0, errors = 0;
+            let updated = 0, errors = 0, firstError: string | undefined;
 
             console.log(`[amazon-ml-updater] Processing batch: ${products.length} products, syncParams=${JSON.stringify(syncParams)}`);
 
@@ -426,9 +440,9 @@ serve(async (req) => {
 
                 if (Object.keys(updatePayload).length > 0) {
                     console.log(`[amazon-ml-updater] meliId=${meliId}, sku=${sku}, payload=${JSON.stringify(updatePayload)}`);
-                    const ok = await updateMeliItem(meliId, updatePayload, mlToken);
-                    console.log(`[amazon-ml-updater] meliId=${meliId} result=${ok ? 'SUCCESS' : 'FAILED'}`);
-                    if (ok) {
+                    const result = await updateMeliItem(meliId, updatePayload, mlToken);
+                    console.log(`[amazon-ml-updater] meliId=${meliId} result=${result.ok ? 'SUCCESS' : `FAILED: ${result.error}`}`);
+                    if (result.ok) {
                         const dbUpdate: any = { last_updated: new Date().toISOString() };
                         if (updatePayload.price)              dbUpdate.price_mxn           = updatePayload.price;
                         if (updatePayload.available_quantity) dbUpdate.stock_meli           = updatePayload.available_quantity;
@@ -440,6 +454,7 @@ serve(async (req) => {
                         updated++;
                     } else {
                         errors++;
+                        if (!firstError) firstError = result.error;
                     }
                 } else {
                     console.log(`[amazon-ml-updater] meliId=${meliId}, sku=${sku} - no changes needed`);
@@ -482,7 +497,7 @@ serve(async (req) => {
                 });
             }
 
-            summary.push({ userId, updated, errors, offset: newOffset, complete: isComplete });
+            summary.push({ userId, updated, errors, firstError, offset: newOffset, complete: isComplete });
         }
 
         return new Response(JSON.stringify({ success: true, summary }), { headers: corsHeaders });

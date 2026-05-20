@@ -434,7 +434,10 @@ export const UpdaterPage: React.FC = () => {
                 } else if (s.completed === true) {
                     setSyncResult('✅ Sincronización completada (todos los productos procesados).');
                 } else if (s.updated !== undefined || s.errors !== undefined) {
-                    setSyncResult(`✅ Lote procesado: ${s.updated ?? 0} actualizados, ${s.errors ?? 0} errores. Offset: ${s.offset ?? '?'}/${syncJob?.total_products ?? '?'}`);
+                    const hasErrors = (s.errors ?? 0) > 0;
+                    const icon = hasErrors ? '⚠️' : '✅';
+                    const errorDetail = hasErrors && s.firstError ? `\nError ML: ${s.firstError}` : '';
+                    setSyncResult(`${icon} Lote procesado: ${s.updated ?? 0} actualizados, ${s.errors ?? 0} errores. Offset: ${s.offset ?? '?'}/${syncJob?.total_products ?? '?'}${errorDetail}`);
                 } else {
                     setSyncResult('✅ Lote procesado sin cambios.');
                 }
