@@ -62,6 +62,28 @@ function parseDaysFromSpanishDate(text: string): number | null {
     return days >= 0 && days <= 60 ? days : null;
 }
 
+function parseDaysFromWeekdayName(text: string): number | null {
+    // Match "Entrega GRATIS lunes" or "Llega el martes" → calculate days until that weekday
+    const dayMap: Record<string, number> = {
+        'domingo': 0, 'lunes': 1, 'martes': 2, 'miércoles': 3,
+        'jueves': 4, 'viernes': 5, 'sábado': 6,
+    };
+    const m = text.match(/(llega|entrega|recibe|rec[ií]belo|env[ií]o)\s+(?:gratis\s+)?(?:el\s+)?(domingo|lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado)/i);
+    if (!m) return null;
+    const dayWord = m[2].toLowerCase()
+        .replace('miercoles', 'miércoles')
+        .replace('miércoles', 'miércoles')
+        .replace('sabado', 'sábado')
+        .replace('sábado', 'sábado');
+    const targetDow = dayMap[dayWord];
+    if (targetDow === undefined) return null;
+    const now = new Date();
+    const todayDow = now.getDay();
+    let diff = targetDow - todayDow;
+    if (diff <= 0) diff += 7; // next occurrence
+    return diff >= 1 && diff <= 14 ? diff : null;
+}
+
 async function fetchAmazonShippingDays(asin: string, postalCode?: string | null): Promise<number | null> {
     try {
         let searchText: string;
@@ -154,11 +176,18 @@ async function fetchAmazonShippingDays(asin: string, postalCode?: string | null)
             return 1;
         }
 
-        // Specific date: "25 de mayo", "el lunes, 25 de mayo" → calculate days from today
+        // Specific date: "11 de junio", "el jueves, 11 de junio" → calculate days from today
         const dateDays = parseDaysFromSpanishDate(searchText);
         if (dateDays !== null) {
             console.log(`[fetchAmazonShippingDays] asin=${asin} date pattern match: ${dateDays} days`);
             return dateDays;
+        }
+
+        // Day-of-week: "Entrega GRATIS lunes", "Llega el martes" → days until that weekday
+        const weekdayDays = parseDaysFromWeekdayName(searchText);
+        if (weekdayDays !== null) {
+            console.log(`[fetchAmazonShippingDays] asin=${asin} weekday match: ${weekdayDays} days`);
+            return weekdayDays;
         }
 
         // Range patterns: "X a Y días"
