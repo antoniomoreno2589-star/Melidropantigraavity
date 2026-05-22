@@ -92,19 +92,18 @@ async function fetchAmazonShippingDays(asin: string, postalCode?: string | null)
         const oxylabsPass = Deno.env.get("OXYLABS_PASSWORD");
 
         if (oxylabsUser && oxylabsPass) {
-            // Attempt Oxylabs with render:html to get JavaScript-rendered delivery dates
-            // Use 60s timeout for the request to avoid full 150s edge function timeout
+            // Scrape the offer-listing page: it shows all sellers with delivery dates
+            // in static HTML — no JavaScript rendering needed, no render:html timeout.
+            const offerUrl = `https://www.amazon.com.mx/gp/offer-listing/${asin}/?condition=new`;
             const body: Record<string, unknown> = {
-                source: "amazon_product",
-                query: asin,
-                geo_location: postalCode ?? "06600",
-                domain: "com.mx",
-                render: "html",
+                source: "universal",
+                url: offerUrl,
+                geo_location: "Mexico",
             };
             let oxylabsSucceeded = false;
             try {
                 const controller = new AbortController();
-                const timeoutId = setTimeout(() => controller.abort(), 60000);
+                const timeoutId = setTimeout(() => controller.abort(), 30000);
 
                 const res = await fetch("https://realtime.oxylabs.io/v1/queries", {
                     method: "POST",
@@ -123,18 +122,18 @@ async function fetchAmazonShippingDays(asin: string, postalCode?: string | null)
                     if (rawContent) {
                         searchText = typeof rawContent === 'string' ? rawContent : JSON.stringify(rawContent);
                         oxylabsSucceeded = true;
-                        console.log(`[fetchAmazonShippingDays] Oxylabs render=html success asin=${asin} length=${searchText.length}`);
+                        console.log(`[fetchAmazonShippingDays] Oxylabs offer-listing success asin=${asin} length=${searchText.length}`);
                     }
+                } else {
+                    console.log(`[fetchAmazonShippingDays] Oxylabs offer-listing error ${res.status} asin=${asin}`);
                 }
             } catch (e) {
-                console.log(`[fetchAmazonShippingDays] Oxylabs render=html error/timeout asin=${asin}: ${e}`);
+                console.log(`[fetchAmazonShippingDays] Oxylabs offer-listing timeout/error asin=${asin}: ${e}`);
             }
 
-            // Fallback to direct scraping if Oxylabs failed
+            // Fallback: direct scrape offer-listing page
             if (!oxylabsSucceeded) {
-                const baseUrl = `https://www.amazon.com.mx/dp/${asin}`;
-                const url = postalCode ? `${baseUrl}?deliveryZip=${postalCode}` : baseUrl;
-                const res = await fetch(url, {
+                const res = await fetch(offerUrl, {
                     headers: {
                         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
                         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -143,17 +142,16 @@ async function fetchAmazonShippingDays(asin: string, postalCode?: string | null)
                     },
                 });
                 if (!res.ok) {
-                    console.log(`[fetchAmazonShippingDays] Direct scraping failed asin=${asin} status=${res.status}`);
+                    console.log(`[fetchAmazonShippingDays] Direct offer-listing failed asin=${asin} status=${res.status}`);
                     return null;
                 }
                 searchText = await res.text();
-                console.log(`[fetchAmazonShippingDays] Direct scraping fallback asin=${asin} length=${searchText.length}`);
+                console.log(`[fetchAmazonShippingDays] Direct offer-listing fallback asin=${asin} length=${searchText.length}`);
             }
         } else {
-            // No Oxylabs — direct scraping only
-            const baseUrl = `https://www.amazon.com.mx/dp/${asin}`;
-            const url = postalCode ? `${baseUrl}?deliveryZip=${postalCode}` : baseUrl;
-            const res = await fetch(url, {
+            // No Oxylabs — direct scrape offer-listing page
+            const offerUrl = `https://www.amazon.com.mx/gp/offer-listing/${asin}/?condition=new`;
+            const res = await fetch(offerUrl, {
                 headers: {
                     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
                     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
