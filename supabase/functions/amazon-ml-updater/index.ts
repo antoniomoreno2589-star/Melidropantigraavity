@@ -69,7 +69,10 @@ async function fetchAmazonShippingDays(asin: string, postalCode?: string | null)
         const oxylabsUser = Deno.env.get("OXYLABS_USERNAME");
         const oxylabsPass = Deno.env.get("OXYLABS_PASSWORD");
 
-        if (!oxylabsUser || !oxylabsPass) return null;
+        if (!oxylabsUser || !oxylabsPass) {
+            console.log(`[fetchAmazonShippingDays] asin=${asin} OXYLABS_USERNAME/PASSWORD not set`);
+            return null;
+        }
 
         const auth = `Basic ${btoa(`${oxylabsUser}:${oxylabsPass}`)}`;
 
