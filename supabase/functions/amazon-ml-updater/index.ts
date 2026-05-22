@@ -70,37 +70,65 @@ async function fetchAmazonShippingDays(asin: string, postalCode?: string | null)
         const oxylabsPass = Deno.env.get("OXYLABS_PASSWORD");
 
         if (oxylabsUser && oxylabsPass) {
-            // amazon_product source returns structured JSON — do NOT use render:"html" (causes 150s+ timeout)
+            // Attempt Oxylabs with render:html to get JavaScript-rendered delivery dates
+            // Use 60s timeout for the request to avoid full 150s edge function timeout
             const body: Record<string, unknown> = {
                 source: "amazon_product",
                 query: asin,
                 geo_location: postalCode ?? "06600",
                 domain: "com.mx",
+                render: "html",
             };
-            const res = await fetch("https://realtime.oxylabs.io/v1/queries", {
-                method: "POST",
-                headers: {
-                    "Content-Type": "application/json",
-                    "Authorization": `Basic ${btoa(`${oxylabsUser}:${oxylabsPass}`)}`,
-                },
-                body: JSON.stringify(body),
-            });
-            if (!res.ok) {
-                console.log(`[fetchAmazonShippingDays] Oxylabs error ${res.status} for ${asin}`);
-                return null;
+            let oxylabsSucceeded = false;
+            try {
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 60000);
+
+                const res = await fetch("https://realtime.oxylabs.io/v1/queries", {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json",
+                        "Authorization": `Basic ${btoa(`${oxylabsUser}:${oxylabsPass}`)}`,
+                    },
+                    body: JSON.stringify(body),
+                    signal: controller.signal,
+                });
+                clearTimeout(timeoutId);
+
+                if (res.ok) {
+                    const data = await res.json();
+                    const rawContent = data?.results?.[0]?.content;
+                    if (rawContent) {
+                        searchText = typeof rawContent === 'string' ? rawContent : JSON.stringify(rawContent);
+                        oxylabsSucceeded = true;
+                        console.log(`[fetchAmazonShippingDays] Oxylabs render=html success asin=${asin} length=${searchText.length}`);
+                    }
+                }
+            } catch (e) {
+                console.log(`[fetchAmazonShippingDays] Oxylabs render=html error/timeout asin=${asin}: ${e}`);
             }
-            const data = await res.json();
-            const rawContent = data?.results?.[0]?.content;
-            if (!rawContent) {
-                console.log(`[fetchAmazonShippingDays] No content in Oxylabs response for ${asin}`);
-                return null;
+
+            // Fallback to direct scraping if Oxylabs failed
+            if (!oxylabsSucceeded) {
+                const baseUrl = `https://www.amazon.com.mx/dp/${asin}`;
+                const url = postalCode ? `${baseUrl}?deliveryZip=${postalCode}` : baseUrl;
+                const res = await fetch(url, {
+                    headers: {
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                        "Accept-Language": "es-MX,es;q=0.9",
+                        ...(postalCode ? { "Cookie": `lc-acbmx=es_MXN; i18n-prefs=MXN; zip=${postalCode}` } : {}),
+                    },
+                });
+                if (!res.ok) {
+                    console.log(`[fetchAmazonShippingDays] Direct scraping failed asin=${asin} status=${res.status}`);
+                    return null;
+                }
+                searchText = await res.text();
+                console.log(`[fetchAmazonShippingDays] Direct scraping fallback asin=${asin} length=${searchText.length}`);
             }
-            // amazon_product returns a structured object — stringify so our regex patterns can search it
-            searchText = typeof rawContent === 'string' ? rawContent : JSON.stringify(rawContent);
-            console.log(`[fetchAmazonShippingDays] asin=${asin} content type=${typeof rawContent} length=${searchText.length}`);
-            console.log(`[fetchAmazonShippingDays] asin=${asin} first 3000:\n${searchText.slice(0, 3000)}`);
         } else {
-            // Direct scraping fallback (may be bot-blocked from datacenter IPs)
+            // No Oxylabs — direct scraping only
             const baseUrl = `https://www.amazon.com.mx/dp/${asin}`;
             const url = postalCode ? `${baseUrl}?deliveryZip=${postalCode}` : baseUrl;
             const res = await fetch(url, {
