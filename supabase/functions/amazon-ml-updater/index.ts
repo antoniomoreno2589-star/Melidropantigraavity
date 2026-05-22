@@ -40,48 +40,51 @@ interface AmazonOffers {
     shippingDays: number | null;
 }
 
-function parseDaysFromSpanishDate(text: string): number | null {
+function findAllSpanishDates(text: string): number[] {
     const monthMap: Record<string, number> = {
         'enero': 0, 'febrero': 1, 'marzo': 2, 'abril': 3, 'mayo': 4,
         'junio': 5, 'julio': 6, 'agosto': 7, 'septiembre': 8,
         'octubre': 9, 'noviembre': 10, 'diciembre': 11,
     };
-    // Match "25 de mayo" or "el lunes, 25 de mayo"
-    const m = text.match(/(\d{1,2})\s+de\s+(enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre)/i);
-    if (!m) return null;
-    const day = parseInt(m[1]);
-    const month = monthMap[m[2].toLowerCase()];
-    if (month === undefined) return null;
+    const regex = /(\d{1,2})\s+de\s+(enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre)/gi;
+    const results: number[] = [];
     const now = new Date();
-    const year = now.getFullYear();
-    const deliveryDate = new Date(year, month, day);
-    // If that date already passed this year, it's next year
-    if (deliveryDate < now) deliveryDate.setFullYear(year + 1);
-    const diffMs = deliveryDate.getTime() - now.getTime();
-    const days = Math.ceil(diffMs / (24 * 60 * 60 * 1000));
-    return days >= 0 && days <= 60 ? days : null;
+    let m: RegExpExecArray | null;
+    while ((m = regex.exec(text)) !== null) {
+        const day = parseInt(m[1]);
+        const month = monthMap[m[2].toLowerCase()];
+        if (month === undefined) continue;
+        const year = now.getFullYear();
+        const deliveryDate = new Date(year, month, day);
+        if (deliveryDate < now) deliveryDate.setFullYear(year + 1);
+        const diffMs = deliveryDate.getTime() - now.getTime();
+        const days = Math.ceil(diffMs / (24 * 60 * 60 * 1000));
+        if (days >= 0 && days <= 60) results.push(days);
+    }
+    return results;
 }
 
-function parseDaysFromWeekdayName(text: string): number | null {
-    // Match "Entrega GRATIS lunes" or "Llega el martes" → calculate days until that weekday
+function findAllWeekdays(text: string): number[] {
     const dayMap: Record<string, number> = {
         'domingo': 0, 'lunes': 1, 'martes': 2, 'miércoles': 3,
         'jueves': 4, 'viernes': 5, 'sábado': 6,
     };
-    const m = text.match(/(llega|entrega|recibe|rec[ií]belo|env[ií]o)\s+(?:gratis\s+)?(?:el\s+)?(domingo|lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado)/i);
-    if (!m) return null;
-    const dayWord = m[2].toLowerCase()
-        .replace('miercoles', 'miércoles')
-        .replace('miércoles', 'miércoles')
-        .replace('sabado', 'sábado')
-        .replace('sábado', 'sábado');
-    const targetDow = dayMap[dayWord];
-    if (targetDow === undefined) return null;
+    const normalize: Record<string, string> = { 'miercoles': 'miércoles', 'sabado': 'sábado' };
+    const regex = /(llega|entrega|recibe|rec[ií]belo|env[ií]o)\s+(?:gratis\s+)?(?:el\s+)?(domingo|lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado)/gi;
+    const results: number[] = [];
     const now = new Date();
     const todayDow = now.getDay();
-    let diff = targetDow - todayDow;
-    if (diff <= 0) diff += 7; // next occurrence
-    return diff >= 1 && diff <= 14 ? diff : null;
+    let m: RegExpExecArray | null;
+    while ((m = regex.exec(text)) !== null) {
+        const raw = m[2].toLowerCase();
+        const dayWord = normalize[raw] ?? raw;
+        const targetDow = dayMap[dayWord];
+        if (targetDow === undefined) continue;
+        let diff = targetDow - todayDow;
+        if (diff <= 0) diff += 7;
+        if (diff >= 1 && diff <= 14) results.push(diff);
+    }
+    return results;
 }
 
 async function fetchAmazonShippingDays(asin: string, postalCode?: string | null): Promise<number | null> {
@@ -165,32 +168,33 @@ async function fetchAmazonShippingDays(asin: string, postalCode?: string | null)
             searchText = await res.text();
         }
 
-        // "Llega hoy" / "Entrega hoy" → 0 days
+        // Log the first few delivery-related text snippets for diagnostics
+        const snippets = [...searchText.matchAll(/(?:llega|entrega|recibe|rec[ií]belo|env[ií]o)[^<\n]{0,80}/gi)].slice(0, 6);
+        console.log(`[fetchAmazonShippingDays] asin=${asin} snippets: ${snippets.map(s => s[0].trim()).join(' || ')}`);
+
+        // Collect ALL delivery day candidates across all sellers on the page.
+        // The offer-listing page shows multiple sellers; we take the MAXIMUM so that
+        // slow sellers (Amazon Europa, etc.) aren't hidden by a fast Prime offer appearing first.
+        const allCandidates: number[] = [];
+
+        // "hoy" → 0 days
         if (/(llega|entrega|recibe|rec[ií]belo|env[ií]o)\s+hoy/i.test(searchText)) {
-            console.log(`[fetchAmazonShippingDays] asin=${asin} today match: 0 days`);
-            return 0;
+            allCandidates.push(0);
         }
-        // "Llega mañana" / "Entrega mañana" → 1 day
+        // "mañana" → 1 day
         if (/(llega|entrega|recibe|rec[ií]belo|env[ií]o)\s+ma[ñn]ana/i.test(searchText)) {
-            console.log(`[fetchAmazonShippingDays] asin=${asin} tomorrow match: 1 day`);
-            return 1;
+            allCandidates.push(1);
         }
 
-        // Specific date: "11 de junio", "el jueves, 11 de junio" → calculate days from today
-        const dateDays = parseDaysFromSpanishDate(searchText);
-        if (dateDays !== null) {
-            console.log(`[fetchAmazonShippingDays] asin=${asin} date pattern match: ${dateDays} days`);
-            return dateDays;
-        }
+        // All specific dates: "11 de junio", "el jueves, 11 de junio"
+        const dateDays = findAllSpanishDates(searchText);
+        allCandidates.push(...dateDays);
 
-        // Day-of-week: "Entrega GRATIS lunes", "Llega el martes" → days until that weekday
-        const weekdayDays = parseDaysFromWeekdayName(searchText);
-        if (weekdayDays !== null) {
-            console.log(`[fetchAmazonShippingDays] asin=${asin} weekday match: ${weekdayDays} days`);
-            return weekdayDays;
-        }
+        // All weekday names: "Entrega GRATIS el domingo", "Llega el martes"
+        const weekdayDays = findAllWeekdays(searchText);
+        allCandidates.push(...weekdayDays);
 
-        // Range patterns: "X a Y días"
+        // Range patterns: "X a Y días" — add the upper bound of the first match found
         const rangePatterns = [
             /Llega en (\d+)\s+a\s+(\d+)\s+d[ií]as/i,
             /Env[ií]o en (\d+)\s+a\s+(\d+)\s+d[ií]as/i,
@@ -201,9 +205,8 @@ async function fetchAmazonShippingDays(asin: string, postalCode?: string | null)
         for (const pattern of rangePatterns) {
             const match = searchText.match(pattern);
             if (match) {
-                const days = Math.max(parseInt(match[1]), parseInt(match[2]));
-                console.log(`[fetchAmazonShippingDays] asin=${asin} range match: ${days} days`);
-                return days;
+                allCandidates.push(Math.max(parseInt(match[1]), parseInt(match[2])));
+                break;
             }
         }
 
@@ -217,9 +220,8 @@ async function fetchAmazonShippingDays(asin: string, postalCode?: string | null)
         for (const pattern of singlePatterns) {
             const match = searchText.match(pattern);
             if (match) {
-                const days = parseInt(match[1]);
-                console.log(`[fetchAmazonShippingDays] asin=${asin} single match: ${days} days`);
-                return days;
+                allCandidates.push(parseInt(match[1]));
+                break;
             }
         }
 
@@ -231,9 +233,13 @@ async function fetchAmazonShippingDays(asin: string, postalCode?: string | null)
         const wordPattern = /(un|uno|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez)\s+d[ií]as/i;
         const wordMatch = searchText.match(wordPattern);
         if (wordMatch) {
-            const days = wordToNum[wordMatch[1].toLowerCase()];
-            console.log(`[fetchAmazonShippingDays] asin=${asin} word match "${wordMatch[1]}": ${days} days`);
-            return days;
+            allCandidates.push(wordToNum[wordMatch[1].toLowerCase()]);
+        }
+
+        if (allCandidates.length > 0) {
+            const maxDays = Math.max(...allCandidates);
+            console.log(`[fetchAmazonShippingDays] asin=${asin} candidates=[${allCandidates.join(',')}] → max=${maxDays}`);
+            return maxDays;
         }
 
         console.log(`[fetchAmazonShippingDays] asin=${asin} no pattern found`);
