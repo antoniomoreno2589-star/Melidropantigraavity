@@ -40,202 +40,145 @@ interface AmazonOffers {
     shippingDays: number | null;
 }
 
-function parseDaysFromSpanishDate(text: string): number | null {
+function findAllSpanishDates(text: string): number[] {
     const monthMap: Record<string, number> = {
         'enero': 0, 'febrero': 1, 'marzo': 2, 'abril': 3, 'mayo': 4,
         'junio': 5, 'julio': 6, 'agosto': 7, 'septiembre': 8,
         'octubre': 9, 'noviembre': 10, 'diciembre': 11,
     };
-    // Match "25 de mayo" or "el lunes, 25 de mayo"
-    const m = text.match(/(\d{1,2})\s+de\s+(enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre)/i);
-    if (!m) return null;
-    const day = parseInt(m[1]);
-    const month = monthMap[m[2].toLowerCase()];
-    if (month === undefined) return null;
+    const regex = /(\d{1,2})\s+de\s+(enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre)/gi;
+    const results: number[] = [];
     const now = new Date();
-    const year = now.getFullYear();
-    const deliveryDate = new Date(year, month, day);
-    // If that date already passed this year, it's next year
-    if (deliveryDate < now) deliveryDate.setFullYear(year + 1);
-    const diffMs = deliveryDate.getTime() - now.getTime();
-    const days = Math.ceil(diffMs / (24 * 60 * 60 * 1000));
-    return days >= 0 && days <= 60 ? days : null;
-}
-
-function parseDaysFromWeekdayName(text: string): number | null {
-    // Match "Entrega GRATIS lunes" or "Llega el martes" → calculate days until that weekday
-    const dayMap: Record<string, number> = {
-        'domingo': 0, 'lunes': 1, 'martes': 2, 'miércoles': 3,
-        'jueves': 4, 'viernes': 5, 'sábado': 6,
-    };
-    const m = text.match(/(llega|entrega|recibe|rec[ií]belo|env[ií]o)\s+(?:gratis\s+)?(?:el\s+)?(domingo|lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado)/i);
-    if (!m) return null;
-    const dayWord = m[2].toLowerCase()
-        .replace('miercoles', 'miércoles')
-        .replace('miércoles', 'miércoles')
-        .replace('sabado', 'sábado')
-        .replace('sábado', 'sábado');
-    const targetDow = dayMap[dayWord];
-    if (targetDow === undefined) return null;
-    const now = new Date();
-    const todayDow = now.getDay();
-    let diff = targetDow - todayDow;
-    if (diff <= 0) diff += 7; // next occurrence
-    return diff >= 1 && diff <= 14 ? diff : null;
+    let m: RegExpExecArray | null;
+    while ((m = regex.exec(text)) !== null) {
+        const day = parseInt(m[1]);
+        const month = monthMap[m[2].toLowerCase()];
+        if (month === undefined) continue;
+        const year = now.getFullYear();
+        const deliveryDate = new Date(year, month, day);
+        if (deliveryDate < now) deliveryDate.setFullYear(year + 1);
+        const diffMs = deliveryDate.getTime() - now.getTime();
+        const days = Math.ceil(diffMs / (24 * 60 * 60 * 1000));
+        if (days >= 0 && days <= 60) results.push(days);
+    }
+    return results;
 }
 
 async function fetchAmazonShippingDays(asin: string, postalCode?: string | null): Promise<number | null> {
     try {
-        let searchText: string;
-
         const oxylabsUser = Deno.env.get("OXYLABS_USERNAME");
         const oxylabsPass = Deno.env.get("OXYLABS_PASSWORD");
 
-        if (oxylabsUser && oxylabsPass) {
-            // Scrape the offer-listing page: it shows all sellers with delivery dates
-            // in static HTML — no JavaScript rendering needed, no render:html timeout.
-            const offerUrl = `https://www.amazon.com.mx/gp/offer-listing/${asin}/?condition=new`;
-            const body: Record<string, unknown> = {
-                source: "universal",
-                url: offerUrl,
-                geo_location: "Mexico",
-            };
-            let oxylabsSucceeded = false;
-            try {
-                const controller = new AbortController();
-                const timeoutId = setTimeout(() => controller.abort(), 30000);
+        if (!oxylabsUser || !oxylabsPass) return null;
 
-                const res = await fetch("https://realtime.oxylabs.io/v1/queries", {
-                    method: "POST",
-                    headers: {
-                        "Content-Type": "application/json",
-                        "Authorization": `Basic ${btoa(`${oxylabsUser}:${oxylabsPass}`)}`,
-                    },
-                    body: JSON.stringify(body),
-                    signal: controller.signal,
-                });
-                clearTimeout(timeoutId);
+        const auth = `Basic ${btoa(`${oxylabsUser}:${oxylabsPass}`)}`;
 
-                if (res.ok) {
-                    const data = await res.json();
-                    const rawContent = data?.results?.[0]?.content;
-                    if (rawContent) {
-                        searchText = typeof rawContent === 'string' ? rawContent : JSON.stringify(rawContent);
-                        oxylabsSucceeded = true;
-                        console.log(`[fetchAmazonShippingDays] Oxylabs offer-listing success asin=${asin} length=${searchText.length}`);
-                    }
-                } else {
-                    console.log(`[fetchAmazonShippingDays] Oxylabs offer-listing error ${res.status} asin=${asin}`);
+        // Use amazon_product source with parse:true.
+        // Oxylabs' Amazon-specific scraper renders JavaScript and extracts structured
+        // data from the product page, including the actual delivery field from the buy-box.
+        // This avoids the false positives produced by "universal" source, which picks up
+        // Amazon's static Prime promotional banners ("Entrega GRATIS el domingo") that
+        // appear on every page regardless of actual seller delivery time.
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 45000);
+
+        const res = await fetch("https://realtime.oxylabs.io/v1/queries", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                "Authorization": auth,
+            },
+            body: JSON.stringify({
+                source: "amazon_product",
+                domain: "com.mx",
+                query: asin,
+                parse: true,
+            }),
+            signal: controller.signal,
+        });
+        clearTimeout(timeoutId);
+
+        if (!res.ok) {
+            console.log(`[fetchAmazonShippingDays] asin=${asin} amazon_product HTTP ${res.status}`);
+            return null;
+        }
+
+        const data = await res.json();
+        const content = data?.results?.[0]?.content;
+
+        if (content && typeof content === 'object') {
+            // Log the delivery-relevant fields so we can see what Oxylabs extracts
+            const relevant: Record<string, unknown> = {};
+            for (const key of ['delivery', 'shipping', 'availability', 'price', 'buybox', 'delivery_info', 'seller']) {
+                if (content[key] !== undefined) relevant[key] = content[key];
+            }
+            console.log(`[fetchAmazonShippingDays] asin=${asin} parsed fields: ${JSON.stringify(relevant).slice(0, 800)}`);
+
+            // Check all known paths where Oxylabs places delivery text
+            const texts: string[] = [
+                content?.delivery,
+                content?.delivery?.primary,
+                content?.delivery?.secondary,
+                content?.delivery_info,
+                content?.price?.delivery,
+                content?.buybox?.delivery,
+                content?.shipping,
+            ].filter(Boolean).map(String);
+
+            for (const text of texts) {
+                if (/(llega|entrega|recibe|env[ií]o)\s+hoy/i.test(text)) {
+                    console.log(`[fetchAmazonShippingDays] asin=${asin} hoy → 0`);
+                    return 0;
                 }
-            } catch (e) {
-                console.log(`[fetchAmazonShippingDays] Oxylabs offer-listing timeout/error asin=${asin}: ${e}`);
-            }
-
-            // Fallback: direct scrape offer-listing page
-            if (!oxylabsSucceeded) {
-                const res = await fetch(offerUrl, {
-                    headers: {
-                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                        "Accept-Language": "es-MX,es;q=0.9",
-                        ...(postalCode ? { "Cookie": `lc-acbmx=es_MXN; i18n-prefs=MXN; zip=${postalCode}` } : {}),
-                    },
-                });
-                if (!res.ok) {
-                    console.log(`[fetchAmazonShippingDays] Direct offer-listing failed asin=${asin} status=${res.status}`);
-                    return null;
+                if (/(llega|entrega|recibe|env[ií]o)\s+ma[ñn]ana/i.test(text)) {
+                    console.log(`[fetchAmazonShippingDays] asin=${asin} mañana → 1`);
+                    return 1;
                 }
-                searchText = await res.text();
-                console.log(`[fetchAmazonShippingDays] Direct offer-listing fallback asin=${asin} length=${searchText.length}`);
+                const dates = findAllSpanishDates(text);
+                if (dates.length > 0) {
+                    const max = Math.max(...dates);
+                    console.log(`[fetchAmazonShippingDays] asin=${asin} delivery="${text}" → ${max} días`);
+                    return max;
+                }
+                const rangeM = text.match(/(\d+)\s+a\s+(\d+)\s+d[ií]as/i);
+                if (rangeM) {
+                    const max = Math.max(parseInt(rangeM[1]), parseInt(rangeM[2]));
+                    console.log(`[fetchAmazonShippingDays] asin=${asin} range "${text}" → ${max} días`);
+                    return max;
+                }
+                const singleM = text.match(/en (\d+)\s+d[ií]as/i);
+                if (singleM) {
+                    const d = parseInt(singleM[1]);
+                    console.log(`[fetchAmazonShippingDays] asin=${asin} single "${text}" → ${d} días`);
+                    return d;
+                }
             }
-        } else {
-            // No Oxylabs — direct scrape offer-listing page
-            const offerUrl = `https://www.amazon.com.mx/gp/offer-listing/${asin}/?condition=new`;
-            const res = await fetch(offerUrl, {
-                headers: {
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                    "Accept-Language": "es-MX,es;q=0.9",
-                    ...(postalCode ? { "Cookie": `lc-acbmx=es_MXN; i18n-prefs=MXN; zip=${postalCode}` } : {}),
-                },
-            });
-            if (!res.ok) return null;
-            searchText = await res.text();
-        }
 
-        // "Llega hoy" / "Entrega hoy" → 0 days
-        if (/(llega|entrega|recibe|rec[ií]belo|env[ií]o)\s+hoy/i.test(searchText)) {
-            console.log(`[fetchAmazonShippingDays] asin=${asin} today match: 0 days`);
-            return 0;
-        }
-        // "Llega mañana" / "Entrega mañana" → 1 day
-        if (/(llega|entrega|recibe|rec[ií]belo|env[ií]o)\s+ma[ñn]ana/i.test(searchText)) {
-            console.log(`[fetchAmazonShippingDays] asin=${asin} tomorrow match: 1 day`);
-            return 1;
-        }
+            console.log(`[fetchAmazonShippingDays] asin=${asin} parsed content: no delivery date in known fields`);
+            return null;
 
-        // Specific date: "11 de junio", "el jueves, 11 de junio" → calculate days from today
-        const dateDays = parseDaysFromSpanishDate(searchText);
-        if (dateDays !== null) {
-            console.log(`[fetchAmazonShippingDays] asin=${asin} date pattern match: ${dateDays} days`);
-            return dateDays;
-        }
+        } else if (typeof content === 'string' && content.length > 100) {
+            // Structured parsing was off — got raw HTML.
+            // Only match specific calendar dates ("11 de junio") — NOT weekday names.
+            // Weekday-name patterns ("domingo", "lunes", etc.) are intentionally excluded:
+            // Amazon's static Prime promotional banners use them on every page and always
+            // produce false positives regardless of the actual seller delivery window.
+            const snippets = [...content.matchAll(/(?:llega|entrega|recibe)[^<\n]{0,100}/gi)].slice(0, 5);
+            console.log(`[fetchAmazonShippingDays] asin=${asin} HTML snippets: ${snippets.map(s => s[0].trim()).join(' || ')}`);
 
-        // Day-of-week: "Entrega GRATIS lunes", "Llega el martes" → days until that weekday
-        const weekdayDays = parseDaysFromWeekdayName(searchText);
-        if (weekdayDays !== null) {
-            console.log(`[fetchAmazonShippingDays] asin=${asin} weekday match: ${weekdayDays} days`);
-            return weekdayDays;
-        }
-
-        // Range patterns: "X a Y días"
-        const rangePatterns = [
-            /Llega en (\d+)\s+a\s+(\d+)\s+d[ií]as/i,
-            /Env[ií]o en (\d+)\s+a\s+(\d+)\s+d[ií]as/i,
-            /Rec[ií]belo en (\d+)\s+a\s+(\d+)\s+d[ií]as/i,
-            /(\d+)\s+a\s+(\d+)\s+d[ií]as\s+h[aá]biles/i,
-            /(\d+)\s+a\s+(\d+)\s+d[ií]as/i,
-        ];
-        for (const pattern of rangePatterns) {
-            const match = searchText.match(pattern);
-            if (match) {
-                const days = Math.max(parseInt(match[1]), parseInt(match[2]));
-                console.log(`[fetchAmazonShippingDays] asin=${asin} range match: ${days} days`);
-                return days;
+            const dates = findAllSpanishDates(content);
+            if (dates.length > 0) {
+                const max = Math.max(...dates);
+                console.log(`[fetchAmazonShippingDays] asin=${asin} HTML dates=${JSON.stringify(dates)} → ${max} días`);
+                return max;
             }
+            console.log(`[fetchAmazonShippingDays] asin=${asin} HTML: no specific dates found`);
+            return null;
         }
 
-        // Single-number patterns: "en X días"
-        const singlePatterns = [
-            /Llega en (\d+)\s+d[ií]as/i,
-            /Env[ií]o en (\d+)\s+d[ií]as/i,
-            /Rec[ií]belo en (\d+)\s+d[ií]as/i,
-            /en (\d+)\s+d[ií]as/i,
-        ];
-        for (const pattern of singlePatterns) {
-            const match = searchText.match(pattern);
-            if (match) {
-                const days = parseInt(match[1]);
-                console.log(`[fetchAmazonShippingDays] asin=${asin} single match: ${days} days`);
-                return days;
-            }
-        }
-
-        // Word-number patterns: "Dos días", "Tres días", etc.
-        const wordToNum: Record<string, number> = {
-            'un': 1, 'uno': 1, 'dos': 2, 'tres': 3, 'cuatro': 4, 'cinco': 5,
-            'seis': 6, 'siete': 7, 'ocho': 8, 'nueve': 9, 'diez': 10,
-        };
-        const wordPattern = /(un|uno|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez)\s+d[ií]as/i;
-        const wordMatch = searchText.match(wordPattern);
-        if (wordMatch) {
-            const days = wordToNum[wordMatch[1].toLowerCase()];
-            console.log(`[fetchAmazonShippingDays] asin=${asin} word match "${wordMatch[1]}": ${days} days`);
-            return days;
-        }
-
-        console.log(`[fetchAmazonShippingDays] asin=${asin} no pattern found`);
+        console.log(`[fetchAmazonShippingDays] asin=${asin} empty/null content from Oxylabs`);
         return null;
+
     } catch (e) {
         console.error(`[fetchAmazonShippingDays] asin=${asin}:`, e);
         return null;
