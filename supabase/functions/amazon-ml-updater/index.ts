@@ -68,8 +68,18 @@ async function fetchAmazonShippingDays(asin: string, postalCode?: string | null)
                 return null;
             }
             const data = await res.json();
+            console.log(`[fetchAmazonShippingDays] Oxylabs response keys for ${asin}:`, Object.keys(data));
+            if (data?.results?.length > 0) {
+                console.log(`[fetchAmazonShippingDays] result[0] keys:`, Object.keys(data.results[0]));
+            }
             html = data?.results?.[0]?.content ?? "";
-            if (!html) return null;
+            if (!html) {
+                console.log(`[fetchAmazonShippingDays] No content in Oxylabs response for ${asin}`);
+                return null;
+            }
+            console.log(`[fetchAmazonShippingDays] Oxylabs HTML length for ${asin}: ${html.length}`);
+            console.log(`[fetchAmazonShippingDays] First 1500 chars of HTML for ${asin}:\n${html.slice(0, 1500)}`);
+            console.log(`[fetchAmazonShippingDays] Last 500 chars of HTML for ${asin}:\n${html.slice(-500)}`);
         } else {
             // Direct scraping fallback (may be bot-blocked from datacenter IPs)
             const baseUrl = `https://www.amazon.com.mx/dp/${asin}`;
