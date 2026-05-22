@@ -117,16 +117,44 @@ async function fetchAmazonShippingDays(asin: string, postalCode?: string | null)
             }
             console.log(`[fetchAmazonShippingDays] asin=${asin} parsed fields: ${JSON.stringify(relevant).slice(0, 800)}`);
 
-            // Check all known paths where Oxylabs places delivery text
-            const texts: string[] = [
-                content?.delivery,
+            // Build flat list of text fragments to search for delivery dates.
+            // Oxylabs returns delivery as an array of {date: {by: "11 de junio"}, type: "Entrega GRATIS el"}
+            // objects rather than a plain string — extract date.by from each entry.
+            const texts: string[] = [];
+
+            if (Array.isArray(content?.delivery)) {
+                for (const entry of content.delivery) {
+                    const dateBy = entry?.date?.by ?? '';
+                    const type   = entry?.type   ?? '';
+                    if (dateBy) texts.push(`${type} ${dateBy}`.trim());
+                }
+            } else if (typeof content?.delivery === 'string') {
+                texts.push(content.delivery);
+            }
+
+            // buybox may also carry delivery_details with the same shape
+            if (Array.isArray(content?.buybox)) {
+                for (const box of content.buybox) {
+                    if (Array.isArray(box?.delivery_details)) {
+                        for (const entry of box.delivery_details) {
+                            const dateBy = entry?.date?.by ?? '';
+                            const type   = entry?.type   ?? '';
+                            if (dateBy) texts.push(`${type} ${dateBy}`.trim());
+                        }
+                    }
+                }
+            }
+
+            // String fallbacks for other Oxylabs response shapes
+            for (const v of [
                 content?.delivery?.primary,
                 content?.delivery?.secondary,
                 content?.delivery_info,
                 content?.price?.delivery,
-                content?.buybox?.delivery,
                 content?.shipping,
-            ].filter(Boolean).map(String);
+            ]) {
+                if (typeof v === 'string') texts.push(v);
+            }
 
             for (const text of texts) {
                 if (/(llega|entrega|recibe|env[ií]o)\s+hoy/i.test(text)) {
