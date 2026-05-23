@@ -96,6 +96,9 @@ async function fetchAmazonShippingDays(asin: string, postalCode?: string | null)
                 domain: "com.mx",
                 query: asin,
                 parse: true,
+                // geo_location sets the delivery postal code so Amazon shows actual dates.
+                // Without it, the scrape returns delivery:[] for cross-border sellers.
+                ...(postalCode ? { geo_location: postalCode } : {}),
             }),
             signal: controller.signal,
         });
