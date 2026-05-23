@@ -186,10 +186,12 @@ async function fetchAmazonShippingDays(asin: string, postalCode?: string | null)
             }
 
             // delivery:[] means no buy-box — the product is only sold by external sellers
-            // accessible via "Ver opciones de compra". Scrape that offer-listing page with
-            // JavaScript rendering to get the actual seller delivery dates.
+            // accessible via "Ver opciones de compra". Try two strategies:
+            // 1. Scrape the offer-listing page (static HTML) to find seller delivery dates.
+            // 2. If that yields nothing, infer from the seller_name in the buybox
+            //    (Amazon Estados Unidos ~10 days, Amazon Europa ~20 days cross-border).
             if (Array.isArray(content?.delivery) && content.delivery.length === 0) {
-                console.log(`[fetchAmazonShippingDays] asin=${asin} delivery=[] (no buy-box), scraping offer-listing with JS`);
+                console.log(`[fetchAmazonShippingDays] asin=${asin} delivery=[] (no buy-box), scraping offer-listing`);
                 const offerCtrl = new AbortController();
                 const offerTimer = setTimeout(() => offerCtrl.abort(), 30000);
                 try {
@@ -199,7 +201,6 @@ async function fetchAmazonShippingDays(asin: string, postalCode?: string | null)
                         body: JSON.stringify({
                             source: "universal",
                             url: `https://www.amazon.com.mx/gp/offer-listing/${asin}/?condition=new`,
-                            render: "html",
                         }),
                         signal: offerCtrl.signal,
                     });
@@ -214,20 +215,35 @@ async function fetchAmazonShippingDays(asin: string, postalCode?: string | null)
                             // Products that reach this code path have no buy-box, so no 1–3 day seller exists.
                             const allDates = findAllSpanishDates(html);
                             const dates = allDates.filter(d => d > 3);
-                            console.log(`[fetchAmazonShippingDays] asin=${asin} offer-listing JS allDates=${JSON.stringify(allDates)} filtered=${JSON.stringify(dates)}`);
+                            console.log(`[fetchAmazonShippingDays] asin=${asin} offer-listing allDates=${JSON.stringify(allDates)} filtered=${JSON.stringify(dates)}`);
                             if (dates.length > 0) {
                                 const max = Math.max(...dates);
-                                console.log(`[fetchAmazonShippingDays] asin=${asin} offer-listing JS → ${max} días`);
+                                console.log(`[fetchAmazonShippingDays] asin=${asin} offer-listing → ${max} días`);
                                 return max;
                             }
-                            console.log(`[fetchAmazonShippingDays] asin=${asin} offer-listing JS: no dates found`);
+                            console.log(`[fetchAmazonShippingDays] asin=${asin} offer-listing: no dates found in static HTML`);
                         }
                     } else {
-                        console.log(`[fetchAmazonShippingDays] asin=${asin} offer-listing JS HTTP ${offerRes.status}`);
+                        const errBody = await offerRes.text().catch(() => '');
+                        console.log(`[fetchAmazonShippingDays] asin=${asin} offer-listing HTTP ${offerRes.status}: ${errBody.slice(0, 200)}`);
                     }
                 } catch (e2) {
                     clearTimeout(offerTimer);
-                    console.log(`[fetchAmazonShippingDays] asin=${asin} offer-listing JS error: ${e2}`);
+                    console.log(`[fetchAmazonShippingDays] asin=${asin} offer-listing error: ${e2}`);
+                }
+
+                // Strategy 2: infer from seller name in buybox
+                const sellerName: string = content?.buybox?.[0]?.seller_name ?? '';
+                if (/estados unidos/i.test(sellerName)) {
+                    console.log(`[fetchAmazonShippingDays] asin=${asin} seller="${sellerName}" → cross-border USA, estimating 10 días`);
+                    return 10;
+                }
+                if (/europa/i.test(sellerName)) {
+                    console.log(`[fetchAmazonShippingDays] asin=${asin} seller="${sellerName}" → cross-border EU, estimating 20 días`);
+                    return 20;
+                }
+                if (sellerName) {
+                    console.log(`[fetchAmazonShippingDays] asin=${asin} seller="${sellerName}" unknown cross-border, no estimate`);
                 }
             }
 
