@@ -208,13 +208,17 @@ async function fetchAmazonShippingDays(asin: string, postalCode?: string | null)
                         const offerData = await offerRes.json();
                         const html = offerData?.results?.[0]?.content;
                         if (typeof html === 'string' && html.length > 100) {
-                            const dates = findAllSpanishDates(html);
+                            // Filter out dates ≤ 3 days: offer-listing pages always contain
+                            // Amazon's static Prime promotional banner ("Entrega GRATIS el lunes, 25 de mayo")
+                            // which is NOT a real seller delivery window — it's a false positive.
+                            // Products that reach this code path have no buy-box, so no 1–3 day seller exists.
+                            const allDates = findAllSpanishDates(html);
+                            const dates = allDates.filter(d => d > 3);
+                            console.log(`[fetchAmazonShippingDays] asin=${asin} offer-listing JS allDates=${JSON.stringify(allDates)} filtered=${JSON.stringify(dates)}`);
                             if (dates.length > 0) {
-                                // Use min: the first/cheapest seller's delivery date, which is
-                                // what we'd use to fulfill the order.
-                                const min = Math.min(...dates);
-                                console.log(`[fetchAmazonShippingDays] asin=${asin} offer-listing JS dates=${JSON.stringify(dates)} → ${min} días`);
-                                return min;
+                                const max = Math.max(...dates);
+                                console.log(`[fetchAmazonShippingDays] asin=${asin} offer-listing JS → ${max} días`);
+                                return max;
                             }
                             console.log(`[fetchAmazonShippingDays] asin=${asin} offer-listing JS: no dates found`);
                         }
