@@ -185,6 +185,48 @@ async function fetchAmazonShippingDays(asin: string, postalCode?: string | null)
                 }
             }
 
+            // delivery:[] means no buy-box — the product is only sold by external sellers
+            // accessible via "Ver opciones de compra". Scrape that offer-listing page with
+            // JavaScript rendering to get the actual seller delivery dates.
+            if (Array.isArray(content?.delivery) && content.delivery.length === 0) {
+                console.log(`[fetchAmazonShippingDays] asin=${asin} delivery=[] (no buy-box), scraping offer-listing with JS`);
+                const offerCtrl = new AbortController();
+                const offerTimer = setTimeout(() => offerCtrl.abort(), 30000);
+                try {
+                    const offerRes = await fetch("https://realtime.oxylabs.io/v1/queries", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json", "Authorization": auth },
+                        body: JSON.stringify({
+                            source: "universal",
+                            url: `https://www.amazon.com.mx/gp/offer-listing/${asin}/?condition=new`,
+                            render: "html",
+                        }),
+                        signal: offerCtrl.signal,
+                    });
+                    clearTimeout(offerTimer);
+                    if (offerRes.ok) {
+                        const offerData = await offerRes.json();
+                        const html = offerData?.results?.[0]?.content;
+                        if (typeof html === 'string' && html.length > 100) {
+                            const dates = findAllSpanishDates(html);
+                            if (dates.length > 0) {
+                                // Use min: the first/cheapest seller's delivery date, which is
+                                // what we'd use to fulfill the order.
+                                const min = Math.min(...dates);
+                                console.log(`[fetchAmazonShippingDays] asin=${asin} offer-listing JS dates=${JSON.stringify(dates)} → ${min} días`);
+                                return min;
+                            }
+                            console.log(`[fetchAmazonShippingDays] asin=${asin} offer-listing JS: no dates found`);
+                        }
+                    } else {
+                        console.log(`[fetchAmazonShippingDays] asin=${asin} offer-listing JS HTTP ${offerRes.status}`);
+                    }
+                } catch (e2) {
+                    clearTimeout(offerTimer);
+                    console.log(`[fetchAmazonShippingDays] asin=${asin} offer-listing JS error: ${e2}`);
+                }
+            }
+
             console.log(`[fetchAmazonShippingDays] asin=${asin} parsed content: no delivery date in known fields`);
             return null;
 
