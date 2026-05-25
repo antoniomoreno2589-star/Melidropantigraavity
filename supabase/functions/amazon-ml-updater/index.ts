@@ -159,33 +159,40 @@ async function fetchAmazonShippingDays(asin: string, postalCode?: string | null)
                 if (typeof v === 'string') texts.push(v);
             }
 
+            // Collect dates from ALL entries before deciding — for cross-border dropshipping
+            // we need the MAXIMUM delivery time. Amazon may return a fast Prime option first
+            // (e.g. 2 days) followed by the actual cross-border seller (e.g. 21 days).
+            // Returning at the first match would silently pick the wrong entry.
+            const allCollectedDays: number[] = [];
             for (const text of texts) {
                 if (/(llega|entrega|recibe|env[ií]o)\s+hoy/i.test(text)) {
-                    console.log(`[fetchAmazonShippingDays] asin=${asin} hoy → 0`);
-                    return 0;
+                    allCollectedDays.push(0);
+                    continue;
                 }
                 if (/(llega|entrega|recibe|env[ií]o)\s+ma[ñn]ana/i.test(text)) {
-                    console.log(`[fetchAmazonShippingDays] asin=${asin} mañana → 1`);
-                    return 1;
+                    allCollectedDays.push(1);
+                    continue;
                 }
                 const dates = findAllSpanishDates(text);
                 if (dates.length > 0) {
-                    const max = Math.max(...dates);
-                    console.log(`[fetchAmazonShippingDays] asin=${asin} delivery="${text}" → ${max} días`);
-                    return max;
+                    console.log(`[fetchAmazonShippingDays] asin=${asin} delivery="${text}" dates=${JSON.stringify(dates)}`);
+                    allCollectedDays.push(...dates);
+                    continue;
                 }
                 const rangeM = text.match(/(\d+)\s+a\s+(\d+)\s+d[ií]as/i);
                 if (rangeM) {
-                    const max = Math.max(parseInt(rangeM[1]), parseInt(rangeM[2]));
-                    console.log(`[fetchAmazonShippingDays] asin=${asin} range "${text}" → ${max} días`);
-                    return max;
+                    allCollectedDays.push(Math.max(parseInt(rangeM[1]), parseInt(rangeM[2])));
+                    continue;
                 }
                 const singleM = text.match(/en (\d+)\s+d[ií]as/i);
                 if (singleM) {
-                    const d = parseInt(singleM[1]);
-                    console.log(`[fetchAmazonShippingDays] asin=${asin} single "${text}" → ${d} días`);
-                    return d;
+                    allCollectedDays.push(parseInt(singleM[1]));
                 }
+            }
+            if (allCollectedDays.length > 0) {
+                const max = Math.max(...allCollectedDays);
+                console.log(`[fetchAmazonShippingDays] asin=${asin} allDays=${JSON.stringify(allCollectedDays)} → ${max} días`);
+                return max;
             }
 
             // delivery:[] means no buy-box — the product is only sold by external sellers
