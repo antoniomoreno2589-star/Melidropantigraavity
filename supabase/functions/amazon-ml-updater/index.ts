@@ -196,66 +196,20 @@ async function fetchAmazonShippingDays(asin: string, postalCode?: string | null)
             }
 
             // delivery:[] means Oxylabs' structured parser didn't extract a delivery date.
-            // This happens for cross-border sellers (Amazon Estados Unidos, Amazon Europa):
-            // the buy-box exists and shows a price, but delivery_details are not populated.
-            // Fix: re-request the same product with parse:false to get the fully rendered HTML
-            // (JavaScript executed), which DOES contain the actual delivery date text.
-            // The gp/offer-listing URL was tried before but Oxylabs returns HTTP 400 for it.
+            // This happens for cross-border sellers (Amazon Estados Unidos, Amazon Europa).
+            // The parse:false HTML approach was tried (v50) but the delivery section for
+            // cross-border products is not in the Oxylabs-rendered HTML — only carousel dates
+            // from recommended products appear, producing wildly incorrect values.
+            // Fallback: use seller-name heuristic based on observed real delivery windows.
             if (Array.isArray(content?.delivery) && content.delivery.length === 0) {
-                console.log(`[fetchAmazonShippingDays] asin=${asin} delivery=[] (cross-border seller), fetching rendered HTML`);
-                const rawCtrl = new AbortController();
-                const rawTimer = setTimeout(() => rawCtrl.abort(), 40000);
-                try {
-                    const rawRes = await fetch("https://realtime.oxylabs.io/v1/queries", {
-                        method: "POST",
-                        headers: { "Content-Type": "application/json", "Authorization": auth },
-                        body: JSON.stringify({
-                            source: "amazon_product",
-                            domain: "com.mx",
-                            query: asin,
-                            parse: false,
-                            ...(postalCode ? { geo_location: postalCode } : {}),
-                        }),
-                        signal: rawCtrl.signal,
-                    });
-                    clearTimeout(rawTimer);
-                    if (rawRes.ok) {
-                        const rawData = await rawRes.json();
-                        const html = rawData?.results?.[0]?.content;
-                        if (typeof html === 'string' && html.length > 100) {
-                            const snippets = [...html.matchAll(/(?:llega|entrega|recibe)[^<\n]{0,120}/gi)].slice(0, 5);
-                            console.log(`[fetchAmazonShippingDays] asin=${asin} rendered snippets: ${snippets.map(s => s[0].trim()).join(' || ')}`);
-                            const allDates = findAllSpanishDates(html);
-                            // Filter ≤ 3 days: rendered HTML still has Prime promotional banners.
-                            // Cross-border products reach this path only when delivery:[], meaning
-                            // there is no local fast seller — real delivery will always be > 3 days.
-                            const dates = allDates.filter(d => d > 3);
-                            console.log(`[fetchAmazonShippingDays] asin=${asin} rendered HTML allDates=${JSON.stringify(allDates)} filtered=${JSON.stringify(dates)}`);
-                            if (dates.length > 0) {
-                                const max = Math.max(...dates);
-                                console.log(`[fetchAmazonShippingDays] asin=${asin} rendered HTML → ${max} días`);
-                                return max;
-                            }
-                            console.log(`[fetchAmazonShippingDays] asin=${asin} rendered HTML: no dates > 3 days found`);
-                        }
-                    } else {
-                        const errBody = await rawRes.text().catch(() => '');
-                        console.log(`[fetchAmazonShippingDays] asin=${asin} rendered HTML HTTP ${rawRes.status}: ${errBody.slice(0, 200)}`);
-                    }
-                } catch (e2) {
-                    clearTimeout(rawTimer);
-                    console.log(`[fetchAmazonShippingDays] asin=${asin} rendered HTML error: ${e2}`);
-                }
-
-                // Last resort: infer from seller name in buybox
                 const sellerName: string = content?.buybox?.[0]?.seller_name ?? '';
                 if (/estados unidos/i.test(sellerName)) {
-                    console.log(`[fetchAmazonShippingDays] asin=${asin} seller="${sellerName}" → cross-border USA, estimating 10 días`);
-                    return 10;
+                    console.log(`[fetchAmazonShippingDays] asin=${asin} seller="${sellerName}" → cross-border USA, estimating 7 días`);
+                    return 7;
                 }
                 if (/europa/i.test(sellerName)) {
-                    console.log(`[fetchAmazonShippingDays] asin=${asin} seller="${sellerName}" → cross-border EU, estimating 20 días`);
-                    return 20;
+                    console.log(`[fetchAmazonShippingDays] asin=${asin} seller="${sellerName}" → cross-border EU, estimating 21 días`);
+                    return 21;
                 }
                 if (sellerName) {
                     console.log(`[fetchAmazonShippingDays] asin=${asin} seller="${sellerName}" unknown cross-border, no estimate`);
