@@ -42,11 +42,17 @@ interface AmazonOffers {
 
 function findAllSpanishDates(text: string): number[] {
     const monthMap: Record<string, number> = {
+        // Full names
         'enero': 0, 'febrero': 1, 'marzo': 2, 'abril': 3, 'mayo': 4,
-        'junio': 5, 'julio': 6, 'agosto': 7, 'septiembre': 8,
-        'octubre': 9, 'noviembre': 10, 'diciembre': 11,
+        'junio': 5, 'julio': 6, 'agosto': 7, 'septiembre': 8, 'octubre': 9,
+        'noviembre': 10, 'diciembre': 11,
+        // Abbreviated (Amazon uses "jun.", "dic.", etc.)
+        'ene': 0, 'feb': 1, 'mar': 2, 'abr': 3,
+        'jun': 5, 'jul': 6, 'ago': 7, 'sep': 8, 'sept': 8,
+        'oct': 9, 'nov': 10, 'dic': 11,
     };
-    const regex = /(\d{1,2})\s+de\s+(enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre)/gi;
+    // Match full month names first (longer → shorter) to avoid partial matches
+    const regex = /(\d{1,2})\s+de\s+(enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre|sept|ene|feb|mar|abr|jun|jul|ago|sep|oct|nov|dic)\.?/gi;
     const results: number[] = [];
     const now = new Date();
     let m: RegExpExecArray | null;
@@ -62,6 +68,23 @@ function findAllSpanishDates(text: string): number[] {
         if (days >= 0 && days <= 60) results.push(days);
     }
     return results;
+}
+
+function extractDeliverySection(html: string): string | null {
+    // Extract only the delivery/dispatch block from Amazon's HTML to avoid
+    // false positives from product carousels further down the page.
+    const markers = [
+        'deliveryMessageMirId',
+        'ddm_feature_div',
+        'mir-layout-DELIVERY_BLOCK',
+        'delivery-message',
+        'ddmDeliveryMessage',
+    ];
+    for (const id of markers) {
+        const idx = html.indexOf(`id="${id}"`);
+        if (idx !== -1) return html.slice(idx, idx + 800);
+    }
+    return null;
 }
 
 async function fetchAmazonShippingDays(asin: string, postalCode?: string | null): Promise<number | null> {
@@ -197,12 +220,72 @@ async function fetchAmazonShippingDays(asin: string, postalCode?: string | null)
 
             // delivery:[] means Oxylabs' structured parser didn't extract a delivery date.
             // This happens for cross-border sellers (Amazon Estados Unidos, Amazon Europa).
-            // The parse:false HTML approach was tried (v50) but the delivery section for
-            // cross-border products is not in the Oxylabs-rendered HTML — only carousel dates
-            // from recommended products appear, producing wildly incorrect values.
-            // Fallback: use seller-name heuristic based on observed real delivery windows.
+            // Root cause: geo_location sets IP geolocation but does NOT interact with Amazon's
+            // "Cambiar dirección de entrega" widget — the buy-box needs an explicit postal code
+            // entry to show cross-border delivery dates.
+            // Fix: use universal source with browser_instructions to click the location picker,
+            // type the postal code, and wait for the delivery section to update.
             if (Array.isArray(content?.delivery) && content.delivery.length === 0) {
                 const sellerName: string = content?.buybox?.[0]?.seller_name ?? '';
+
+                if (postalCode) {
+                    console.log(`[fetchAmazonShippingDays] asin=${asin} delivery=[] seller="${sellerName}", entering CP=${postalCode} via universal+JS`);
+                    const uCtrl = new AbortController();
+                    const uTimer = setTimeout(() => uCtrl.abort(), 60000);
+                    try {
+                        const uRes = await fetch("https://realtime.oxylabs.io/v1/queries", {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json", "Authorization": auth },
+                            body: JSON.stringify({
+                                source: "universal",
+                                url: `https://www.amazon.com.mx/dp/${asin}`,
+                                render: "html",
+                                browser_instructions: [
+                                    { type: "wait_for_element", selector: "#nav-global-location-popover-link", timeout: 8 },
+                                    { type: "click", selector: "#nav-global-location-popover-link" },
+                                    { type: "wait_for_element", selector: "#GLUXZipUpdateInput", timeout: 8 },
+                                    { type: "type", selector: "#GLUXZipUpdateInput", value: postalCode },
+                                    { type: "click", selector: "#GLUXZipUpdate" },
+                                    { type: "wait_for_element", selector: "#deliveryMessageMirId", timeout: 10 },
+                                ],
+                            }),
+                            signal: uCtrl.signal,
+                        });
+                        clearTimeout(uTimer);
+                        if (uRes.ok) {
+                            const uData = await uRes.json();
+                            const html = uData?.results?.[0]?.content;
+                            if (typeof html === 'string' && html.length > 100) {
+                                const section = extractDeliverySection(html) ?? html;
+                                const snippets = [...section.matchAll(/(?:llega|rec[ií]b|entrega)[^<\n]{0,150}/gi)].slice(0, 5);
+                                console.log(`[fetchAmazonShippingDays] asin=${asin} universal snippets: ${snippets.map(s => s[0].trim()).join(' || ')}`);
+                                const allDates = findAllSpanishDates(section);
+                                // If we got the delivery section specifically, trust all dates.
+                                // Otherwise filter ≤ 3 to remove Amazon Prime banners from carousels.
+                                const dates = extractDeliverySection(html)
+                                    ? allDates
+                                    : allDates.filter(d => d > 3);
+                                console.log(`[fetchAmazonShippingDays] asin=${asin} universal allDates=${JSON.stringify(allDates)} used=${JSON.stringify(dates)}`);
+                                if (dates.length > 0) {
+                                    const max = Math.max(...dates);
+                                    console.log(`[fetchAmazonShippingDays] asin=${asin} universal → ${max} días`);
+                                    return max;
+                                }
+                                console.log(`[fetchAmazonShippingDays] asin=${asin} universal: no dates found in delivery section`);
+                            }
+                        } else {
+                            const errBody = await uRes.text().catch(() => '');
+                            console.log(`[fetchAmazonShippingDays] asin=${asin} universal HTTP ${uRes.status}: ${errBody.slice(0, 300)}`);
+                        }
+                    } catch (e2) {
+                        clearTimeout(uTimer);
+                        console.log(`[fetchAmazonShippingDays] asin=${asin} universal error: ${e2}`);
+                    }
+                } else {
+                    console.log(`[fetchAmazonShippingDays] asin=${asin} delivery=[] but no postal code configured — skipping universal call`);
+                }
+
+                // Fallback heuristic when universal call fails or returns no dates
                 if (/estados unidos/i.test(sellerName)) {
                     console.log(`[fetchAmazonShippingDays] asin=${asin} seller="${sellerName}" → cross-border USA, estimating 7 días`);
                     return 7;
