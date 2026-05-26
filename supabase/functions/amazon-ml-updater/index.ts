@@ -109,6 +109,73 @@ function extractAodTopOffer(html: string): string | null {
     return null;
 }
 
+async function fetchDirectProductPageDays(asin: string, postalCode: string, auth: string): Promise<number | null> {
+    // Fetch the product page directly with geo_location applied so Amazon renders
+    // the buybox delivery promise (for products that DO have a buybox but whose
+    // delivery:[] in the structured response means Oxylabs' parser missed it).
+    const productUrl = `https://www.amazon.com.mx/dp/${asin}`;
+    console.log(`[fetchDirectProductPageDays] asin=${asin} fetching product page with CP=${postalCode}`);
+
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 40000);
+
+    try {
+        const res = await fetch("https://realtime.oxylabs.io/v1/queries", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "Authorization": auth },
+            body: JSON.stringify({
+                source: "amazon",
+                url: productUrl,
+                geo_location: postalCode,
+                render: "html",
+                parse: false,
+            }),
+            signal: ctrl.signal,
+        });
+        clearTimeout(timer);
+
+        if (!res.ok) {
+            const errBody = await res.text().catch(() => '');
+            console.log(`[fetchDirectProductPageDays] asin=${asin} HTTP ${res.status}: ${errBody.slice(0, 300)}`);
+            return null;
+        }
+
+        const data = await res.json();
+        const html = data?.results?.[0]?.content;
+
+        if (typeof html !== 'string' || html.length < 100) {
+            console.log(`[fetchDirectProductPageDays] asin=${asin} empty/short HTML`);
+            return null;
+        }
+
+        // Isolate the delivery section to avoid false positives from product carousels
+        const deliverySection = extractDeliverySection(html);
+        if (!deliverySection) {
+            console.log(`[fetchDirectProductPageDays] asin=${asin} no delivery section found. HTML[0:2500]: ${html.slice(0, 2500)}`);
+            return null;
+        }
+
+        console.log(`[fetchDirectProductPageDays] asin=${asin} delivery section: ${deliverySection.slice(0, 500)}`);
+
+        if (/(llega|entrega|recibe)\s+ma[ñn]ana/i.test(deliverySection)) return 1;
+        if (/(llega|entrega|recibe)\s+hoy/i.test(deliverySection)) return 0;
+
+        const dates = findAllSpanishDates(deliverySection);
+        if (dates.length > 0) {
+            const max = Math.max(...dates);
+            console.log(`[fetchDirectProductPageDays] asin=${asin} → ${max} días`);
+            return max;
+        }
+
+        console.log(`[fetchDirectProductPageDays] asin=${asin} no dates in delivery section: ${deliverySection.slice(0, 300)}`);
+        return null;
+    } catch (e) {
+        clearTimeout(timer);
+        console.log(`[fetchDirectProductPageDays] asin=${asin} error: ${e}`);
+        return null;
+    }
+}
+
 async function fetchAodDeliveryDays(asin: string, postalCode: string, auth: string): Promise<number | null> {
     // Scrape the AOD (All Offers Display) endpoint that Amazon loads when the user
     // clicks "Ver opciones de compra". This is the only reliable way to get delivery
@@ -171,7 +238,7 @@ async function fetchAodDeliveryDays(asin: string, postalCode: string, auth: stri
             return max;
         }
 
-        console.log(`[fetchAodDeliveryDays] asin=${asin} no dates found in AOD`);
+        console.log(`[fetchAodDeliveryDays] asin=${asin} no dates found in AOD. HTML[0:2500]: ${html.slice(0, 2500)}`);
         return null;
     } catch (e) {
         clearTimeout(timer);
@@ -199,7 +266,7 @@ async function fetchAmazonShippingDays(asin: string, postalCode?: string | null)
         // Amazon's static Prime promotional banners ("Entrega GRATIS el domingo") that
         // appear on every page regardless of actual seller delivery time.
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 45000);
+        const timeoutId = setTimeout(() => controller.abort(), 35000);
 
         const res = await fetch("https://realtime.oxylabs.io/v1/queries", {
             method: "POST",
@@ -319,12 +386,16 @@ async function fetchAmazonShippingDays(asin: string, postalCode?: string | null)
             // has the delivery promise text ("Entrega GRATIS el martes, 16 de junio").
             if (Array.isArray(content?.delivery) && content.delivery.length === 0) {
                 const sellerName: string = content?.buybox?.[0]?.seller_name ?? '';
-                console.log(`[fetchAmazonShippingDays] asin=${asin} delivery=[] seller="${sellerName}", trying AOD endpoint`);
+                console.log(`[fetchAmazonShippingDays] asin=${asin} delivery=[] seller="${sellerName}", trying fallbacks`);
                 if (postalCode) {
+                    // 1st: direct product page — works for products WITH a buybox
+                    const pageDays = await fetchDirectProductPageDays(asin, postalCode, auth);
+                    if (pageDays !== null) return pageDays;
+                    // 2nd: AOD endpoint — works for products WITHOUT a buybox ("Ver opciones de compra")
                     const aodDays = await fetchAodDeliveryDays(asin, postalCode, auth);
                     if (aodDays !== null) return aodDays;
                 } else {
-                    console.log(`[fetchAmazonShippingDays] asin=${asin} no postal code — cannot fetch AOD`);
+                    console.log(`[fetchAmazonShippingDays] asin=${asin} no postal code — cannot fetch delivery pages`);
                 }
             }
 
