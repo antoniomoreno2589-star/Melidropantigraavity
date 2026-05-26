@@ -161,11 +161,11 @@ async function fetchDirectProductPageDays(asin: string, postalCode: string, auth
                 // Interact with Amazon's "Deliver to" widget to set the postal code
                 // so that cross-border delivery dates appear in the buybox.
                 browser_instructions: [
-                    { type: "wait_for_element", selector: "#glow-ingress-block", timeout_ms: 5000 },
-                    { type: "click", selector: "#glow-ingress-block" },
-                    { type: "wait_for_element", selector: "#GLUXZipUpdateInput", timeout_ms: 5000 },
-                    { type: "fill", selector: "#GLUXZipUpdateInput", value: postalCode },
-                    { type: "click", selector: "#GLUXZipBtn" },
+                    { type: "wait_for_element", selector: { type: "css", value: "#glow-ingress-block" } },
+                    { type: "click", selector: { type: "css", value: "#glow-ingress-block" } },
+                    { type: "wait_for_element", selector: { type: "css", value: "#GLUXZipUpdateInput" } },
+                    { type: "fill", selector: { type: "css", value: "#GLUXZipUpdateInput" }, value: postalCode },
+                    { type: "click", selector: { type: "css", value: "#GLUXZipBtn" } },
                     { type: "wait", wait_for_ms: 3000 },
                 ],
             }),
@@ -176,8 +176,9 @@ async function fetchDirectProductPageDays(asin: string, postalCode: string, auth
         if (!res.ok) {
             const errBody = await res.text().catch(() => '');
             console.log(`[fetchDirectProductPageDays] asin=${asin} HTTP ${res.status}: ${errBody.slice(0, 500)}`);
-            // If browser_instructions not supported, try without them
-            if (res.status === 400 && errBody.includes('browser_instructions')) {
+            // On any 400, the browser_instructions were rejected (bad selector format,
+            // unsupported instruction, etc.) — fall back to plain fetch.
+            if (res.status === 400) {
                 return await fetchDirectProductPageDaysNoInteraction(asin, postalCode, auth);
             }
             return null;
