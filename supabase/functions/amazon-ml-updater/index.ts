@@ -139,14 +139,14 @@ async function fetchDirectProductPageDaysNoInteraction(asin: string, postalCode:
 }
 
 async function fetchDirectProductPageDays(asin: string, postalCode: string, auth: string): Promise<number | null> {
-    // Fetch the product page directly with geo_location applied so Amazon renders
-    // the buybox delivery promise (for products that DO have a buybox but whose
-    // delivery:[] in the structured response means Oxylabs' parser missed it).
-    const productUrl = `https://www.amazon.com.mx/dp/${asin}`;
-    console.log(`[fetchDirectProductPageDays] asin=${asin} fetching product page with CP=${postalCode}`);
+    // browser_instructions text input (fill/type) not supported by Oxylabs amazon source.
+    // Try passing the postal code as a ?zip= URL parameter — Amazon may pre-populate
+    // the delivery section when this parameter is present.
+    const productUrl = `https://www.amazon.com.mx/dp/${asin}?zip=${postalCode}`;
+    console.log(`[fetchDirectProductPageDays] asin=${asin} fetching with ?zip=${postalCode}`);
 
     const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 30000);
+    const timer = setTimeout(() => ctrl.abort(), 25000);
 
     try {
         const res = await fetch("https://realtime.oxylabs.io/v1/queries", {
@@ -158,30 +158,13 @@ async function fetchDirectProductPageDays(asin: string, postalCode: string, auth
                 geo_location: postalCode,
                 render: "html",
                 parse: false,
-                // Interact with Amazon's "Deliver to" widget to set the postal code
-                // so that cross-border delivery dates appear in the buybox.
-                browser_instructions: [
-                    { type: "wait_for_element", selector: { type: "css", value: "#glow-ingress-block" } },
-                    { type: "click", selector: { type: "css", value: "#glow-ingress-block" } },
-                    { type: "wait_for_element", selector: { type: "css", value: "#GLUXZipUpdateInput" } },
-                    { type: "click", selector: { type: "css", value: "#GLUXZipUpdateInput" } },
-                    { type: "type", value: postalCode },
-                    { type: "click", selector: { type: "css", value: "#GLUXZipBtn" } },
-                    { type: "wait", wait_for_ms: 3000 },
-                ],
             }),
             signal: ctrl.signal,
         });
         clearTimeout(timer);
 
         if (!res.ok) {
-            const errBody = await res.text().catch(() => '');
-            console.log(`[fetchDirectProductPageDays] asin=${asin} HTTP ${res.status}: ${errBody.slice(0, 500)}`);
-            // On any 400, the browser_instructions were rejected (bad selector format,
-            // unsupported instruction, etc.) — fall back to plain fetch.
-            if (res.status === 400) {
-                return await fetchDirectProductPageDaysNoInteraction(asin, postalCode, auth);
-            }
+            console.log(`[fetchDirectProductPageDays] asin=${asin} HTTP ${res.status}`);
             return null;
         }
 
@@ -193,15 +176,9 @@ async function fetchDirectProductPageDays(asin: string, postalCode: string, auth
             return null;
         }
 
-        // Isolate the delivery section to avoid false positives from product carousels
         const deliverySection = extractDeliverySection(html);
-        if (!deliverySection) {
-            console.log(`[fetchDirectProductPageDays] asin=${asin} no delivery section found (with CP widget). HTML[0:2500]: ${html.slice(0, 2500)}`);
-            // Fall back to plain fetch without browser interaction
-            return await fetchDirectProductPageDaysNoInteraction(asin, postalCode, auth);
-        }
-
-        console.log(`[fetchDirectProductPageDays] asin=${asin} delivery section: ${deliverySection.slice(0, 500)}`);
+        console.log(`[fetchDirectProductPageDays] asin=${asin} deliverySection=${deliverySection !== null}`);
+        if (!deliverySection) return null;
 
         if (/(llega|entrega|recibe)\s+ma[ñn]ana/i.test(deliverySection)) return 1;
         if (/(llega|entrega|recibe)\s+hoy/i.test(deliverySection)) return 0;
@@ -209,11 +186,11 @@ async function fetchDirectProductPageDays(asin: string, postalCode: string, auth
         const dates = findAllSpanishDates(deliverySection);
         if (dates.length > 0) {
             const max = Math.max(...dates);
-            console.log(`[fetchDirectProductPageDays] asin=${asin} → ${max} días`);
+            console.log(`[fetchDirectProductPageDays] asin=${asin} → ${max} días. section: ${deliverySection.slice(0, 400)}`);
             return max;
         }
 
-        console.log(`[fetchDirectProductPageDays] asin=${asin} no dates in delivery section: ${deliverySection.slice(0, 300)}`);
+        console.log(`[fetchDirectProductPageDays] asin=${asin} section found but no dates: ${deliverySection.slice(0, 400)}`);
         return null;
     } catch (e) {
         clearTimeout(timer);
