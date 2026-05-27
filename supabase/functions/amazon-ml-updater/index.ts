@@ -42,11 +42,17 @@ interface AmazonOffers {
 
 function findAllSpanishDates(text: string): number[] {
     const monthMap: Record<string, number> = {
+        // Full names
         'enero': 0, 'febrero': 1, 'marzo': 2, 'abril': 3, 'mayo': 4,
-        'junio': 5, 'julio': 6, 'agosto': 7, 'septiembre': 8,
-        'octubre': 9, 'noviembre': 10, 'diciembre': 11,
+        'junio': 5, 'julio': 6, 'agosto': 7, 'septiembre': 8, 'octubre': 9,
+        'noviembre': 10, 'diciembre': 11,
+        // Abbreviated (Amazon uses "jun.", "dic.", etc.)
+        'ene': 0, 'feb': 1, 'mar': 2, 'abr': 3,
+        'jun': 5, 'jul': 6, 'ago': 7, 'sep': 8, 'sept': 8,
+        'oct': 9, 'nov': 10, 'dic': 11,
     };
-    const regex = /(\d{1,2})\s+de\s+(enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre)/gi;
+    // Match full month names first (longer → shorter) to avoid partial matches
+    const regex = /(\d{1,2})\s+de\s+(enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre|sept|ene|feb|mar|abr|jun|jul|ago|sep|oct|nov|dic)\.?/gi;
     const results: number[] = [];
     const now = new Date();
     let m: RegExpExecArray | null;
@@ -64,12 +70,275 @@ function findAllSpanishDates(text: string): number[] {
     return results;
 }
 
+function extractDeliverySection(html: string): string | null {
+    // Extract only the delivery/dispatch block from Amazon's HTML to avoid
+    // false positives from product carousels further down the page.
+    const markers = [
+        'deliveryMessageMirId',
+        'ddm_feature_div',
+        'mir-layout-DELIVERY_BLOCK',
+        'delivery-message',
+        'ddmDeliveryMessage',
+    ];
+    for (const id of markers) {
+        const idx = html.indexOf(`id="${id}"`);
+        if (idx !== -1) return html.slice(idx, idx + 800);
+    }
+    return null;
+}
+
+function extractAodTopOffer(html: string): string | null {
+    // The AOD (All Offers Display) HTML has a pinned (top/recommended) offer.
+    // Its delivery promise is in a specific section we want to isolate from other offers.
+    const markers = [
+        'aod-pinned-offer-delivery-promise',
+        'aod-pinned-offer',
+        'aod-offer-soldBy',
+        'aod-delivery-promise',
+        'aod-offer',
+    ];
+    for (const id of markers) {
+        const idx = html.indexOf(`id="${id}"`);
+        if (idx !== -1) return html.slice(idx, idx + 2500);
+    }
+    // Class-based fallback (some AOD elements use class instead of id)
+    for (const cls of ['aod-pinned-offer', 'aod-offer']) {
+        const idx = html.indexOf(`class="${cls}`);
+        if (idx !== -1) return html.slice(idx, idx + 2500);
+    }
+    return null;
+}
+
+async function fetchDirectProductPageDaysNoInteraction(asin: string, postalCode: string, auth: string): Promise<number | null> {
+    const productUrl = `https://www.amazon.com.mx/dp/${asin}`;
+    console.log(`[fetchDirectProductPageDaysNoInteraction] asin=${asin} fetching without browser interaction`);
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 20000);
+    try {
+        const res = await fetch("https://realtime.oxylabs.io/v1/queries", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "Authorization": auth },
+            body: JSON.stringify({ source: "amazon", url: productUrl, geo_location: postalCode, render: "html", parse: false }),
+            signal: ctrl.signal,
+        });
+        clearTimeout(timer);
+        if (!res.ok) { console.log(`[fetchDirectProductPageDaysNoInteraction] asin=${asin} HTTP ${res.status}`); return null; }
+        const data = await res.json();
+        const html = data?.results?.[0]?.content;
+        if (typeof html !== 'string' || html.length < 100) { return null; }
+        const deliverySection = extractDeliverySection(html);
+        console.log(`[fetchDirectProductPageDaysNoInteraction] asin=${asin} deliverySection=${deliverySection !== null}. HTML[0:3000]: ${html.slice(0, 3000)}`);
+        if (!deliverySection) return null;
+        if (/(llega|entrega|recibe)\s+ma[ñn]ana/i.test(deliverySection)) return 1;
+        if (/(llega|entrega|recibe)\s+hoy/i.test(deliverySection)) return 0;
+        const dates = findAllSpanishDates(deliverySection);
+        if (dates.length > 0) { const max = Math.max(...dates); console.log(`[fetchDirectProductPageDaysNoInteraction] asin=${asin} → ${max} días`); return max; }
+        console.log(`[fetchDirectProductPageDaysNoInteraction] asin=${asin} section found but no dates: ${deliverySection.slice(0, 400)}`);
+        return null;
+    } catch (e) { clearTimeout(timer); console.log(`[fetchDirectProductPageDaysNoInteraction] asin=${asin} error: ${e}`); return null; }
+}
+
+async function fetchDirectProductPageDays(asin: string, postalCode: string, auth: string): Promise<number | null> {
+    // browser_instructions text input (fill/type) not supported by Oxylabs amazon source.
+    // Try passing the postal code as a ?zip= URL parameter — Amazon may pre-populate
+    // the delivery section when this parameter is present.
+    const productUrl = `https://www.amazon.com.mx/dp/${asin}?zip=${postalCode}`;
+    console.log(`[fetchDirectProductPageDays] asin=${asin} fetching with ?zip=${postalCode}`);
+
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 25000);
+
+    try {
+        const res = await fetch("https://realtime.oxylabs.io/v1/queries", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "Authorization": auth },
+            body: JSON.stringify({
+                source: "amazon",
+                url: productUrl,
+                geo_location: postalCode,
+                render: "html",
+                parse: false,
+            }),
+            signal: ctrl.signal,
+        });
+        clearTimeout(timer);
+
+        if (!res.ok) {
+            console.log(`[fetchDirectProductPageDays] asin=${asin} HTTP ${res.status}`);
+            return null;
+        }
+
+        const data = await res.json();
+        const html = data?.results?.[0]?.content;
+
+        if (typeof html !== 'string' || html.length < 100) {
+            console.log(`[fetchDirectProductPageDays] asin=${asin} empty/short HTML`);
+            return null;
+        }
+
+        const deliverySection = extractDeliverySection(html);
+        console.log(`[fetchDirectProductPageDays] asin=${asin} deliverySection=${deliverySection !== null}`);
+        if (!deliverySection) return null;
+
+        if (/(llega|entrega|recibe)\s+ma[ñn]ana/i.test(deliverySection)) return 1;
+        if (/(llega|entrega|recibe)\s+hoy/i.test(deliverySection)) return 0;
+
+        const dates = findAllSpanishDates(deliverySection);
+        if (dates.length > 0) {
+            const max = Math.max(...dates);
+            console.log(`[fetchDirectProductPageDays] asin=${asin} → ${max} días. section: ${deliverySection.slice(0, 400)}`);
+            return max;
+        }
+
+        console.log(`[fetchDirectProductPageDays] asin=${asin} section found but no dates: ${deliverySection.slice(0, 400)}`);
+        return null;
+    } catch (e) {
+        clearTimeout(timer);
+        console.log(`[fetchDirectProductPageDays] asin=${asin} error: ${e}`);
+        return null;
+    }
+}
+
+async function fetchAmazonAjaxDeliveryDays(asin: string, postalCode: string, auth: string): Promise<number | null> {
+    // Amazon's internal delivery message AJAX endpoint — the same XHR request that the
+    // product page fires to populate the delivery widget. Returns an HTML fragment with
+    // the delivery promise text ("Recíbelo el martes, 3 de junio") without requiring a
+    // full page render or CP widget interaction.
+    const ajaxUrl = `https://www.amazon.com.mx/gp/product/ajax?asin=${asin}&deviceType=web&qty=1&experienceId=deliveryMessageDesktop`;
+    console.log(`[fetchAmazonAjaxDelivery] asin=${asin} fetching internal AJAX delivery endpoint`);
+
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 25000);
+
+    try {
+        const res = await fetch("https://realtime.oxylabs.io/v1/queries", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "Authorization": auth },
+            body: JSON.stringify({
+                source: "amazon",
+                url: ajaxUrl,
+                geo_location: postalCode,
+                render: "html",
+                parse: false,
+            }),
+            signal: ctrl.signal,
+        });
+        clearTimeout(timer);
+
+        if (!res.ok) {
+            console.log(`[fetchAmazonAjaxDelivery] asin=${asin} HTTP ${res.status}`);
+            return null;
+        }
+
+        const data = await res.json();
+        const html = data?.results?.[0]?.content;
+
+        if (typeof html !== 'string' || html.length < 50) {
+            console.log(`[fetchAmazonAjaxDelivery] asin=${asin} empty/short response (len=${typeof html === 'string' ? html.length : 0})`);
+            return null;
+        }
+
+        console.log(`[fetchAmazonAjaxDelivery] asin=${asin} HTML[0:2000]: ${html.slice(0, 2000)}`);
+
+        if (/(llega|entrega|recibe)\s+ma[ñn]ana/i.test(html)) return 1;
+        if (/(llega|entrega|recibe)\s+hoy/i.test(html)) return 0;
+
+        const dates = findAllSpanishDates(html);
+        if (dates.length > 0) {
+            const max = Math.max(...dates);
+            console.log(`[fetchAmazonAjaxDelivery] asin=${asin} → ${max} días`);
+            return max;
+        }
+
+        console.log(`[fetchAmazonAjaxDelivery] asin=${asin} no dates found`);
+        return null;
+    } catch (e) {
+        clearTimeout(timer);
+        console.log(`[fetchAmazonAjaxDelivery] asin=${asin} error: ${e}`);
+        return null;
+    }
+}
+
+async function fetchAodDeliveryDays(asin: string, postalCode: string, auth: string): Promise<number | null> {
+    // Scrape the AOD (All Offers Display) endpoint that Amazon loads when the user
+    // clicks "Ver opciones de compra". This is the only reliable way to get delivery
+    // dates for cross-border sellers (Amazon Estados Unidos, Amazon Europa) since
+    // their buy-box doesn't render directly on the product page for Oxylabs.
+    const aodUrl = `https://www.amazon.com.mx/gp/aod/ajax?asin=${asin}&pc=dp`;
+    console.log(`[fetchAodDeliveryDays] asin=${asin} fetching AOD with CP=${postalCode}`);
+
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 25000);
+
+    try {
+        const res = await fetch("https://realtime.oxylabs.io/v1/queries", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "Authorization": auth },
+            body: JSON.stringify({
+                source: "amazon",
+                url: aodUrl,
+                geo_location: postalCode,
+                render: "html",
+                parse: false,
+            }),
+            signal: ctrl.signal,
+        });
+        clearTimeout(timer);
+
+        if (!res.ok) {
+            const errBody = await res.text().catch(() => '');
+            console.log(`[fetchAodDeliveryDays] asin=${asin} HTTP ${res.status}: ${errBody.slice(0, 300)}`);
+            return null;
+        }
+
+        const data = await res.json();
+        const html = data?.results?.[0]?.content;
+
+        if (typeof html !== 'string' || html.length < 100) {
+            console.log(`[fetchAodDeliveryDays] asin=${asin} empty/short HTML (length=${typeof html === 'string' ? html.length : 0})`);
+            return null;
+        }
+
+        // Extract top offer section to isolate from other offers
+        const topOffer = extractAodTopOffer(html);
+        const searchText = topOffer ?? html;
+
+        const snippets = [...searchText.matchAll(/(?:llega|rec[ií]b|entrega)[^<\n]{0,200}/gi)].slice(0, 5);
+        console.log(`[fetchAodDeliveryDays] asin=${asin} snippets (topOffer=${topOffer !== null}): ${snippets.map(s => s[0].trim()).join(' || ')}`);
+
+        // Handle "mañana" / "hoy" patterns in delivery text
+        if (/(llega|entrega|recibe)\s+ma[ñn]ana/i.test(searchText)) return 1;
+        if (/(llega|entrega|recibe)\s+hoy/i.test(searchText)) return 0;
+
+        const dates = findAllSpanishDates(searchText);
+        console.log(`[fetchAodDeliveryDays] asin=${asin} dates=${JSON.stringify(dates)}`);
+
+        if (dates.length > 0) {
+            // Use the MAX date — for date ranges like "30-31 de mayo", the
+            // findAllSpanishDates returns multiple values and we want the worst case
+            const max = Math.max(...dates);
+            console.log(`[fetchAodDeliveryDays] asin=${asin} → ${max} días`);
+            return max;
+        }
+
+        console.log(`[fetchAodDeliveryDays] asin=${asin} no dates found in AOD. HTML[0:2500]: ${html.slice(0, 2500)}`);
+        return null;
+    } catch (e) {
+        clearTimeout(timer);
+        console.log(`[fetchAodDeliveryDays] asin=${asin} error: ${e}`);
+        return null;
+    }
+}
+
 async function fetchAmazonShippingDays(asin: string, postalCode?: string | null): Promise<number | null> {
     try {
         const oxylabsUser = Deno.env.get("OXYLABS_USERNAME");
         const oxylabsPass = Deno.env.get("OXYLABS_PASSWORD");
 
-        if (!oxylabsUser || !oxylabsPass) return null;
+        if (!oxylabsUser || !oxylabsPass) {
+            console.log(`[fetchAmazonShippingDays] asin=${asin} OXYLABS_USERNAME/PASSWORD not set`);
+            return null;
+        }
 
         const auth = `Basic ${btoa(`${oxylabsUser}:${oxylabsPass}`)}`;
 
@@ -80,7 +349,7 @@ async function fetchAmazonShippingDays(asin: string, postalCode?: string | null)
         // Amazon's static Prime promotional banners ("Entrega GRATIS el domingo") that
         // appear on every page regardless of actual seller delivery time.
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 45000);
+        const timeoutId = setTimeout(() => controller.abort(), 35000);
 
         const res = await fetch("https://realtime.oxylabs.io/v1/queries", {
             method: "POST",
@@ -93,6 +362,10 @@ async function fetchAmazonShippingDays(asin: string, postalCode?: string | null)
                 domain: "com.mx",
                 query: asin,
                 parse: true,
+                render: "html",
+                // geo_location sets the delivery postal code so Amazon shows actual dates.
+                // Without it, the scrape returns delivery:[] for cross-border sellers.
+                ...(postalCode ? { geo_location: postalCode } : {}),
             }),
             signal: controller.signal,
         });
@@ -107,50 +380,113 @@ async function fetchAmazonShippingDays(asin: string, postalCode?: string | null)
         const content = data?.results?.[0]?.content;
 
         if (content && typeof content === 'object') {
-            // Log the delivery-relevant fields so we can see what Oxylabs extracts
+            // Log all content keys and relevant fields for diagnosis
+            console.log(`[fetchAmazonShippingDays] asin=${asin} content keys: ${JSON.stringify(Object.keys(content))}`);
             const relevant: Record<string, unknown> = {};
             for (const key of ['delivery', 'shipping', 'availability', 'price', 'buybox', 'delivery_info', 'seller']) {
                 if (content[key] !== undefined) relevant[key] = content[key];
             }
-            console.log(`[fetchAmazonShippingDays] asin=${asin} parsed fields: ${JSON.stringify(relevant).slice(0, 800)}`);
+            console.log(`[fetchAmazonShippingDays] asin=${asin} parsed fields: ${JSON.stringify(relevant).slice(0, 1500)}`);
+            if (Array.isArray(content?.buybox)) {
+                console.log(`[fetchAmazonShippingDays] asin=${asin} full buybox: ${JSON.stringify(content.buybox).slice(0, 2000)}`);
+            }
 
-            // Check all known paths where Oxylabs places delivery text
-            const texts: string[] = [
-                content?.delivery,
+            // Build flat list of text fragments to search for delivery dates.
+            // Oxylabs returns delivery as an array of {date: {by: "11 de junio"}, type: "Entrega GRATIS el"}
+            // objects rather than a plain string — extract date.by from each entry.
+            const texts: string[] = [];
+
+            if (Array.isArray(content?.delivery)) {
+                for (const entry of content.delivery) {
+                    const dateBy = entry?.date?.by ?? '';
+                    const type   = entry?.type   ?? '';
+                    if (dateBy) texts.push(`${type} ${dateBy}`.trim());
+                }
+            } else if (typeof content?.delivery === 'string') {
+                texts.push(content.delivery);
+            }
+
+            // buybox may also carry delivery_details with the same shape
+            if (Array.isArray(content?.buybox)) {
+                for (const box of content.buybox) {
+                    if (Array.isArray(box?.delivery_details)) {
+                        for (const entry of box.delivery_details) {
+                            const dateBy = entry?.date?.by ?? '';
+                            const type   = entry?.type   ?? '';
+                            if (dateBy) texts.push(`${type} ${dateBy}`.trim());
+                        }
+                    }
+                }
+            }
+
+            // String fallbacks for other Oxylabs response shapes
+            for (const v of [
                 content?.delivery?.primary,
                 content?.delivery?.secondary,
                 content?.delivery_info,
                 content?.price?.delivery,
-                content?.buybox?.delivery,
                 content?.shipping,
-            ].filter(Boolean).map(String);
+            ]) {
+                if (typeof v === 'string') texts.push(v);
+            }
 
+            // Collect dates from ALL entries before deciding — for cross-border dropshipping
+            // we need the MAXIMUM delivery time. Amazon may return a fast Prime option first
+            // (e.g. 2 days) followed by the actual cross-border seller (e.g. 21 days).
+            // Returning at the first match would silently pick the wrong entry.
+            const allCollectedDays: number[] = [];
             for (const text of texts) {
                 if (/(llega|entrega|recibe|env[ií]o)\s+hoy/i.test(text)) {
-                    console.log(`[fetchAmazonShippingDays] asin=${asin} hoy → 0`);
-                    return 0;
+                    allCollectedDays.push(0);
+                    continue;
                 }
                 if (/(llega|entrega|recibe|env[ií]o)\s+ma[ñn]ana/i.test(text)) {
-                    console.log(`[fetchAmazonShippingDays] asin=${asin} mañana → 1`);
-                    return 1;
+                    allCollectedDays.push(1);
+                    continue;
                 }
                 const dates = findAllSpanishDates(text);
                 if (dates.length > 0) {
-                    const max = Math.max(...dates);
-                    console.log(`[fetchAmazonShippingDays] asin=${asin} delivery="${text}" → ${max} días`);
-                    return max;
+                    console.log(`[fetchAmazonShippingDays] asin=${asin} delivery="${text}" dates=${JSON.stringify(dates)}`);
+                    allCollectedDays.push(...dates);
+                    continue;
                 }
                 const rangeM = text.match(/(\d+)\s+a\s+(\d+)\s+d[ií]as/i);
                 if (rangeM) {
-                    const max = Math.max(parseInt(rangeM[1]), parseInt(rangeM[2]));
-                    console.log(`[fetchAmazonShippingDays] asin=${asin} range "${text}" → ${max} días`);
-                    return max;
+                    allCollectedDays.push(Math.max(parseInt(rangeM[1]), parseInt(rangeM[2])));
+                    continue;
                 }
                 const singleM = text.match(/en (\d+)\s+d[ií]as/i);
                 if (singleM) {
-                    const d = parseInt(singleM[1]);
-                    console.log(`[fetchAmazonShippingDays] asin=${asin} single "${text}" → ${d} días`);
-                    return d;
+                    allCollectedDays.push(parseInt(singleM[1]));
+                }
+            }
+            if (allCollectedDays.length > 0) {
+                const max = Math.max(...allCollectedDays);
+                console.log(`[fetchAmazonShippingDays] asin=${asin} allDays=${JSON.stringify(allCollectedDays)} → ${max} días`);
+                return max;
+            }
+
+            // delivery:[] means Oxylabs' structured parser didn't extract a delivery date.
+            // This happens for cross-border sellers (Amazon Estados Unidos, Amazon Europa):
+            // their buy-box doesn't render directly on the product page for Oxylabs.
+            // Fix: scrape the AOD (All Offers Display) endpoint — the same one that loads
+            // when the user clicks "Ver opciones de compra". The top offer in AOD always
+            // has the delivery promise text ("Entrega GRATIS el martes, 16 de junio").
+            if (Array.isArray(content?.delivery) && content.delivery.length === 0) {
+                const sellerName: string = content?.buybox?.[0]?.seller_name ?? '';
+                console.log(`[fetchAmazonShippingDays] asin=${asin} delivery=[] seller="${sellerName}", trying fallbacks`);
+                if (postalCode) {
+                    // 1st: direct product page with ?zip= param
+                    const pageDays = await fetchDirectProductPageDays(asin, postalCode, auth);
+                    if (pageDays !== null) return pageDays;
+                    // 2nd: Amazon internal delivery AJAX endpoint (XHR that the page fires to populate the delivery widget)
+                    const ajaxDays = await fetchAmazonAjaxDeliveryDays(asin, postalCode, auth);
+                    if (ajaxDays !== null) return ajaxDays;
+                    // 3rd: AOD endpoint — works for products WITHOUT a buybox ("Ver opciones de compra")
+                    const aodDays = await fetchAodDeliveryDays(asin, postalCode, auth);
+                    if (aodDays !== null) return aodDays;
+                } else {
+                    console.log(`[fetchAmazonShippingDays] asin=${asin} no postal code — cannot fetch delivery pages`);
                 }
             }
 
@@ -537,13 +873,21 @@ serve(async (req) => {
                             shipping_days: scrapedDays,
                             shipping_days_updated_at: new Date().toISOString()
                         }).eq("id", productId);
+                    } else if ((product as any).shipping_days !== null) {
+                        // Scrape failed but we have a previous value (possibly manually set)
+                        // — preserve it instead of overwriting with the generic fallback.
+                        // Refresh timestamp so we don't re-scrape on every run.
+                        cachedShippingDays = (product as any).shipping_days;
+                        await supabase.from("products").update({
+                            shipping_days_updated_at: new Date().toISOString()
+                        }).eq("id", productId);
+                        console.log(`[amazon-ml-updater] ${sku} scrape failed, preserving cached value: ${cachedShippingDays}`);
                     } else {
-                        // Scraping failed (bot block or no pattern) — use configured default
+                        // No previous value and scrape failed — use configured default
                         const fallback = currency === 'MXN'
                             ? (settings.amazon_delivery_mx ?? null)
                             : (settings.amazon_delivery_usa ?? null);
                         cachedShippingDays = fallback;
-                        // Persist fallback so we don't re-scrape every run (TTL still applies)
                         if (fallback !== null) {
                             await supabase.from("products").update({
                                 shipping_days: fallback,
