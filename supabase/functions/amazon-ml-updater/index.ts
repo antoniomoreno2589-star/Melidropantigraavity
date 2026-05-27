@@ -70,6 +70,22 @@ function findAllSpanishDates(text: string): number[] {
     return results;
 }
 
+function buildAmazonLocationCookies(postalCode: string) {
+    // Amazon's LSEXSAV cookie stores the last selected delivery location set via
+    // the "Deliver to" glow widget. Injecting it lets Amazon render cross-border
+    // delivery dates without a full authenticated session.
+    const locationJson = JSON.stringify({
+        zipCode: postalCode,
+        countryCode: "MX",
+        addressType: "RESIDENTIAL",
+    });
+    return [
+        { key: "LSEXSAV", value: encodeURIComponent(locationJson), domain: ".amazon.com.mx" },
+        { key: "i18n-prefs",  value: "MXN",   domain: ".amazon.com.mx" },
+        { key: "lc-acbmx",    value: "es_MX", domain: ".amazon.com.mx" },
+    ];
+}
+
 function extractDeliverySection(html: string): string | null {
     // Extract only the delivery/dispatch block from Amazon's HTML to avoid
     // false positives from product carousels further down the page.
@@ -158,6 +174,8 @@ async function fetchDirectProductPageDays(asin: string, postalCode: string, auth
                 geo_location: postalCode,
                 render: "html",
                 parse: false,
+                cookies: buildAmazonLocationCookies(postalCode),
+                context: [{ key: "force_cookies", value: true }],
             }),
             signal: ctrl.signal,
         });
@@ -221,6 +239,8 @@ async function fetchSearchPageDeliveryDays(asin: string, postalCode: string, aut
                 geo_location: postalCode,
                 render: "html",
                 parse: false,
+                cookies: buildAmazonLocationCookies(postalCode),
+                context: [{ key: "force_cookies", value: true }],
             }),
             signal: ctrl.signal,
         });
@@ -320,6 +340,8 @@ async function fetchAmazonAjaxDeliveryDays(asin: string, postalCode: string, aut
                 geo_location: postalCode,
                 render: "html",
                 parse: false,
+                cookies: buildAmazonLocationCookies(postalCode),
+                context: [{ key: "force_cookies", value: true }],
             }),
             signal: ctrl.signal,
         });
@@ -380,6 +402,8 @@ async function fetchAodDeliveryDays(asin: string, postalCode: string, auth: stri
                 geo_location: postalCode,
                 render: "html",
                 parse: false,
+                cookies: buildAmazonLocationCookies(postalCode),
+                context: [{ key: "force_cookies", value: true }],
             }),
             signal: ctrl.signal,
         });
@@ -463,9 +487,11 @@ async function fetchAmazonShippingDays(asin: string, postalCode?: string | null)
                 query: asin,
                 parse: true,
                 render: "html",
-                // geo_location sets the delivery postal code so Amazon shows actual dates.
-                // Without it, the scrape returns delivery:[] for cross-border sellers.
-                ...(postalCode ? { geo_location: postalCode } : {}),
+                ...(postalCode ? {
+                    geo_location: postalCode,
+                    cookies: buildAmazonLocationCookies(postalCode),
+                    context: [{ key: "force_cookies", value: true }],
+                } : {}),
             }),
             signal: controller.signal,
         });
