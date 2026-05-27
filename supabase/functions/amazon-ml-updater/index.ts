@@ -236,20 +236,35 @@ async function fetchSearchPageDeliveryDays(asin: string, postalCode: string, aut
             return null;
         }
 
+        // Global scan: check if delivery keywords appear ANYWHERE in the full HTML
+        const globalDeliveryMatch = html.match(/(entrega|llega|recibe)[^<\n]{0,120}/gi);
+        if (globalDeliveryMatch) {
+            console.log(`[fetchSearchPageDelivery] asin=${asin} global delivery snippets: ${globalDeliveryMatch.slice(0,3).map(s=>s.trim()).join(' || ')}`);
+        } else {
+            console.log(`[fetchSearchPageDelivery] asin=${asin} NO delivery keywords anywhere in HTML (${html.length} chars)`);
+        }
+
         // Find ALL occurrences of data-asin="ASIN" — iterate them all and return the
         // first card that contains a delivery date. Sponsored results for the same ASIN
         // may appear first but typically lack delivery text; the organic card has it.
         const cardMarker = `data-asin="${asin}"`;
         let searchFrom = 0;
         let found = false;
+        let cardCount = 0;
 
         while (true) {
             const cardIdx = html.indexOf(cardMarker, searchFrom);
             if (cardIdx === -1) break;
             found = true;
+            cardCount++;
 
-            // Each search card spans ~3000-5000 chars from the data-asin marker
-            const cardSection = html.slice(cardIdx, cardIdx + 5000);
+            // Expand window to 8000 chars to capture more of the card
+            const cardSection = html.slice(cardIdx, cardIdx + 8000);
+
+            // Log first 600 chars of the first card for diagnostics
+            if (cardCount === 1) {
+                console.log(`[fetchSearchPageDelivery] asin=${asin} card#1 preview: ${cardSection.slice(0, 600).replace(/\s+/g, ' ')}`);
+            }
 
             if (/(llega|entrega|recibe)\s+ma[ñn]ana/i.test(cardSection)) {
                 console.log(`[fetchSearchPageDelivery] asin=${asin} → mañana (1 día)`);
@@ -272,9 +287,9 @@ async function fetchSearchPageDeliveryDays(asin: string, postalCode: string, aut
         }
 
         if (!found) {
-            console.log(`[fetchSearchPageDelivery] asin=${asin} product card (data-asin) not found in search HTML`);
+            console.log(`[fetchSearchPageDelivery] asin=${asin} product card (data-asin) not found in search HTML (${html.length} chars)`);
         } else {
-            console.log(`[fetchSearchPageDelivery] asin=${asin} cards found but no delivery dates`);
+            console.log(`[fetchSearchPageDelivery] asin=${asin} ${cardCount} cards found but no delivery dates`);
         }
         return null;
     } catch (e) {
