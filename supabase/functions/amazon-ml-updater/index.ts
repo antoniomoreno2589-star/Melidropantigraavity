@@ -199,6 +199,91 @@ async function fetchDirectProductPageDays(asin: string, postalCode: string, auth
     }
 }
 
+async function fetchSearchPageDeliveryDays(asin: string, postalCode: string, auth: string): Promise<number | null> {
+    // Search for the ASIN on Amazon's search page.
+    // Search result cards show delivery dates as static text based on geo_location (IP),
+    // unlike the product detail page which requires CP widget interaction.
+    // Each card has data-asin="XXXX" — sponsored products have different ASINs,
+    // so matching on the exact ASIN isolates the organic result for this product.
+    const searchUrl = `https://www.amazon.com.mx/s?k=${asin}`;
+    console.log(`[fetchSearchPageDelivery] asin=${asin} searching with geo_location=${postalCode}`);
+
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 25000);
+
+    try {
+        const res = await fetch("https://realtime.oxylabs.io/v1/queries", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "Authorization": auth },
+            body: JSON.stringify({
+                source: "amazon",
+                url: searchUrl,
+                geo_location: postalCode,
+                render: "html",
+                parse: false,
+            }),
+            signal: ctrl.signal,
+        });
+        clearTimeout(timer);
+
+        if (!res.ok) { console.log(`[fetchSearchPageDelivery] asin=${asin} HTTP ${res.status}`); return null; }
+
+        const data = await res.json();
+        const html = data?.results?.[0]?.content;
+
+        if (typeof html !== 'string' || html.length < 100) {
+            console.log(`[fetchSearchPageDelivery] asin=${asin} empty/short HTML`);
+            return null;
+        }
+
+        // Find ALL occurrences of data-asin="ASIN" — iterate them all and return the
+        // first card that contains a delivery date. Sponsored results for the same ASIN
+        // may appear first but typically lack delivery text; the organic card has it.
+        const cardMarker = `data-asin="${asin}"`;
+        let searchFrom = 0;
+        let found = false;
+
+        while (true) {
+            const cardIdx = html.indexOf(cardMarker, searchFrom);
+            if (cardIdx === -1) break;
+            found = true;
+
+            // Each search card spans ~3000-5000 chars from the data-asin marker
+            const cardSection = html.slice(cardIdx, cardIdx + 5000);
+
+            if (/(llega|entrega|recibe)\s+ma[ñn]ana/i.test(cardSection)) {
+                console.log(`[fetchSearchPageDelivery] asin=${asin} → mañana (1 día)`);
+                return 1;
+            }
+            if (/(llega|entrega|recibe)\s+hoy/i.test(cardSection)) {
+                console.log(`[fetchSearchPageDelivery] asin=${asin} → hoy (0 días)`);
+                return 0;
+            }
+
+            const dates = findAllSpanishDates(cardSection);
+            if (dates.length > 0) {
+                const max = Math.max(...dates);
+                const snippet = [...cardSection.matchAll(/(?:entrega|llega|recibe)[^<\n]{0,120}/gi)].slice(0, 2).map(m => m[0].trim()).join(' || ');
+                console.log(`[fetchSearchPageDelivery] asin=${asin} → ${max} días. snippet: ${snippet}`);
+                return max;
+            }
+
+            searchFrom = cardIdx + cardMarker.length;
+        }
+
+        if (!found) {
+            console.log(`[fetchSearchPageDelivery] asin=${asin} product card (data-asin) not found in search HTML`);
+        } else {
+            console.log(`[fetchSearchPageDelivery] asin=${asin} cards found but no delivery dates`);
+        }
+        return null;
+    } catch (e) {
+        clearTimeout(timer);
+        console.log(`[fetchSearchPageDelivery] asin=${asin} error: ${e}`);
+        return null;
+    }
+}
+
 async function fetchAmazonAjaxDeliveryDays(asin: string, postalCode: string, auth: string): Promise<number | null> {
     // Amazon's internal delivery message AJAX endpoint — the same XHR request that the
     // product page fires to populate the delivery widget. Returns an HTML fragment with
@@ -476,13 +561,16 @@ async function fetchAmazonShippingDays(asin: string, postalCode?: string | null)
                 const sellerName: string = content?.buybox?.[0]?.seller_name ?? '';
                 console.log(`[fetchAmazonShippingDays] asin=${asin} delivery=[] seller="${sellerName}", trying fallbacks`);
                 if (postalCode) {
-                    // 1st: direct product page with ?zip= param
+                    // 1st: search page — delivery shown as static text in product cards based on geo_location
+                    const searchDays = await fetchSearchPageDeliveryDays(asin, postalCode, auth);
+                    if (searchDays !== null) return searchDays;
+                    // 2nd: direct product page with ?zip= param
                     const pageDays = await fetchDirectProductPageDays(asin, postalCode, auth);
                     if (pageDays !== null) return pageDays;
-                    // 2nd: Amazon internal delivery AJAX endpoint (XHR that the page fires to populate the delivery widget)
+                    // 3rd: Amazon internal delivery AJAX endpoint
                     const ajaxDays = await fetchAmazonAjaxDeliveryDays(asin, postalCode, auth);
                     if (ajaxDays !== null) return ajaxDays;
-                    // 3rd: AOD endpoint — works for products WITHOUT a buybox ("Ver opciones de compra")
+                    // 4th: AOD endpoint — works for products WITHOUT a buybox ("Ver opciones de compra")
                     const aodDays = await fetchAodDeliveryDays(asin, postalCode, auth);
                     if (aodDays !== null) return aodDays;
                 } else {
