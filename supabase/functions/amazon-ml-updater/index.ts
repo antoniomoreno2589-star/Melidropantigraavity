@@ -1002,7 +1002,7 @@ serve(async (req) => {
 
             const { data: products } = await supabase
                 .from("products")
-                .select("id, meli_id, sku, price_mxn, stock_meli, currency, description_text, shipping_days, shipping_days_updated_at")
+                .select("id, meli_id, sku, price_mxn, stock_meli, status, currency, description_text, shipping_days, shipping_days_updated_at")
                 .eq("user_id", userId)
                 .eq("in_updater", true)
                 .not("meli_id", "is", null)
@@ -1106,9 +1106,13 @@ serve(async (req) => {
                     }
                 }
 
+                const currentStatus = (product as any).status ?? 'active';
                 if (amazonStock === 0 || isUnavailableOnAmazon) {
                     updatePayload.status = "paused";
                     console.log(`[amazon-ml-updater] meliId=${meliId} pausing — ${isUnavailableOnAmazon ? 'product unavailable on Amazon' : 'Amazon stock = 0'}`);
+                } else if (currentStatus === 'paused' && offers !== undefined && !isUnavailableOnAmazon) {
+                    updatePayload.status = "active";
+                    console.log(`[amazon-ml-updater] meliId=${meliId} reactivating — Amazon product available again`);
                 }
 
                 if (syncParams.price) {
