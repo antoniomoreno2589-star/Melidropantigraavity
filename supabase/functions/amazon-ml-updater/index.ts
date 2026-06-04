@@ -1060,10 +1060,13 @@ serve(async (req) => {
                 const sellerCount   = offers?.sellerCount ?? null;
                 const soldByAmazon  = offers?.soldByAmazon ?? null;
                 const amazonStock   = offers?.amazonStock ?? null;
-                // True when Amazon responded but the product has no listing (404, removed, no offers)
+                // True only when Amazon's API explicitly confirmed the product doesn't exist (404/400).
+                // Error responses (network failures, auth errors) return amazonStock:null — excluded here
+                // to avoid incorrectly pausing products when the SP-API is temporarily unavailable.
                 const isUnavailableOnAmazon = offers !== undefined
                     && offers.price === null
-                    && offers.sellerCount === 0;
+                    && offers.sellerCount === 0
+                    && offers.amazonStock === 0;
 
                 // Shipping days: scrape Amazon.com.mx for actual delivery time, cache 7 days
                 let cachedShippingDays = (product as any).shipping_days ?? null;
