@@ -217,6 +217,82 @@ async function fetchDirectProductPageDays(asin: string, postalCode: string, auth
     }
 }
 
+async function fetchScrapedoDeliveryDays(asin: string): Promise<number | null> {
+    // Scrape.do uses real residential IPs + headless Chromium rendering.
+    // Unlike Oxylabs (datacenter IPs), Amazon shows delivery dates to residential IPs
+    // even without a session — the same way it works in the user's incognito browser.
+    const token = Deno.env.get("SCRAPEDO_TOKEN");
+    if (!token) {
+        console.log(`[fetchScrapedo] asin=${asin} SCRAPEDO_TOKEN not set, skipping`);
+        return null;
+    }
+
+    const targetUrl = `https://www.amazon.com.mx/dp/${asin}`;
+    const apiUrl = `https://api.scrape.do/?token=${token}&url=${encodeURIComponent(targetUrl)}&render=true&super=true&geoCode=mx`;
+    console.log(`[fetchScrapedo] asin=${asin} fetching with residential IP + JS render`);
+
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 40000);
+
+    try {
+        const res = await fetch(apiUrl, { signal: ctrl.signal });
+        clearTimeout(timer);
+
+        if (!res.ok) {
+            console.log(`[fetchScrapedo] asin=${asin} HTTP ${res.status}`);
+            return null;
+        }
+
+        const html = await res.text();
+
+        if (!html || html.length < 100) {
+            console.log(`[fetchScrapedo] asin=${asin} empty/short HTML`);
+            return null;
+        }
+
+        // Log global delivery snippets to confirm residential IP is working
+        const globalMatch = html.match(/(entrega|llega|recibe)[^<\n]{0,150}/gi);
+        if (globalMatch) {
+            console.log(`[fetchScrapedo] asin=${asin} delivery snippets: ${globalMatch.slice(0, 3).map(s => s.trim()).join(' || ')}`);
+        } else {
+            console.log(`[fetchScrapedo] asin=${asin} NO delivery keywords in HTML (${html.length} chars)`);
+        }
+
+        const deliverySection = extractDeliverySection(html);
+        console.log(`[fetchScrapedo] asin=${asin} deliverySection=${deliverySection !== null}`);
+
+        const searchText = deliverySection ?? html;
+
+        if (/(llega|entrega|recibe)\s+ma[ñn]ana/i.test(searchText)) {
+            console.log(`[fetchScrapedo] asin=${asin} → mañana (1 día)`);
+            return 1;
+        }
+        if (/(llega|entrega|recibe)\s+hoy/i.test(searchText)) {
+            console.log(`[fetchScrapedo] asin=${asin} → hoy (0 días)`);
+            return 0;
+        }
+
+        const dates = findAllSpanishDates(searchText);
+        if (dates.length > 0) {
+            const max = Math.max(...dates);
+            const snippet = [...searchText.matchAll(/(?:entrega|llega|recibe)[^<\n]{0,120}/gi)].slice(0, 2).map(m => m[0].trim()).join(' || ');
+            console.log(`[fetchScrapedo] asin=${asin} → ${max} días. snippet: ${snippet}`);
+            return max;
+        }
+
+        if (deliverySection) {
+            console.log(`[fetchScrapedo] asin=${asin} section found but no dates: ${deliverySection.slice(0, 400)}`);
+        } else {
+            console.log(`[fetchScrapedo] asin=${asin} no delivery dates found`);
+        }
+        return null;
+    } catch (e) {
+        clearTimeout(timer);
+        console.log(`[fetchScrapedo] asin=${asin} error: ${e}`);
+        return null;
+    }
+}
+
 async function fetchSearchPageDeliveryDays(asin: string, postalCode: string, auth: string): Promise<number | null> {
     // Search for the ASIN on Amazon's search page.
     // Search result cards show delivery dates as static text based on geo_location (IP),
@@ -602,16 +678,16 @@ async function fetchAmazonShippingDays(asin: string, postalCode?: string | null)
                 const sellerName: string = content?.buybox?.[0]?.seller_name ?? '';
                 console.log(`[fetchAmazonShippingDays] asin=${asin} delivery=[] seller="${sellerName}", trying fallbacks`);
                 if (postalCode) {
-                    // 1st: search page — delivery shown as static text in product cards based on geo_location
+                    // 1st: Scrape.do — residential IP + JS render, sees dates like a real browser
+                    const scrapedoDays = await fetchScrapedoDeliveryDays(asin);
+                    if (scrapedoDays !== null) return scrapedoDays;
+                    // 2nd–5th: Oxylabs fallbacks (kept as backup)
                     const searchDays = await fetchSearchPageDeliveryDays(asin, postalCode, auth);
                     if (searchDays !== null) return searchDays;
-                    // 2nd: direct product page with ?zip= param
                     const pageDays = await fetchDirectProductPageDays(asin, postalCode, auth);
                     if (pageDays !== null) return pageDays;
-                    // 3rd: Amazon internal delivery AJAX endpoint
                     const ajaxDays = await fetchAmazonAjaxDeliveryDays(asin, postalCode, auth);
                     if (ajaxDays !== null) return ajaxDays;
-                    // 4th: AOD endpoint — works for products WITHOUT a buybox ("Ver opciones de compra")
                     const aodDays = await fetchAodDeliveryDays(asin, postalCode, auth);
                     if (aodDays !== null) return aodDays;
                 } else {
