@@ -1111,8 +1111,18 @@ serve(async (req) => {
                     updatePayload.status = "paused";
                     console.log(`[amazon-ml-updater] meliId=${meliId} pausing — ${isUnavailableOnAmazon ? 'product unavailable on Amazon' : 'Amazon stock = 0'}`);
                 } else if (currentStatus === 'paused' && offers !== undefined && !isUnavailableOnAmazon) {
-                    updatePayload.status = "active";
+                    // ML rejects status:"active" combined with price/stock in the same payload.
+                    // Send reactivation as a standalone PUT, then let the main update handle price/stock.
                     console.log(`[amazon-ml-updater] meliId=${meliId} reactivating — Amazon product available again`);
+                    const reactivateResult = await updateMeliItem(meliId, { status: "active" }, mlToken);
+                    if (reactivateResult.ok) {
+                        await supabase.from("products").update({ status: "active" }).eq("meli_id", meliId);
+                        console.log(`[amazon-ml-updater] meliId=${meliId} reactivation succeeded`);
+                    } else {
+                        // ML may block reactivation for quality/health reasons — do not hard-fail
+                        console.log(`[amazon-ml-updater] meliId=${meliId} ML blocked reactivation (continuing): ${reactivateResult.error}`);
+                    }
+                    // Do NOT put status in updatePayload — reactivation already handled above
                 }
 
                 if (syncParams.price) {
