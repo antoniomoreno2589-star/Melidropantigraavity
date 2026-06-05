@@ -535,7 +535,7 @@ async function fetchAodDeliveryDays(asin: string, postalCode: string, auth: stri
     }
 }
 
-async function fetchAmazonShippingDays(asin: string, postalCode?: string | null): Promise<ShippingResult> {
+async function fetchAmazonShippingDays(asin: string, postalCode?: string | null, soldByAmazon?: boolean | null): Promise<ShippingResult> {
     try {
         const oxylabsUser = Deno.env.get("OXYLABS_USERNAME");
         const oxylabsPass = Deno.env.get("OXYLABS_PASSWORD");
@@ -670,25 +670,24 @@ async function fetchAmazonShippingDays(asin: string, postalCode?: string | null)
             const hasBuyBox = Array.isArray(content?.buybox) && content.buybox.length > 0;
 
             if (allCollectedDays.length > 0) {
-                if (hasBuyBox) {
-                    // Buybox present: structured parse dates are reliable
+                // Only trust Oxylabs structured dates when Amazon itself is confirmed seller
+                // via SP-API (soldByAmazon=true). For 3rd-party sellers, Oxylabs datacenter
+                // IPs see a different buybox/dates than real Mexican residential IPs.
+                if (soldByAmazon === true) {
                     const max = Math.max(...allCollectedDays);
-                    console.log(`[fetchAmazonShippingDays] asin=${asin} allDays=${JSON.stringify(allCollectedDays)} → ${max} días`);
+                    console.log(`[fetchAmazonShippingDays] asin=${asin} soldByAmazon=true, allDays=${JSON.stringify(allCollectedDays)} → ${max} días`);
                     return { days: max, available: true };
                 }
-                // No buybox: structured parse picks up Prime banners or wrong sections.
-                // Go directly to AOD which shows the real seller's delivery promise.
-                console.log(`[fetchAmazonShippingDays] asin=${asin} no buybox — ignoring structured dates ${JSON.stringify(allCollectedDays)}, trying AOD`);
+                // 3rd-party seller: Oxylabs dates unreliable — try Scrape.do (residential IP)
+                // then AOD (shows real seller offers from "Ver opciones de compra").
+                console.log(`[fetchAmazonShippingDays] asin=${asin} 3rd-party — ignoring structured dates ${JSON.stringify(allCollectedDays)}, trying Scrape.do → AOD`);
                 if (postalCode) {
+                    const scrapedoDays = await fetchScrapedoDeliveryDays(asin);
+                    if (scrapedoDays !== null) return { days: scrapedoDays, available: true };
                     const aodDays = await fetchAodDeliveryDays(asin, postalCode, auth);
                     if (aodDays !== null) return { days: aodDays, available: true };
                 }
-                // AOD failed and no buybox/price → product unavailable
-                const hasPrice = content?.price !== null && content?.price !== undefined;
-                if (!hasPrice) {
-                    console.log(`[fetchAmazonShippingDays] asin=${asin} unavailable — no buybox, no price, AOD empty`);
-                    return { days: null, available: false };
-                }
+                // Both failed: product exists (seller confirmed by SP-API) but dates unknown
                 return { days: null, available: null };
             }
 
@@ -1102,7 +1101,7 @@ serve(async (req) => {
 
                 let scrapedAvailable: boolean | null = null;
                 if (cachedShippingDays === null || isStale) {
-                    const scrapeResult = await fetchAmazonShippingDays(sku, settings.postal_code ?? null);
+                    const scrapeResult = await fetchAmazonShippingDays(sku, settings.postal_code ?? null, soldByAmazon);
                     scrapedAvailable = scrapeResult.available;
                     const scrapedDays = scrapeResult.days;
                     if (scrapedDays !== null) {
