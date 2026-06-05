@@ -869,12 +869,50 @@ serve(async (req) => {
 
     let forceRun = false;
     let targetUserId: string | null = null;
+    let debugHtmlAsin: string | null = null;
+    let debugHtmlZip: string | null = null;
     try {
         const body = await req.json().catch(() => ({}));
         forceRun = body.force === true;
         targetUserId = body.userId ?? null;
+        debugHtmlAsin = body.debugHtml ?? null;
+        debugHtmlZip = body.zipcode ?? null;
     } catch {
         // Ignore parse errors
+    }
+
+    // Debug mode: fetch raw HTML from Scrape.do for a given ASIN and return it directly
+    if (debugHtmlAsin) {
+        const token = Deno.env.get("SCRAPEDO_TOKEN");
+        if (!token) return new Response(JSON.stringify({ error: "SCRAPEDO_TOKEN not set" }), { headers: corsHeaders });
+        const targetUrl = `https://www.amazon.com.mx/dp/${debugHtmlAsin}`;
+        const params = new URLSearchParams({ token, url: targetUrl, geocode: 'mx', super: 'true' });
+        if (debugHtmlZip) params.set('zipcode', debugHtmlZip);
+        const apiUrl = `https://api.scrape.do/plugin/amazon/?${params.toString()}`;
+        try {
+            const ctrl = new AbortController();
+            const timer = setTimeout(() => ctrl.abort(), 35000);
+            const res = await fetch(apiUrl, { signal: ctrl.signal });
+            clearTimeout(timer);
+            const html = res.ok ? await res.text() : `HTTP ${res.status}`;
+            const deliverySection = extractDeliverySection(html);
+            const allDeliverySnippets = [...html.matchAll(/(entrega|llega|recibe)[^<\n]{0,150}/gi)].map(m => m[0].trim());
+            const dates = deliverySection ? findAllSpanishDates(deliverySection) : findAllSpanishDates(html);
+            return new Response(JSON.stringify({
+                asin: debugHtmlAsin,
+                zip: debugHtmlZip,
+                htmlLen: html.length,
+                deliverySectionFound: deliverySection !== null,
+                deliverySection: deliverySection?.slice(0, 2000),
+                allDeliverySnippets,
+                datesFound: dates,
+                maxDays: dates.length > 0 ? Math.max(...dates) : null,
+                hasBuyBox: !html.includes('id="see-all-buying-choices"') && (html.includes('id="add-to-cart-button"') || html.includes('name="submit.add-to-cart"')),
+                rawHtmlStart: html.slice(0, 3000),
+            }, null, 2), { headers: corsHeaders });
+        } catch (e: any) {
+            return new Response(JSON.stringify({ error: e.message }), { headers: corsHeaders });
+        }
     }
 
     try {
