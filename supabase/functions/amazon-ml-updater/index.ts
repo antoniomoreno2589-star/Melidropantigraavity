@@ -40,6 +40,11 @@ interface AmazonOffers {
     shippingDays: number | null;
 }
 
+interface ShippingResult {
+    days: number | null;
+    available: boolean | null; // false = Oxylabs confirmed unavailable; null = unknown
+}
+
 function findAllSpanishDates(text: string): number[] {
     const monthMap: Record<string, number> = {
         // Full names
@@ -530,14 +535,14 @@ async function fetchAodDeliveryDays(asin: string, postalCode: string, auth: stri
     }
 }
 
-async function fetchAmazonShippingDays(asin: string, postalCode?: string | null): Promise<number | null> {
+async function fetchAmazonShippingDays(asin: string, postalCode?: string | null): Promise<ShippingResult> {
     try {
         const oxylabsUser = Deno.env.get("OXYLABS_USERNAME");
         const oxylabsPass = Deno.env.get("OXYLABS_PASSWORD");
 
         if (!oxylabsUser || !oxylabsPass) {
             console.log(`[fetchAmazonShippingDays] asin=${asin} OXYLABS_USERNAME/PASSWORD not set`);
-            return null;
+            return { days: null, available: null };
         }
 
         const auth = `Basic ${btoa(`${oxylabsUser}:${oxylabsPass}`)}`;
@@ -575,7 +580,7 @@ async function fetchAmazonShippingDays(asin: string, postalCode?: string | null)
 
         if (!res.ok) {
             console.log(`[fetchAmazonShippingDays] asin=${asin} amazon_product HTTP ${res.status}`);
-            return null;
+            return { days: null, available: null };
         }
 
         const data = await res.json();
@@ -665,7 +670,7 @@ async function fetchAmazonShippingDays(asin: string, postalCode?: string | null)
             if (allCollectedDays.length > 0) {
                 const max = Math.max(...allCollectedDays);
                 console.log(`[fetchAmazonShippingDays] asin=${asin} allDays=${JSON.stringify(allCollectedDays)} → ${max} días`);
-                return max;
+                return { days: max, available: true };
             }
 
             // delivery:[] means Oxylabs' structured parser didn't extract a delivery date.
@@ -680,23 +685,31 @@ async function fetchAmazonShippingDays(asin: string, postalCode?: string | null)
                 if (postalCode) {
                     // 1st: Scrape.do — residential IP + JS render, sees dates like a real browser
                     const scrapedoDays = await fetchScrapedoDeliveryDays(asin);
-                    if (scrapedoDays !== null) return scrapedoDays;
+                    if (scrapedoDays !== null) return { days: scrapedoDays, available: true };
                     // 2nd–5th: Oxylabs fallbacks (kept as backup)
                     const searchDays = await fetchSearchPageDeliveryDays(asin, postalCode, auth);
-                    if (searchDays !== null) return searchDays;
+                    if (searchDays !== null) return { days: searchDays, available: true };
                     const pageDays = await fetchDirectProductPageDays(asin, postalCode, auth);
-                    if (pageDays !== null) return pageDays;
+                    if (pageDays !== null) return { days: pageDays, available: true };
                     const ajaxDays = await fetchAmazonAjaxDeliveryDays(asin, postalCode, auth);
-                    if (ajaxDays !== null) return ajaxDays;
+                    if (ajaxDays !== null) return { days: ajaxDays, available: true };
                     const aodDays = await fetchAodDeliveryDays(asin, postalCode, auth);
-                    if (aodDays !== null) return aodDays;
+                    if (aodDays !== null) return { days: aodDays, available: true };
+                    // All fallbacks exhausted — if Oxylabs also shows no buybox/price, the
+                    // product is genuinely not available on Amazon.com.mx (suppressed ASIN).
+                    const hasBuyBox = Array.isArray(content?.buybox) && content.buybox.length > 0;
+                    const hasPrice = content?.price !== null && content?.price !== undefined;
+                    if (!hasBuyBox && !hasPrice) {
+                        console.log(`[fetchAmazonShippingDays] asin=${asin} unavailable — no buybox, no price, all fallbacks failed`);
+                        return { days: null, available: false };
+                    }
                 } else {
                     console.log(`[fetchAmazonShippingDays] asin=${asin} no postal code — cannot fetch delivery pages`);
                 }
             }
 
             console.log(`[fetchAmazonShippingDays] asin=${asin} parsed content: no delivery date in known fields`);
-            return null;
+            return { days: null, available: null };
 
         } else if (typeof content === 'string' && content.length > 100) {
             // Structured parsing was off — got raw HTML.
@@ -711,18 +724,18 @@ async function fetchAmazonShippingDays(asin: string, postalCode?: string | null)
             if (dates.length > 0) {
                 const max = Math.max(...dates);
                 console.log(`[fetchAmazonShippingDays] asin=${asin} HTML dates=${JSON.stringify(dates)} → ${max} días`);
-                return max;
+                return { days: max, available: true };
             }
             console.log(`[fetchAmazonShippingDays] asin=${asin} HTML: no specific dates found`);
-            return null;
+            return { days: null, available: null };
         }
 
         console.log(`[fetchAmazonShippingDays] asin=${asin} empty/null content from Oxylabs`);
-        return null;
+        return { days: null, available: null };
 
     } catch (e) {
         console.error(`[fetchAmazonShippingDays] asin=${asin}:`, e);
-        return null;
+        return { days: null, available: null };
     }
 }
 
@@ -1073,8 +1086,11 @@ serve(async (req) => {
                 const updatedAt = (product as any).shipping_days_updated_at;
                 const isStale = !updatedAt || (Date.now() - new Date(updatedAt).getTime()) > 7 * 24 * 60 * 60 * 1000;
 
+                let scrapedAvailable: boolean | null = null;
                 if (cachedShippingDays === null || isStale) {
-                    const scrapedDays = await fetchAmazonShippingDays(sku, settings.postal_code ?? null);
+                    const scrapeResult = await fetchAmazonShippingDays(sku, settings.postal_code ?? null);
+                    scrapedAvailable = scrapeResult.available;
+                    const scrapedDays = scrapeResult.days;
                     if (scrapedDays !== null) {
                         cachedShippingDays = scrapedDays;
                         await supabase.from("products").update({
@@ -1107,10 +1123,15 @@ serve(async (req) => {
                 }
 
                 const currentStatus = (product as any).status ?? 'active';
-                if (amazonStock === 0 || isUnavailableOnAmazon) {
+                const scrapedUnavailable = scrapedAvailable === false;
+                if (amazonStock === 0 || isUnavailableOnAmazon || scrapedUnavailable) {
                     updatePayload.status = "paused";
-                    console.log(`[amazon-ml-updater] meliId=${meliId} pausing — ${isUnavailableOnAmazon ? 'product unavailable on Amazon' : 'Amazon stock = 0'}`);
-                } else if (currentStatus === 'paused' && offers !== undefined && !isUnavailableOnAmazon) {
+                    const pauseReason = scrapedUnavailable
+                        ? 'Oxylabs confirms product unavailable on Amazon.com.mx'
+                        : isUnavailableOnAmazon ? 'product unavailable on Amazon (SP-API 404/400)'
+                        : 'Amazon stock = 0';
+                    console.log(`[amazon-ml-updater] meliId=${meliId} pausing — ${pauseReason}`);
+                } else if (currentStatus === 'paused' && offers !== undefined && !isUnavailableOnAmazon && !scrapedUnavailable) {
                     // ML rejects status:"active" combined with price/stock in the same payload.
                     // Send reactivation as a standalone PUT, then let the main update handle price/stock.
                     console.log(`[amazon-ml-updater] meliId=${meliId} reactivating — Amazon product available again`);
@@ -1143,7 +1164,7 @@ serve(async (req) => {
                     }
                 }
 
-                if (syncParams.stock && amazonStock !== 0 && !isUnavailableOnAmazon) {
+                if (syncParams.stock && amazonStock !== 0 && !isUnavailableOnAmazon && !scrapedUnavailable) {
                     const stockToSync = amazonStock !== null ? Math.min(amazonStock, defaultStock) : defaultStock;
                     updatePayload.available_quantity = stockToSync;
                 }
