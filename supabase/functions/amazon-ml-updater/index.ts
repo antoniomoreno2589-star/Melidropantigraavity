@@ -319,7 +319,7 @@ async function fetchScrapedoProductData(asin: string, postalCode?: string | null
     console.log(`[fetchScrapedoProduct] asin=${asin} CP=${postalCode ?? 'none'} fetching product page`);
 
     const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 45000);
+    const timer = setTimeout(() => ctrl.abort(), 30000);
 
     try {
         const res = await fetch(apiUrl, { signal: ctrl.signal });
@@ -336,24 +336,34 @@ async function fetchScrapedoProductData(asin: string, postalCode?: string | null
             return { hasBuyBox: null, days: null, available: null };
         }
 
-        // Buybox detection:
-        // Has buybox  → "Add to Cart" button is in the main buy-box area
-        // No buybox   → "Ver opciones de compra" / see-all-buying-choices is shown instead
-        const hasBuyBoxButton  = html.includes('id="add-to-cart-button"') || html.includes('name="submit.add-to-cart"');
-        const hasNoBuyBoxButton = html.includes('id="see-all-buying-choices"') ||
-                                   /ver\s+opciones\s+de\s+compra/i.test(html);
-
-        let hasBuyBox: boolean | null = null;
-        if (hasBuyBoxButton && !hasNoBuyBoxButton) {
-            hasBuyBox = true;
-        } else if (hasNoBuyBoxButton && !hasBuyBoxButton) {
-            hasBuyBox = false;
-        } else if (hasBuyBoxButton && hasNoBuyBoxButton) {
-            // Both signals present — add-to-cart wins (product has an active seller in buybox)
-            hasBuyBox = true;
+        // CAPTCHA / robot-check page detection — bail out early, don't save wrong data
+        if (/Type the characters you see|robot check|captcha|automated access/i.test(html)) {
+            console.log(`[fetchScrapedoProduct] asin=${asin} CAPTCHA/robot-check page detected, skipping`);
+            return { hasBuyBox: null, days: null, available: null };
         }
 
-        console.log(`[fetchScrapedoProduct] asin=${asin} hasBuyBoxBtn=${hasBuyBoxButton} noBuyBoxBtn=${hasNoBuyBoxButton} → hasBuyBox=${hasBuyBox}`);
+        // Buybox detection:
+        // No buybox   → "Ver opciones de compra" / see-all-buying-choices CTA is shown
+        // Has buybox  → "Añadir al carrito" / add-to-cart button is the main CTA
+        //
+        // IMPORTANT: Amazon includes id="add-to-cart-button" in the DOM even when
+        // no seller has the buybox (hidden/disabled state). So the NO-BUYBOX signal
+        // always takes priority over the add-to-cart signal.
+        const hasNoBuyBoxButton = html.includes('id="see-all-buying-choices"') ||
+                                   html.includes('id="see-all-buying-choices-button"') ||
+                                   /ver\s+(todas\s+las\s+)?opciones\s+de\s+compra/i.test(html);
+        const hasBuyBoxButton  = html.includes('id="add-to-cart-button"') || html.includes('name="submit.add-to-cart"');
+
+        let hasBuyBox: boolean | null = null;
+        if (hasNoBuyBoxButton) {
+            // No-buybox signal is authoritative — add-to-cart may be present but hidden
+            hasBuyBox = false;
+        } else if (hasBuyBoxButton) {
+            hasBuyBox = true;
+        }
+        // else: neither signal → null (page may not have loaded properly)
+
+        console.log(`[fetchScrapedoProduct] asin=${asin} noBuyBoxBtn=${hasNoBuyBoxButton} hasBuyBoxBtn=${hasBuyBoxButton} → hasBuyBox=${hasBuyBox}`);
 
         if (hasBuyBox === false) {
             return { hasBuyBox: false, days: null, available: true };
@@ -634,20 +644,40 @@ async function fetchAmazonShippingDays(asin: string, postalCode?: string | null,
     try {
         const oxylabsUser = Deno.env.get("OXYLABS_USERNAME");
         const oxylabsPass = Deno.env.get("OXYLABS_PASSWORD");
+        const auth = (oxylabsUser && oxylabsPass) ? `Basic ${btoa(`${oxylabsUser}:${oxylabsPass}`)}` : null;
 
-        if (!oxylabsUser || !oxylabsPass) {
+        // For 3rd-party sellers (soldByAmazon !== true): skip Oxylabs entirely.
+        // Oxylabs uses datacenter IPs that see phantom buyboxes/wrong dates for 3rd-party.
+        // Scrape.do (residential IP + JS render) is the authoritative source for these.
+        if (soldByAmazon !== true) {
+            console.log(`[fetchAmazonShippingDays] asin=${asin} soldByAmazon=${soldByAmazon} → Scrape.do direct (skip Oxylabs)`);
+            const scrapedoResult = await fetchScrapedoProductData(asin, postalCode);
+            if (scrapedoResult.hasBuyBox === false) {
+                console.log(`[fetchAmazonShippingDays] asin=${asin} Scrape.do: no buybox → listing will be paused`);
+                return { days: null, available: true, hasBuyBox: false };
+            }
+            if (scrapedoResult.days !== null) {
+                console.log(`[fetchAmazonShippingDays] asin=${asin} Scrape.do: hasBuyBox=${scrapedoResult.hasBuyBox} ${scrapedoResult.days} días`);
+                return { days: scrapedoResult.days, available: true, hasBuyBox: scrapedoResult.hasBuyBox ?? null };
+            }
+            // Scrape.do ambiguous or no dates found: try AOD as single fallback
+            if (postalCode && auth) {
+                const aodDays = await fetchAodDeliveryDays(asin, postalCode, auth);
+                if (aodDays !== null) {
+                    console.log(`[fetchAmazonShippingDays] asin=${asin} AOD fallback → ${aodDays} días`);
+                    return { days: aodDays, available: true };
+                }
+            }
+            return { days: null, available: null };
+        }
+
+        // soldByAmazon=true: Amazon's own listing — Oxylabs datacenter IPs are reliable.
+        if (!auth) {
             console.log(`[fetchAmazonShippingDays] asin=${asin} OXYLABS_USERNAME/PASSWORD not set`);
             return { days: null, available: null };
         }
 
-        const auth = `Basic ${btoa(`${oxylabsUser}:${oxylabsPass}`)}`;
-
-        // Use amazon_product source with parse:true.
-        // Oxylabs' Amazon-specific scraper renders JavaScript and extracts structured
-        // data from the product page, including the actual delivery field from the buy-box.
-        // This avoids the false positives produced by "universal" source, which picks up
-        // Amazon's static Prime promotional banners ("Entrega GRATIS el domingo") that
-        // appear on every page regardless of actual seller delivery time.
+        // Use amazon_product source with parse:true for Amazon's own listings.
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 35000);
 
@@ -764,66 +794,11 @@ async function fetchAmazonShippingDays(asin: string, postalCode?: string | null,
             }
             const hasBuyBox = Array.isArray(content?.buybox) && content.buybox.length > 0;
 
+            // soldByAmazon=true: trust Oxylabs structured dates directly
             if (allCollectedDays.length > 0) {
-                // Only trust Oxylabs structured dates when Amazon itself is confirmed seller
-                // via SP-API (soldByAmazon=true). For 3rd-party sellers, Oxylabs datacenter
-                // IPs see a different buybox/dates than real Mexican residential IPs.
-                if (soldByAmazon === true) {
-                    const max = Math.max(...allCollectedDays);
-                    console.log(`[fetchAmazonShippingDays] asin=${asin} soldByAmazon=true, allDays=${JSON.stringify(allCollectedDays)} → ${max} días`);
-                    return { days: max, available: true };
-                }
-                // 3rd-party seller: Oxylabs datacenter IPs see different content than real users.
-                // Use Scrape.do (residential IP) for authoritative buybox detection + delivery dates.
-                console.log(`[fetchAmazonShippingDays] asin=${asin} 3rd-party — Oxylabs dates unreliable (${JSON.stringify(allCollectedDays)}), using Scrape.do`);
-                const scrapedoResult = await fetchScrapedoProductData(asin, postalCode);
-                if (scrapedoResult.hasBuyBox === false) {
-                    console.log(`[fetchAmazonShippingDays] asin=${asin} Scrape.do: no buybox → listing will be paused`);
-                    return { days: null, available: true, hasBuyBox: false };
-                }
-                if (scrapedoResult.hasBuyBox === true && scrapedoResult.days !== null) {
-                    console.log(`[fetchAmazonShippingDays] asin=${asin} Scrape.do: buybox + ${scrapedoResult.days} días`);
-                    return { days: scrapedoResult.days, available: true, hasBuyBox: true };
-                }
-                // hasBuyBox=true but no dates, or hasBuyBox=null: try AOD as fallback
-                if (postalCode) {
-                    const aodDays = await fetchAodDeliveryDays(asin, postalCode, auth);
-                    if (aodDays !== null) {
-                        console.log(`[fetchAmazonShippingDays] asin=${asin} AOD fallback → ${aodDays} días`);
-                        return { days: aodDays, available: true };
-                    }
-                }
-                return { days: null, available: null };
-            }
-
-            // delivery:[] with buybox: cross-border seller (Amazon Europa/USA).
-            // Their buy-box doesn't render for Oxylabs — use full fallback chain.
-            if (Array.isArray(content?.delivery) && content.delivery.length === 0) {
-                const sellerName: string = content?.buybox?.[0]?.seller_name ?? '';
-                console.log(`[fetchAmazonShippingDays] asin=${asin} delivery=[] seller="${sellerName}", trying fallbacks`);
-                if (postalCode) {
-                    // 1st: Scrape.do — residential IP + JS render, sees dates like a real browser
-                    const scrapedoDays = await fetchScrapedoDeliveryDays(asin);
-                    if (scrapedoDays !== null) return { days: scrapedoDays, available: true };
-                    // 2nd–5th: Oxylabs fallbacks (kept as backup)
-                    const searchDays = await fetchSearchPageDeliveryDays(asin, postalCode, auth);
-                    if (searchDays !== null) return { days: searchDays, available: true };
-                    const pageDays = await fetchDirectProductPageDays(asin, postalCode, auth);
-                    if (pageDays !== null) return { days: pageDays, available: true };
-                    const ajaxDays = await fetchAmazonAjaxDeliveryDays(asin, postalCode, auth);
-                    if (ajaxDays !== null) return { days: ajaxDays, available: true };
-                    const aodDays = await fetchAodDeliveryDays(asin, postalCode, auth);
-                    if (aodDays !== null) return { days: aodDays, available: true };
-                    // All fallbacks exhausted — if Oxylabs also shows no buybox/price, the
-                    // product is genuinely not available on Amazon.com.mx (suppressed ASIN).
-                    const hasPrice = content?.price !== null && content?.price !== undefined;
-                    if (!hasBuyBox && !hasPrice) {
-                        console.log(`[fetchAmazonShippingDays] asin=${asin} unavailable — no buybox, no price, all fallbacks failed`);
-                        return { days: null, available: false };
-                    }
-                } else {
-                    console.log(`[fetchAmazonShippingDays] asin=${asin} no postal code — cannot fetch delivery pages`);
-                }
+                const max = Math.max(...allCollectedDays);
+                console.log(`[fetchAmazonShippingDays] asin=${asin} soldByAmazon=true allDays=${JSON.stringify(allCollectedDays)} → ${max} días`);
+                return { days: max, available: true };
             }
 
             console.log(`[fetchAmazonShippingDays] asin=${asin} parsed content: no delivery date in known fields`);
@@ -1176,6 +1151,10 @@ serve(async (req) => {
 
             let updated = 0, errors = 0, firstError: string | undefined;
             const debugItems: any[] = [];
+            // Limit scraping calls per invocation to stay within the 150 s wall-clock budget.
+            // Each Scrape.do call takes up to 30 s; 4 products × 30 s = 120 s leaves enough headroom.
+            let scrapesThisRun = 0;
+            const MAX_SCRAPES_PER_RUN = 4;
 
             console.log(`[amazon-ml-updater] Processing batch: ${products.length} products, syncParams=${JSON.stringify(syncParams)}`);
 
@@ -1209,45 +1188,53 @@ serve(async (req) => {
                 let noBuyBox = false;
                 let pauseReasonToWrite: string | null | undefined = undefined; // undefined = don't update DB
                 if (cachedShippingDays === null || isStale) {
-                    const scrapeResult = await fetchAmazonShippingDays(sku, settings.postal_code ?? null, soldByAmazon);
-                    scrapedAvailable = scrapeResult.available;
-                    noBuyBox = scrapeResult.hasBuyBox === false;
-                    pauseReasonToWrite = noBuyBox ? 'sin_buybox' : null;
-                    const scrapedDays = scrapeResult.days;
-                    if (noBuyBox) {
-                        // No buybox: update timestamp only so we don't re-scrape every run
-                        await supabase.from("products").update({
-                            shipping_days_updated_at: new Date().toISOString()
-                        }).eq("id", productId);
-                        console.log(`[amazon-ml-updater] ${sku} no buybox — pausing, skipping shipping days`);
-                    } else if (scrapedDays !== null) {
-                        cachedShippingDays = scrapedDays;
-                        await supabase.from("products").update({
-                            shipping_days: scrapedDays,
-                            shipping_days_updated_at: new Date().toISOString()
-                        }).eq("id", productId);
-                    } else if ((product as any).shipping_days !== null) {
-                        // Scrape failed but we have a previous value (possibly manually set)
-                        // — preserve it instead of overwriting with the generic fallback.
-                        // Refresh timestamp so we don't re-scrape on every run.
-                        cachedShippingDays = (product as any).shipping_days;
-                        await supabase.from("products").update({
-                            shipping_days_updated_at: new Date().toISOString()
-                        }).eq("id", productId);
-                        console.log(`[amazon-ml-updater] ${sku} scrape failed, preserving cached value: ${cachedShippingDays}`);
+                    if (scrapesThisRun >= MAX_SCRAPES_PER_RUN) {
+                        // Budget exhausted — skip scraping for this product this run.
+                        // Its timestamp stays stale so it will be picked up next invocation.
+                        console.log(`[amazon-ml-updater] ${sku} skip scraping (MAX_SCRAPES_PER_RUN=${MAX_SCRAPES_PER_RUN} reached)`);
+                        noBuyBox = (existingPauseReason === 'sin_buybox');
                     } else {
-                        // No previous value and scrape failed — use configured default
-                        const fallback = currency === 'MXN'
-                            ? (settings.amazon_delivery_mx ?? null)
-                            : (settings.amazon_delivery_usa ?? null);
-                        cachedShippingDays = fallback;
-                        if (fallback !== null) {
+                        scrapesThisRun++;
+                        const scrapeResult = await fetchAmazonShippingDays(sku, settings.postal_code ?? null, soldByAmazon);
+                        scrapedAvailable = scrapeResult.available;
+                        noBuyBox = scrapeResult.hasBuyBox === false;
+                        pauseReasonToWrite = noBuyBox ? 'sin_buybox' : null;
+                        const scrapedDays = scrapeResult.days;
+                        if (noBuyBox) {
+                            // No buybox: update timestamp only so we don't re-scrape every run
                             await supabase.from("products").update({
-                                shipping_days: fallback,
                                 shipping_days_updated_at: new Date().toISOString()
                             }).eq("id", productId);
+                            console.log(`[amazon-ml-updater] ${sku} no buybox — pausing, skipping shipping days`);
+                        } else if (scrapedDays !== null) {
+                            cachedShippingDays = scrapedDays;
+                            await supabase.from("products").update({
+                                shipping_days: scrapedDays,
+                                shipping_days_updated_at: new Date().toISOString()
+                            }).eq("id", productId);
+                        } else if ((product as any).shipping_days !== null) {
+                            // Scrape failed but we have a previous value (possibly manually set)
+                            // — preserve it instead of overwriting with the generic fallback.
+                            // Refresh timestamp so we don't re-scrape on every run.
+                            cachedShippingDays = (product as any).shipping_days;
+                            await supabase.from("products").update({
+                                shipping_days_updated_at: new Date().toISOString()
+                            }).eq("id", productId);
+                            console.log(`[amazon-ml-updater] ${sku} scrape failed, preserving cached value: ${cachedShippingDays}`);
+                        } else {
+                            // No previous value and scrape failed — use configured default
+                            const fallback = currency === 'MXN'
+                                ? (settings.amazon_delivery_mx ?? null)
+                                : (settings.amazon_delivery_usa ?? null);
+                            cachedShippingDays = fallback;
+                            if (fallback !== null) {
+                                await supabase.from("products").update({
+                                    shipping_days: fallback,
+                                    shipping_days_updated_at: new Date().toISOString()
+                                }).eq("id", productId);
+                            }
+                            console.log(`[amazon-ml-updater] ${sku} scraping failed, fallback: ${fallback}`);
                         }
-                        console.log(`[amazon-ml-updater] ${sku} scraping failed, fallback: ${fallback}`);
                     }
                 } else {
                     // Cache fresh: derive noBuyBox from the stored pause_reason
