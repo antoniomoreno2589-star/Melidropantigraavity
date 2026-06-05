@@ -356,15 +356,18 @@ async function fetchScrapedoProductData(asin: string, postalCode?: string | null
         console.log(`[fetchScrapedoProduct] asin=${asin} htmlLen=${html.length} buyArea: ${buyAreaSnippet}`);
 
         // Buybox detection:
-        // No buybox   → "Ver opciones de compra" / see-all-buying-choices CTA is shown
-        // Has buybox  → "Añadir al carrito" / add-to-cart button is the main CTA
+        // No buybox   → id="see-all-buying-choices" CTA is shown as the ONLY purchase option
+        // Has buybox  → id="add-to-cart-button" is the primary CTA
         //
         // IMPORTANT: Amazon includes id="add-to-cart-button" in the DOM even when
         // no seller has the buybox (hidden/disabled state). So the NO-BUYBOX signal
         // always takes priority over the add-to-cart signal.
+        //
+        // DO NOT use the text regex "ver opciones de compra" — it matches product variant
+        // links and unavailable-variant sections even when the main product has a buybox.
+        // Only the specific id= attributes reliably indicate the buybox state.
         const hasNoBuyBoxButton = html.includes('id="see-all-buying-choices"') ||
-                                   html.includes('id="see-all-buying-choices-button"') ||
-                                   /ver\s+(todas\s+las\s+)?opciones\s+de\s+compra/i.test(html);
+                                   html.includes('id="see-all-buying-choices-button"');
         const hasBuyBoxButton  = html.includes('id="add-to-cart-button"') || html.includes('name="submit.add-to-cart"');
 
         let hasBuyBox: boolean | null = null;
