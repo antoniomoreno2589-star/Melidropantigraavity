@@ -676,18 +676,27 @@ async function fetchAmazonShippingDays(asin: string, postalCode?: string | null)
                     console.log(`[fetchAmazonShippingDays] asin=${asin} allDays=${JSON.stringify(allCollectedDays)} → ${max} días`);
                     return { days: max, available: true };
                 }
-                // No buybox: structured parse picks up Prime banners or wrong page sections.
-                // Ignore these dates and fall through to AOD/scraping fallbacks.
-                console.log(`[fetchAmazonShippingDays] asin=${asin} no buybox — ignoring structured dates ${JSON.stringify(allCollectedDays)}, using AOD fallbacks`);
+                // No buybox: structured parse picks up Prime banners or wrong sections.
+                // Go directly to AOD which shows the real seller's delivery promise.
+                console.log(`[fetchAmazonShippingDays] asin=${asin} no buybox — ignoring structured dates ${JSON.stringify(allCollectedDays)}, trying AOD`);
+                if (postalCode) {
+                    const aodDays = await fetchAodDeliveryDays(asin, postalCode, auth);
+                    if (aodDays !== null) return { days: aodDays, available: true };
+                }
+                // AOD failed and no buybox/price → product unavailable
+                const hasPrice = content?.price !== null && content?.price !== undefined;
+                if (!hasPrice) {
+                    console.log(`[fetchAmazonShippingDays] asin=${asin} unavailable — no buybox, no price, AOD empty`);
+                    return { days: null, available: false };
+                }
+                return { days: null, available: null };
             }
 
-            // delivery:[] OR (dates found but no buybox): use scraping fallbacks.
-            // AOD ("Ver opciones de compra") shows the real seller's delivery promise.
-            const needsFallback = (Array.isArray(content?.delivery) && content.delivery.length === 0)
-                || (allCollectedDays.length > 0 && !hasBuyBox);
-            if (needsFallback) {
+            // delivery:[] with buybox: cross-border seller (Amazon Europa/USA).
+            // Their buy-box doesn't render for Oxylabs — use full fallback chain.
+            if (Array.isArray(content?.delivery) && content.delivery.length === 0) {
                 const sellerName: string = content?.buybox?.[0]?.seller_name ?? '';
-                console.log(`[fetchAmazonShippingDays] asin=${asin} needsFallback seller="${sellerName}", trying fallbacks`);
+                console.log(`[fetchAmazonShippingDays] asin=${asin} delivery=[] seller="${sellerName}", trying fallbacks`);
                 if (postalCode) {
                     // 1st: Scrape.do — residential IP + JS render, sees dates like a real browser
                     const scrapedoDays = await fetchScrapedoDeliveryDays(asin);
