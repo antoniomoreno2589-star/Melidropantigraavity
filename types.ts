@@ -16,6 +16,7 @@ export interface Product {
   soldByAmazon?: boolean | null;     // Whether Amazon itself is a seller (null = not yet synced)
   amazonStock?: number | null;       // Amazon inventory available (null = not yet synced, 0 = out of stock)
   amazonAvailable?: boolean | null;  // false = product not found/unavailable on Amazon
+  pauseReason?: string | null;       // 'sin_buybox' = paused because no buybox detected
 }
 
 export interface Order {

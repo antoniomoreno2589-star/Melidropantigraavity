@@ -190,7 +190,7 @@ export const UpdaterPage: React.FC = () => {
             while (true) {
                 const { data, error } = await supabase
                     .from('products')
-                    .select('id, title, sku, asin, meli_id, price_mxn, cost_usd, stock_provider, stock_meli, status, image_url, last_updated, in_updater, amazon_seller_count, sold_by_amazon, amazon_available')
+                    .select('id, title, sku, asin, meli_id, price_mxn, cost_usd, stock_provider, stock_meli, status, image_url, last_updated, in_updater, amazon_seller_count, sold_by_amazon, amazon_available, pause_reason')
                     .eq('user_id', user.id)
                     .eq('in_updater', true)
                     .neq('status', 'closed')
@@ -223,6 +223,7 @@ export const UpdaterPage: React.FC = () => {
                 soldByAmazon: p.sold_by_amazon ?? null,
                 amazonStock: null,
                 amazonAvailable: p.amazon_available ?? null,
+                pauseReason: p.pause_reason ?? null,
             }));
 
             setProducts(mappedProducts);
@@ -246,7 +247,7 @@ export const UpdaterPage: React.FC = () => {
             while (true) {
                 const { data, error } = await supabase
                     .from('products')
-                    .select('id, title, sku, asin, meli_id, price_mxn, cost_usd, stock_provider, stock_meli, status, image_url, last_updated, in_updater, amazon_seller_count, sold_by_amazon, amazon_available')
+                    .select('id, title, sku, asin, meli_id, price_mxn, cost_usd, stock_provider, stock_meli, status, image_url, last_updated, in_updater, amazon_seller_count, sold_by_amazon, amazon_available, pause_reason')
                     .eq('user_id', user.id)
                     .eq('in_updater', false)
                     .neq('status', 'closed')
@@ -278,6 +279,7 @@ export const UpdaterPage: React.FC = () => {
                 soldByAmazon: p.sold_by_amazon ?? null,
                 amazonStock: null,
                 amazonAvailable: p.amazon_available ?? null,
+                pauseReason: p.pause_reason ?? null,
             })));
             setNotEnrolledLoaded(true);
         } catch (e) {
@@ -881,6 +883,11 @@ export const UpdaterPage: React.FC = () => {
                                             <span className="px-2 py-0.5 rounded-full text-xs font-bold whitespace-nowrap bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-400 flex items-center gap-1">
                                                 <span className="material-symbols-outlined text-[12px]">block</span>
                                                 No en Amazon
+                                            </span>
+                                        ) : product.pauseReason === 'sin_buybox' ? (
+                                            <span className="px-2 py-0.5 rounded-full text-xs font-bold whitespace-nowrap bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-400 flex items-center gap-1">
+                                                <span className="material-symbols-outlined text-[12px]">shopping_cart_off</span>
+                                                Pausado - Sin Buybox
                                             </span>
                                         ) : (
                                             <span className={`px-2 py-0.5 rounded-full text-xs font-bold whitespace-nowrap ${STATUS_COLORS[product.status] || STATUS_COLORS.inactive}`}>

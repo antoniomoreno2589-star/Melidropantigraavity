@@ -43,6 +43,7 @@ interface AmazonOffers {
 interface ShippingResult {
     days: number | null;
     available: boolean | null; // false = Oxylabs confirmed unavailable; null = unknown
+    hasBuyBox?: boolean | null; // false = Scrape.do confirmed no buybox; null = not checked
 }
 
 function findAllSpanishDates(text: string): number[] {
@@ -295,6 +296,100 @@ async function fetchScrapedoDeliveryDays(asin: string): Promise<number | null> {
         clearTimeout(timer);
         console.log(`[fetchScrapedo] asin=${asin} error: ${e}`);
         return null;
+    }
+}
+
+interface ScrapedoProductResult {
+    hasBuyBox: boolean | null; // null = could not determine
+    days: number | null;
+    available: boolean | null;
+}
+
+async function fetchScrapedoProductData(asin: string, postalCode?: string | null): Promise<ScrapedoProductResult> {
+    const token = Deno.env.get("SCRAPEDO_TOKEN");
+    if (!token) {
+        console.log(`[fetchScrapedoProduct] asin=${asin} SCRAPEDO_TOKEN not set`);
+        return { hasBuyBox: null, days: null, available: null };
+    }
+
+    const targetUrl = postalCode
+        ? `https://www.amazon.com.mx/dp/${asin}?zip=${postalCode}`
+        : `https://www.amazon.com.mx/dp/${asin}`;
+    const apiUrl = `https://api.scrape.do/?token=${token}&url=${encodeURIComponent(targetUrl)}&render=true&super=true&geoCode=mx`;
+    console.log(`[fetchScrapedoProduct] asin=${asin} CP=${postalCode ?? 'none'} fetching product page`);
+
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 45000);
+
+    try {
+        const res = await fetch(apiUrl, { signal: ctrl.signal });
+        clearTimeout(timer);
+
+        if (!res.ok) {
+            console.log(`[fetchScrapedoProduct] asin=${asin} HTTP ${res.status}`);
+            return { hasBuyBox: null, days: null, available: null };
+        }
+
+        const html = await res.text();
+        if (!html || html.length < 100) {
+            console.log(`[fetchScrapedoProduct] asin=${asin} empty/short HTML`);
+            return { hasBuyBox: null, days: null, available: null };
+        }
+
+        // Buybox detection:
+        // Has buybox  → "Add to Cart" button is in the main buy-box area
+        // No buybox   → "Ver opciones de compra" / see-all-buying-choices is shown instead
+        const hasBuyBoxButton  = html.includes('id="add-to-cart-button"') || html.includes('name="submit.add-to-cart"');
+        const hasNoBuyBoxButton = html.includes('id="see-all-buying-choices"') ||
+                                   /ver\s+opciones\s+de\s+compra/i.test(html);
+
+        let hasBuyBox: boolean | null = null;
+        if (hasBuyBoxButton && !hasNoBuyBoxButton) {
+            hasBuyBox = true;
+        } else if (hasNoBuyBoxButton && !hasBuyBoxButton) {
+            hasBuyBox = false;
+        } else if (hasBuyBoxButton && hasNoBuyBoxButton) {
+            // Both signals present — add-to-cart wins (product has an active seller in buybox)
+            hasBuyBox = true;
+        }
+
+        console.log(`[fetchScrapedoProduct] asin=${asin} hasBuyBoxBtn=${hasBuyBoxButton} noBuyBoxBtn=${hasNoBuyBoxButton} → hasBuyBox=${hasBuyBox}`);
+
+        if (hasBuyBox === false) {
+            return { hasBuyBox: false, days: null, available: true };
+        }
+
+        // Extract delivery days when buybox is present (or ambiguous)
+        const globalMatch = html.match(/(entrega|llega|recibe)[^<\n]{0,150}/gi);
+        if (globalMatch) {
+            console.log(`[fetchScrapedoProduct] asin=${asin} snippets: ${globalMatch.slice(0, 3).map((s: string) => s.trim()).join(' || ')}`);
+        }
+
+        const deliverySection = extractDeliverySection(html);
+        const searchText = deliverySection ?? html;
+
+        if (/(llega|entrega|recibe)\s+ma[ñn]ana/i.test(searchText)) {
+            console.log(`[fetchScrapedoProduct] asin=${asin} → mañana (1 día)`);
+            return { hasBuyBox, days: 1, available: true };
+        }
+        if (/(llega|entrega|recibe)\s+hoy/i.test(searchText)) {
+            console.log(`[fetchScrapedoProduct] asin=${asin} → hoy (0 días)`);
+            return { hasBuyBox, days: 0, available: true };
+        }
+
+        const dates = findAllSpanishDates(searchText);
+        if (dates.length > 0) {
+            const max = Math.max(...dates);
+            console.log(`[fetchScrapedoProduct] asin=${asin} hasBuyBox=${hasBuyBox} → ${max} días`);
+            return { hasBuyBox, days: max, available: true };
+        }
+
+        console.log(`[fetchScrapedoProduct] asin=${asin} hasBuyBox=${hasBuyBox} but no dates found`);
+        return { hasBuyBox, days: null, available: hasBuyBox !== null ? true : null };
+    } catch (e) {
+        clearTimeout(timer);
+        console.log(`[fetchScrapedoProduct] asin=${asin} error: ${e}`);
+        return { hasBuyBox: null, days: null, available: null };
     }
 }
 
@@ -678,16 +773,26 @@ async function fetchAmazonShippingDays(asin: string, postalCode?: string | null,
                     console.log(`[fetchAmazonShippingDays] asin=${asin} soldByAmazon=true, allDays=${JSON.stringify(allCollectedDays)} → ${max} días`);
                     return { days: max, available: true };
                 }
-                // 3rd-party seller: Oxylabs dates unreliable — try Scrape.do (residential IP)
-                // then AOD (shows real seller offers from "Ver opciones de compra").
-                console.log(`[fetchAmazonShippingDays] asin=${asin} 3rd-party — ignoring structured dates ${JSON.stringify(allCollectedDays)}, trying Scrape.do → AOD`);
-                if (postalCode) {
-                    const scrapedoDays = await fetchScrapedoDeliveryDays(asin);
-                    if (scrapedoDays !== null) return { days: scrapedoDays, available: true };
-                    const aodDays = await fetchAodDeliveryDays(asin, postalCode, auth);
-                    if (aodDays !== null) return { days: aodDays, available: true };
+                // 3rd-party seller: Oxylabs datacenter IPs see different content than real users.
+                // Use Scrape.do (residential IP) for authoritative buybox detection + delivery dates.
+                console.log(`[fetchAmazonShippingDays] asin=${asin} 3rd-party — Oxylabs dates unreliable (${JSON.stringify(allCollectedDays)}), using Scrape.do`);
+                const scrapedoResult = await fetchScrapedoProductData(asin, postalCode);
+                if (scrapedoResult.hasBuyBox === false) {
+                    console.log(`[fetchAmazonShippingDays] asin=${asin} Scrape.do: no buybox → listing will be paused`);
+                    return { days: null, available: true, hasBuyBox: false };
                 }
-                // Both failed: product exists (seller confirmed by SP-API) but dates unknown
+                if (scrapedoResult.hasBuyBox === true && scrapedoResult.days !== null) {
+                    console.log(`[fetchAmazonShippingDays] asin=${asin} Scrape.do: buybox + ${scrapedoResult.days} días`);
+                    return { days: scrapedoResult.days, available: true, hasBuyBox: true };
+                }
+                // hasBuyBox=true but no dates, or hasBuyBox=null: try AOD as fallback
+                if (postalCode) {
+                    const aodDays = await fetchAodDeliveryDays(asin, postalCode, auth);
+                    if (aodDays !== null) {
+                        console.log(`[fetchAmazonShippingDays] asin=${asin} AOD fallback → ${aodDays} días`);
+                        return { days: aodDays, available: true };
+                    }
+                }
                 return { days: null, available: null };
             }
 
@@ -1028,7 +1133,7 @@ serve(async (req) => {
 
             const { data: products } = await supabase
                 .from("products")
-                .select("id, meli_id, sku, price_mxn, stock_meli, status, currency, description_text, shipping_days, shipping_days_updated_at")
+                .select("id, meli_id, sku, price_mxn, stock_meli, status, currency, description_text, shipping_days, shipping_days_updated_at, pause_reason")
                 .eq("user_id", userId)
                 .eq("in_updater", true)
                 .not("meli_id", "is", null)
@@ -1098,13 +1203,24 @@ serve(async (req) => {
                 let cachedShippingDays = (product as any).shipping_days ?? null;
                 const updatedAt = (product as any).shipping_days_updated_at;
                 const isStale = !updatedAt || (Date.now() - new Date(updatedAt).getTime()) > 7 * 24 * 60 * 60 * 1000;
+                const existingPauseReason = (product as any).pause_reason ?? null;
 
                 let scrapedAvailable: boolean | null = null;
+                let noBuyBox = false;
+                let pauseReasonToWrite: string | null | undefined = undefined; // undefined = don't update DB
                 if (cachedShippingDays === null || isStale) {
                     const scrapeResult = await fetchAmazonShippingDays(sku, settings.postal_code ?? null, soldByAmazon);
                     scrapedAvailable = scrapeResult.available;
+                    noBuyBox = scrapeResult.hasBuyBox === false;
+                    pauseReasonToWrite = noBuyBox ? 'sin_buybox' : null;
                     const scrapedDays = scrapeResult.days;
-                    if (scrapedDays !== null) {
+                    if (noBuyBox) {
+                        // No buybox: update timestamp only so we don't re-scrape every run
+                        await supabase.from("products").update({
+                            shipping_days_updated_at: new Date().toISOString()
+                        }).eq("id", productId);
+                        console.log(`[amazon-ml-updater] ${sku} no buybox — pausing, skipping shipping days`);
+                    } else if (scrapedDays !== null) {
                         cachedShippingDays = scrapedDays;
                         await supabase.from("products").update({
                             shipping_days: scrapedDays,
@@ -1133,24 +1249,27 @@ serve(async (req) => {
                         }
                         console.log(`[amazon-ml-updater] ${sku} scraping failed, fallback: ${fallback}`);
                     }
+                } else {
+                    // Cache fresh: derive noBuyBox from the stored pause_reason
+                    noBuyBox = (existingPauseReason === 'sin_buybox');
                 }
 
                 const currentStatus = (product as any).status ?? 'active';
                 const scrapedUnavailable = scrapedAvailable === false;
-                if (amazonStock === 0 || isUnavailableOnAmazon || scrapedUnavailable) {
+                if (amazonStock === 0 || isUnavailableOnAmazon || scrapedUnavailable || noBuyBox) {
                     updatePayload.status = "paused";
-                    const pauseReason = scrapedUnavailable
-                        ? 'Oxylabs confirms product unavailable on Amazon.com.mx'
+                    const pauseMsg = noBuyBox ? 'no buybox (Scrape.do)'
+                        : scrapedUnavailable ? 'Oxylabs confirms product unavailable on Amazon.com.mx'
                         : isUnavailableOnAmazon ? 'product unavailable on Amazon (SP-API 404/400)'
                         : 'Amazon stock = 0';
-                    console.log(`[amazon-ml-updater] meliId=${meliId} pausing — ${pauseReason}`);
-                } else if (currentStatus === 'paused' && offers !== undefined && !isUnavailableOnAmazon && !scrapedUnavailable) {
+                    console.log(`[amazon-ml-updater] meliId=${meliId} pausing — ${pauseMsg}`);
+                } else if (currentStatus === 'paused' && offers !== undefined && !isUnavailableOnAmazon && !scrapedUnavailable && !noBuyBox) {
                     // ML rejects status:"active" combined with price/stock in the same payload.
                     // Send reactivation as a standalone PUT, then let the main update handle price/stock.
                     console.log(`[amazon-ml-updater] meliId=${meliId} reactivating — Amazon product available again`);
                     const reactivateResult = await updateMeliItem(meliId, { status: "active" }, mlToken);
                     if (reactivateResult.ok) {
-                        await supabase.from("products").update({ status: "active" }).eq("meli_id", meliId);
+                        await supabase.from("products").update({ status: "active", pause_reason: null }).eq("meli_id", meliId);
                         console.log(`[amazon-ml-updater] meliId=${meliId} reactivation succeeded`);
                     } else {
                         // ML may block reactivation for quality/health reasons — do not hard-fail
@@ -1221,8 +1340,9 @@ serve(async (req) => {
                 debugItems.push(debug);
 
                 const metaUpdate: any = { last_updated: new Date().toISOString() };
-                if (sellerCount !== null)   metaUpdate.amazon_seller_count = sellerCount;
-                if (soldByAmazon !== null)  metaUpdate.sold_by_amazon      = soldByAmazon;
+                if (sellerCount !== null)          metaUpdate.amazon_seller_count = sellerCount;
+                if (soldByAmazon !== null)         metaUpdate.sold_by_amazon      = soldByAmazon;
+                if (pauseReasonToWrite !== undefined) metaUpdate.pause_reason     = pauseReasonToWrite;
                 if (Object.keys(metaUpdate).length > 1) {
                     await supabase.from("products").update(metaUpdate).eq("meli_id", meliId);
                 }
