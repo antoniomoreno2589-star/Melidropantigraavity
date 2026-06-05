@@ -388,8 +388,12 @@ async function fetchScrapedoProductData(asin: string, postalCode?: string | null
             console.log(`[fetchScrapedoProduct] asin=${asin} snippets: ${globalMatch.slice(0, 3).map((s: string) => s.trim()).join(' || ')}`);
         }
 
+        // Scan the FULL HTML for dates near delivery keywords — do not limit to a section
+        // window which may miss the standard (non-Prime) delivery option that appears later.
         const deliverySection = extractDeliverySection(html);
-        const searchText = deliverySection ?? html;
+        const allDeliverySnippets = [...html.matchAll(/(?:entrega|llega|recibe)[^<\n]{0,200}/gi)].map(m => m[0]);
+        const deliveryContextText = allDeliverySnippets.join('\n');
+        const searchText = deliveryContextText.length > 0 ? deliveryContextText : (deliverySection ?? html);
 
         if (/(llega|entrega|recibe)\s+ma[ñn]ana/i.test(searchText)) {
             console.log(`[fetchScrapedoProduct] asin=${asin} → mañana (1 día)`);
@@ -403,12 +407,12 @@ async function fetchScrapedoProductData(asin: string, postalCode?: string | null
         const dates = findAllSpanishDates(searchText);
         if (dates.length > 0) {
             const max = Math.max(...dates);
-            const deliverySnippet = [...searchText.matchAll(/(?:entrega|llega|recibe)[^<\n]{0,120}/gi)].slice(0, 5).map(m => m[0].trim()).join(' || ');
-            console.log(`[fetchScrapedoProduct] asin=${asin} hasBuyBox=${hasBuyBox} allDates=${JSON.stringify(dates)} → max=${max} días. delivery text: ${deliverySnippet}`);
+            const snippetLog = allDeliverySnippets.slice(0, 5).map(s => s.trim()).join(' || ');
+            console.log(`[fetchScrapedoProduct] asin=${asin} hasBuyBox=${hasBuyBox} allDates=${JSON.stringify(dates)} → max=${max} días. snippets: ${snippetLog}`);
             return { hasBuyBox, days: max, available: true };
         }
 
-        const searchSnippet = searchText.slice(0, 600).replace(/\s+/g, ' ');
+        const searchSnippet = (deliverySection ?? html).slice(0, 600).replace(/\s+/g, ' ');
         console.log(`[fetchScrapedoProduct] asin=${asin} hasBuyBox=${hasBuyBox} but no dates found. searchText start: ${searchSnippet}`);
         return { hasBuyBox, days: null, available: hasBuyBox !== null ? true : null };
     } catch (e) {
