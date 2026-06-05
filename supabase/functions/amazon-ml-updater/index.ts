@@ -342,6 +342,16 @@ async function fetchScrapedoProductData(asin: string, postalCode?: string | null
             return { hasBuyBox: null, days: null, available: null };
         }
 
+        // Log raw HTML around buy box area for diagnosis when signals are ambiguous
+        const buyAreaSnippet = (() => {
+            for (const marker of ['buybox', 'add-to-cart', 'buying-choices', 'buy-now', 'actionPanel', 'desktop_buybox']) {
+                const idx = html.indexOf(marker);
+                if (idx !== -1) return html.slice(Math.max(0, idx - 100), idx + 400).replace(/\s+/g, ' ');
+            }
+            return html.slice(0, 500).replace(/\s+/g, ' ');
+        })();
+        console.log(`[fetchScrapedoProduct] asin=${asin} htmlLen=${html.length} buyArea: ${buyAreaSnippet}`);
+
         // Buybox detection:
         // No buybox   → "Ver opciones de compra" / see-all-buying-choices CTA is shown
         // Has buybox  → "Añadir al carrito" / add-to-cart button is the main CTA
@@ -1067,6 +1077,7 @@ serve(async (req) => {
 
                 const scrapeResult = scrapeResultMap.get(sku) ?? null;
                 if (scrapeResult !== null) {
+                    debug.scrapeResult = scrapeResult;
                     scrapedAvailable = scrapeResult.available;
                     noBuyBox = scrapeResult.hasBuyBox === false;
                     pauseReasonToWrite = noBuyBox ? 'sin_buybox' : null;
