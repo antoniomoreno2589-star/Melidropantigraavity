@@ -190,7 +190,7 @@ export const UpdaterPage: React.FC = () => {
             while (true) {
                 const { data, error } = await supabase
                     .from('products')
-                    .select('id, title, sku, asin, meli_id, price_mxn, cost_usd, stock_provider, stock_meli, status, image_url, last_updated, in_updater, amazon_seller_count, sold_by_amazon, amazon_available, pause_reason')
+                    .select('id, title, sku, asin, meli_id, price_mxn, cost_usd, stock_provider, stock_meli, status, image_url, last_updated, in_updater, amazon_seller_count, sold_by_amazon, amazon_available, pause_reason, shipping_days')
                     .eq('user_id', user.id)
                     .eq('in_updater', true)
                     .neq('status', 'closed')
@@ -224,6 +224,7 @@ export const UpdaterPage: React.FC = () => {
                 amazonStock: null,
                 amazonAvailable: p.amazon_available ?? null,
                 pauseReason: p.pause_reason ?? null,
+                shippingDays: p.shipping_days ?? null,
             }));
 
             setProducts(mappedProducts);
@@ -247,7 +248,7 @@ export const UpdaterPage: React.FC = () => {
             while (true) {
                 const { data, error } = await supabase
                     .from('products')
-                    .select('id, title, sku, asin, meli_id, price_mxn, cost_usd, stock_provider, stock_meli, status, image_url, last_updated, in_updater, amazon_seller_count, sold_by_amazon, amazon_available, pause_reason')
+                    .select('id, title, sku, asin, meli_id, price_mxn, cost_usd, stock_provider, stock_meli, status, image_url, last_updated, in_updater, amazon_seller_count, sold_by_amazon, amazon_available, pause_reason, shipping_days')
                     .eq('user_id', user.id)
                     .eq('in_updater', false)
                     .neq('status', 'closed')
@@ -280,6 +281,7 @@ export const UpdaterPage: React.FC = () => {
                 amazonStock: null,
                 amazonAvailable: p.amazon_available ?? null,
                 pauseReason: p.pause_reason ?? null,
+                shippingDays: p.shipping_days ?? null,
             })));
             setNotEnrolledLoaded(true);
         } catch (e) {
@@ -830,7 +832,7 @@ export const UpdaterPage: React.FC = () => {
                         <div className="hidden sm:block text-center">Estado</div>
                         <div className="hidden md:block text-right">Precio MXN</div>
                         <div className="hidden lg:block text-center" title="Vendedores en Amazon">Vendedores</div>
-                        <div className="hidden xl:block text-center" title="Stock en Amazon">Stock AMZ</div>
+                        <div className="hidden xl:block text-center" title="Días de preparación en MercadoLibre">Días Prep.</div>
                         <div className="text-center">Actualizador</div>
                     </div>
 
@@ -920,12 +922,10 @@ export const UpdaterPage: React.FC = () => {
                                         )}
                                     </div>
                                     <div className="hidden xl:flex justify-center">
-                                        {product.amazonStock === null || product.amazonStock === undefined ? (
+                                        {product.shippingDays === null || product.shippingDays === undefined ? (
                                             <span className="text-xs text-slate-300 dark:text-slate-600">—</span>
-                                        ) : product.amazonStock === 0 ? (
-                                            <span className="px-2 py-0.5 rounded-full text-xs font-black bg-red-100 text-red-600 dark:bg-red-900/40 dark:text-red-400">❌ Sin Stock</span>
                                         ) : (
-                                            <span className="px-2 py-0.5 rounded-full text-xs font-black bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-400">📦 {product.amazonStock}</span>
+                                            <span className="px-2 py-0.5 rounded-full text-xs font-black bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-400">{product.shippingDays} días</span>
                                         )}
                                     </div>
                                     <div className="flex justify-center">
