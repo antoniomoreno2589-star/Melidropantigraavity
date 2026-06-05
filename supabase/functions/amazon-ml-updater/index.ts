@@ -642,188 +642,36 @@ async function fetchAodDeliveryDays(asin: string, postalCode: string, auth: stri
 
 async function fetchAmazonShippingDays(asin: string, postalCode?: string | null, soldByAmazon?: boolean | null): Promise<ShippingResult> {
     try {
+        // Scrape.do (residential IP + JS render) is the primary source for ALL products.
+        // Oxylabs datacenter IPs cannot properly resolve postal code for import/cross-border
+        // products, so Amazon never shows delivery times to them — regardless of who the seller is.
+        console.log(`[fetchAmazonShippingDays] asin=${asin} soldByAmazon=${soldByAmazon} → Scrape.do primary`);
+        const scrapedoResult = await fetchScrapedoProductData(asin, postalCode);
+
+        if (scrapedoResult.hasBuyBox === false) {
+            console.log(`[fetchAmazonShippingDays] asin=${asin} no buybox → listing will be paused`);
+            return { days: null, available: true, hasBuyBox: false };
+        }
+
+        if (scrapedoResult.days !== null) {
+            console.log(`[fetchAmazonShippingDays] asin=${asin} hasBuyBox=${scrapedoResult.hasBuyBox} → ${scrapedoResult.days} días`);
+            return { days: scrapedoResult.days, available: true, hasBuyBox: scrapedoResult.hasBuyBox ?? null };
+        }
+
+        // Scrape.do loaded the page but found no delivery dates — try AOD as fallback.
+        // The AOD endpoint (/gp/aod/ajax) sometimes exposes dates not visible on the main page.
         const oxylabsUser = Deno.env.get("OXYLABS_USERNAME");
         const oxylabsPass = Deno.env.get("OXYLABS_PASSWORD");
         const auth = (oxylabsUser && oxylabsPass) ? `Basic ${btoa(`${oxylabsUser}:${oxylabsPass}`)}` : null;
 
-        // For 3rd-party sellers (soldByAmazon !== true): skip Oxylabs entirely.
-        // Oxylabs uses datacenter IPs that see phantom buyboxes/wrong dates for 3rd-party.
-        // Scrape.do (residential IP + JS render) is the authoritative source for these.
-        if (soldByAmazon !== true) {
-            console.log(`[fetchAmazonShippingDays] asin=${asin} soldByAmazon=${soldByAmazon} → Scrape.do direct (skip Oxylabs)`);
-            const scrapedoResult = await fetchScrapedoProductData(asin, postalCode);
-            if (scrapedoResult.hasBuyBox === false) {
-                console.log(`[fetchAmazonShippingDays] asin=${asin} Scrape.do: no buybox → listing will be paused`);
-                return { days: null, available: true, hasBuyBox: false };
+        if (postalCode && auth) {
+            const aodDays = await fetchAodDeliveryDays(asin, postalCode, auth);
+            if (aodDays !== null) {
+                console.log(`[fetchAmazonShippingDays] asin=${asin} AOD fallback → ${aodDays} días`);
+                return { days: aodDays, available: true };
             }
-            if (scrapedoResult.days !== null) {
-                console.log(`[fetchAmazonShippingDays] asin=${asin} Scrape.do: hasBuyBox=${scrapedoResult.hasBuyBox} ${scrapedoResult.days} días`);
-                return { days: scrapedoResult.days, available: true, hasBuyBox: scrapedoResult.hasBuyBox ?? null };
-            }
-            // Scrape.do ambiguous or no dates found: try AOD as single fallback
-            if (postalCode && auth) {
-                const aodDays = await fetchAodDeliveryDays(asin, postalCode, auth);
-                if (aodDays !== null) {
-                    console.log(`[fetchAmazonShippingDays] asin=${asin} AOD fallback → ${aodDays} días`);
-                    return { days: aodDays, available: true };
-                }
-            }
-            return { days: null, available: null };
         }
 
-        // soldByAmazon=true: Amazon's own listing — Oxylabs datacenter IPs are reliable.
-        if (!auth) {
-            console.log(`[fetchAmazonShippingDays] asin=${asin} OXYLABS_USERNAME/PASSWORD not set`);
-            return { days: null, available: null };
-        }
-
-        // Use amazon_product source with parse:true for Amazon's own listings.
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 35000);
-
-        const res = await fetch("https://realtime.oxylabs.io/v1/queries", {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/json",
-                "Authorization": auth,
-            },
-            body: JSON.stringify({
-                source: "amazon_product",
-                domain: "com.mx",
-                query: asin,
-                parse: true,
-                render: "html",
-                ...(postalCode ? {
-                    geo_location: postalCode,
-                    cookies: buildAmazonLocationCookies(postalCode),
-                    context: [{ key: "force_cookies", value: true }],
-                } : {}),
-            }),
-            signal: controller.signal,
-        });
-        clearTimeout(timeoutId);
-
-        if (!res.ok) {
-            console.log(`[fetchAmazonShippingDays] asin=${asin} amazon_product HTTP ${res.status}`);
-            return { days: null, available: null };
-        }
-
-        const data = await res.json();
-        const content = data?.results?.[0]?.content;
-
-        if (content && typeof content === 'object') {
-            // Log all content keys and relevant fields for diagnosis
-            console.log(`[fetchAmazonShippingDays] asin=${asin} content keys: ${JSON.stringify(Object.keys(content))}`);
-            const relevant: Record<string, unknown> = {};
-            for (const key of ['delivery', 'shipping', 'availability', 'price', 'buybox', 'delivery_info', 'seller']) {
-                if (content[key] !== undefined) relevant[key] = content[key];
-            }
-            console.log(`[fetchAmazonShippingDays] asin=${asin} parsed fields: ${JSON.stringify(relevant).slice(0, 1500)}`);
-            if (Array.isArray(content?.buybox)) {
-                console.log(`[fetchAmazonShippingDays] asin=${asin} full buybox: ${JSON.stringify(content.buybox).slice(0, 2000)}`);
-            }
-
-            // Build flat list of text fragments to search for delivery dates.
-            // Oxylabs returns delivery as an array of {date: {by: "11 de junio"}, type: "Entrega GRATIS el"}
-            // objects rather than a plain string — extract date.by from each entry.
-            const texts: string[] = [];
-
-            if (Array.isArray(content?.delivery)) {
-                for (const entry of content.delivery) {
-                    const dateBy = entry?.date?.by ?? '';
-                    const type   = entry?.type   ?? '';
-                    if (dateBy) texts.push(`${type} ${dateBy}`.trim());
-                }
-            } else if (typeof content?.delivery === 'string') {
-                texts.push(content.delivery);
-            }
-
-            // buybox may also carry delivery_details with the same shape
-            if (Array.isArray(content?.buybox)) {
-                for (const box of content.buybox) {
-                    if (Array.isArray(box?.delivery_details)) {
-                        for (const entry of box.delivery_details) {
-                            const dateBy = entry?.date?.by ?? '';
-                            const type   = entry?.type   ?? '';
-                            if (dateBy) texts.push(`${type} ${dateBy}`.trim());
-                        }
-                    }
-                }
-            }
-
-            // String fallbacks for other Oxylabs response shapes
-            for (const v of [
-                content?.delivery?.primary,
-                content?.delivery?.secondary,
-                content?.delivery_info,
-                content?.price?.delivery,
-                content?.shipping,
-            ]) {
-                if (typeof v === 'string') texts.push(v);
-            }
-
-            // Collect dates from ALL entries before deciding — for cross-border dropshipping
-            // we need the MAXIMUM delivery time. Amazon may return a fast Prime option first
-            // (e.g. 2 days) followed by the actual cross-border seller (e.g. 21 days).
-            // Returning at the first match would silently pick the wrong entry.
-            const allCollectedDays: number[] = [];
-            for (const text of texts) {
-                if (/(llega|entrega|recibe|env[ií]o)\s+hoy/i.test(text)) {
-                    allCollectedDays.push(0);
-                    continue;
-                }
-                if (/(llega|entrega|recibe|env[ií]o)\s+ma[ñn]ana/i.test(text)) {
-                    allCollectedDays.push(1);
-                    continue;
-                }
-                const dates = findAllSpanishDates(text);
-                if (dates.length > 0) {
-                    console.log(`[fetchAmazonShippingDays] asin=${asin} delivery="${text}" dates=${JSON.stringify(dates)}`);
-                    allCollectedDays.push(...dates);
-                    continue;
-                }
-                const rangeM = text.match(/(\d+)\s+a\s+(\d+)\s+d[ií]as/i);
-                if (rangeM) {
-                    allCollectedDays.push(Math.max(parseInt(rangeM[1]), parseInt(rangeM[2])));
-                    continue;
-                }
-                const singleM = text.match(/en (\d+)\s+d[ií]as/i);
-                if (singleM) {
-                    allCollectedDays.push(parseInt(singleM[1]));
-                }
-            }
-            const hasBuyBox = Array.isArray(content?.buybox) && content.buybox.length > 0;
-
-            // soldByAmazon=true: trust Oxylabs structured dates directly
-            if (allCollectedDays.length > 0) {
-                const max = Math.max(...allCollectedDays);
-                console.log(`[fetchAmazonShippingDays] asin=${asin} soldByAmazon=true allDays=${JSON.stringify(allCollectedDays)} → ${max} días`);
-                return { days: max, available: true };
-            }
-
-            console.log(`[fetchAmazonShippingDays] asin=${asin} parsed content: no delivery date in known fields`);
-            return { days: null, available: null };
-
-        } else if (typeof content === 'string' && content.length > 100) {
-            // Structured parsing was off — got raw HTML.
-            // Only match specific calendar dates ("11 de junio") — NOT weekday names.
-            // Weekday-name patterns ("domingo", "lunes", etc.) are intentionally excluded:
-            // Amazon's static Prime promotional banners use them on every page and always
-            // produce false positives regardless of the actual seller delivery window.
-            const snippets = [...content.matchAll(/(?:llega|entrega|recibe)[^<\n]{0,100}/gi)].slice(0, 5);
-            console.log(`[fetchAmazonShippingDays] asin=${asin} HTML snippets: ${snippets.map(s => s[0].trim()).join(' || ')}`);
-
-            const dates = findAllSpanishDates(content);
-            if (dates.length > 0) {
-                const max = Math.max(...dates);
-                console.log(`[fetchAmazonShippingDays] asin=${asin} HTML dates=${JSON.stringify(dates)} → ${max} días`);
-                return { days: max, available: true };
-            }
-            console.log(`[fetchAmazonShippingDays] asin=${asin} HTML: no specific dates found`);
-            return { days: null, available: null };
-        }
-
-        console.log(`[fetchAmazonShippingDays] asin=${asin} empty/null content from Oxylabs`);
         return { days: null, available: null };
 
     } catch (e) {
