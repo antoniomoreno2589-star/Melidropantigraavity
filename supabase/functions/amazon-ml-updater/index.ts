@@ -667,21 +667,27 @@ async function fetchAmazonShippingDays(asin: string, postalCode?: string | null)
                     allCollectedDays.push(parseInt(singleM[1]));
                 }
             }
+            const hasBuyBox = Array.isArray(content?.buybox) && content.buybox.length > 0;
+
             if (allCollectedDays.length > 0) {
-                const max = Math.max(...allCollectedDays);
-                console.log(`[fetchAmazonShippingDays] asin=${asin} allDays=${JSON.stringify(allCollectedDays)} → ${max} días`);
-                return { days: max, available: true };
+                if (hasBuyBox) {
+                    // Buybox present: structured parse dates are reliable
+                    const max = Math.max(...allCollectedDays);
+                    console.log(`[fetchAmazonShippingDays] asin=${asin} allDays=${JSON.stringify(allCollectedDays)} → ${max} días`);
+                    return { days: max, available: true };
+                }
+                // No buybox: structured parse picks up Prime banners or wrong page sections.
+                // Ignore these dates and fall through to AOD/scraping fallbacks.
+                console.log(`[fetchAmazonShippingDays] asin=${asin} no buybox — ignoring structured dates ${JSON.stringify(allCollectedDays)}, using AOD fallbacks`);
             }
 
-            // delivery:[] means Oxylabs' structured parser didn't extract a delivery date.
-            // This happens for cross-border sellers (Amazon Estados Unidos, Amazon Europa):
-            // their buy-box doesn't render directly on the product page for Oxylabs.
-            // Fix: scrape the AOD (All Offers Display) endpoint — the same one that loads
-            // when the user clicks "Ver opciones de compra". The top offer in AOD always
-            // has the delivery promise text ("Entrega GRATIS el martes, 16 de junio").
-            if (Array.isArray(content?.delivery) && content.delivery.length === 0) {
+            // delivery:[] OR (dates found but no buybox): use scraping fallbacks.
+            // AOD ("Ver opciones de compra") shows the real seller's delivery promise.
+            const needsFallback = (Array.isArray(content?.delivery) && content.delivery.length === 0)
+                || (allCollectedDays.length > 0 && !hasBuyBox);
+            if (needsFallback) {
                 const sellerName: string = content?.buybox?.[0]?.seller_name ?? '';
-                console.log(`[fetchAmazonShippingDays] asin=${asin} delivery=[] seller="${sellerName}", trying fallbacks`);
+                console.log(`[fetchAmazonShippingDays] asin=${asin} needsFallback seller="${sellerName}", trying fallbacks`);
                 if (postalCode) {
                     // 1st: Scrape.do — residential IP + JS render, sees dates like a real browser
                     const scrapedoDays = await fetchScrapedoDeliveryDays(asin);
@@ -697,7 +703,6 @@ async function fetchAmazonShippingDays(asin: string, postalCode?: string | null)
                     if (aodDays !== null) return { days: aodDays, available: true };
                     // All fallbacks exhausted — if Oxylabs also shows no buybox/price, the
                     // product is genuinely not available on Amazon.com.mx (suppressed ASIN).
-                    const hasBuyBox = Array.isArray(content?.buybox) && content.buybox.length > 0;
                     const hasPrice = content?.price !== null && content?.price !== undefined;
                     if (!hasBuyBox && !hasPrice) {
                         console.log(`[fetchAmazonShippingDays] asin=${asin} unavailable — no buybox, no price, all fallbacks failed`);
