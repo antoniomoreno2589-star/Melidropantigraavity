@@ -68,6 +68,7 @@ export const UpdaterPage: React.FC = () => {
     );
     const [syncRunning, setSyncRunning] = useState(false);
     const [syncResult, setSyncResult] = useState<string>('');
+    const [prepDays, setPrepDays] = useState<number>(3);
 
     useEffect(() => {
         loadProducts();
@@ -294,14 +295,14 @@ export const UpdaterPage: React.FC = () => {
     const loadSyncStatus = async () => {
         const { data: { user } } = await supabase.auth.getUser();
         if (!user) return;
-        const { data } = await supabase
-            .from('sync_jobs')
-            .select('*')
-            .eq('user_id', user.id)
-            .order('started_at', { ascending: false })
-            .limit(1)
-            .maybeSingle();
-        if (data) setSyncJob(data);
+        const [{ data: jobData }, { data: connData }] = await Promise.all([
+            supabase.from('sync_jobs').select('*').eq('user_id', user.id).order('started_at', { ascending: false }).limit(1).maybeSingle(),
+            supabase.from('user_connections').select('margin_rules').eq('user_id', user.id).maybeSingle(),
+        ]);
+        if (jobData) setSyncJob(jobData);
+        const rules = (connData as any)?.margin_rules ?? {};
+        const pd = rules.prep_days ?? rules.handling_time_mx ?? 3;
+        setPrepDays(typeof pd === 'number' ? pd : parseInt(pd) || 3);
     };
 
     const filtered = useMemo(() => {
@@ -925,7 +926,7 @@ export const UpdaterPage: React.FC = () => {
                                         {product.shippingDays === null || product.shippingDays === undefined ? (
                                             <span className="text-xs text-slate-300 dark:text-slate-600">—</span>
                                         ) : (
-                                            <span className="px-2 py-0.5 rounded-full text-xs font-black bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-400">{product.shippingDays} días</span>
+                                            <span className="px-2 py-0.5 rounded-full text-xs font-black bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-400" title={`Amazon: ${product.shippingDays}d + prep: ${prepDays}d`}>{product.shippingDays + prepDays} días</span>
                                         )}
                                     </div>
                                     <div className="flex justify-center">
