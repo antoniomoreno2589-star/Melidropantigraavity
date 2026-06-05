@@ -672,8 +672,8 @@ async function fetchAmazonShippingDays(asin: string, postalCode?: string | null,
             }
         }
 
-        return { days: null, available: null };
 
+        return { days: null, available: null };
     } catch (e) {
         console.error(`[fetchAmazonShippingDays] asin=${asin}:`, e);
         return { days: null, available: null };
@@ -999,10 +999,46 @@ serve(async (req) => {
 
             let updated = 0, errors = 0, firstError: string | undefined;
             const debugItems: any[] = [];
-            // Limit scraping calls per invocation to stay within the 150 s wall-clock budget.
-            // Each Scrape.do call takes up to 30 s; 4 products × 30 s = 120 s leaves enough headroom.
-            let scrapesThisRun = 0;
             const MAX_SCRAPES_PER_RUN = 4;
+
+            // Pre-scrape stale products IN PARALLEL before the main product loop.
+            // 4 parallel Scrape.do calls take ~30 s total (same as 1 sequential call),
+            // giving 4× throughput within the 150 s budget.
+            // At cron-every-minute: 4 × 60 × 24 = 5 760 scrapes/day → covers 20 k products
+            // with a 7-day TTL (2 857 stale/day needed).
+            const STALE_MS = 7 * 24 * 60 * 60 * 1000;
+            const staleForScraping = (products as any[]).filter(p => {
+                const ua = p.shipping_days_updated_at;
+                return p.shipping_days === null || !ua || (Date.now() - new Date(ua).getTime()) > STALE_MS;
+            }).slice(0, MAX_SCRAPES_PER_RUN);
+
+            const scrapeResultMap = new Map<string, ShippingResult>();
+
+            if (staleForScraping.length > 0) {
+                console.log(`[amazon-ml-updater] Parallel-scraping ${staleForScraping.length} stale products`);
+                await Promise.allSettled(staleForScraping.map(async (p: any) => {
+                    const soldByAmazon = asinOffers[p.sku]?.soldByAmazon ?? null;
+                    const result = await fetchAmazonShippingDays(p.sku, settings.postal_code ?? null, soldByAmazon);
+                    scrapeResultMap.set(p.sku, result);
+                    const noBuyBox = result.hasBuyBox === false;
+                    const currency = p.currency ?? 'USD';
+                    if (noBuyBox) {
+                        await supabase.from("products").update({ shipping_days_updated_at: new Date().toISOString() }).eq("id", p.id);
+                        console.log(`[amazon-ml-updater] ${p.sku} no buybox — pausing`);
+                    } else if (result.days !== null) {
+                        await supabase.from("products").update({ shipping_days: result.days, shipping_days_updated_at: new Date().toISOString() }).eq("id", p.id);
+                    } else if (p.shipping_days !== null) {
+                        await supabase.from("products").update({ shipping_days_updated_at: new Date().toISOString() }).eq("id", p.id);
+                        console.log(`[amazon-ml-updater] ${p.sku} scrape failed, preserving cached: ${p.shipping_days}`);
+                    } else {
+                        const fallback = currency === 'MXN' ? (settings.amazon_delivery_mx ?? null) : (settings.amazon_delivery_usa ?? null);
+                        if (fallback !== null) {
+                            await supabase.from("products").update({ shipping_days: fallback, shipping_days_updated_at: new Date().toISOString() }).eq("id", p.id);
+                        }
+                        console.log(`[amazon-ml-updater] ${p.sku} scraping failed, fallback: ${fallback}`);
+                    }
+                }));
+            }
 
             console.log(`[amazon-ml-updater] Processing batch: ${products.length} products, syncParams=${JSON.stringify(syncParams)}`);
 
@@ -1018,74 +1054,26 @@ serve(async (req) => {
                 const sellerCount   = offers?.sellerCount ?? null;
                 const soldByAmazon  = offers?.soldByAmazon ?? null;
                 const amazonStock   = offers?.amazonStock ?? null;
-                // True only when Amazon's API explicitly confirmed the product doesn't exist (404/400).
-                // Error responses (network failures, auth errors) return amazonStock:null — excluded here
-                // to avoid incorrectly pausing products when the SP-API is temporarily unavailable.
                 const isUnavailableOnAmazon = offers !== undefined
                     && offers.price === null
                     && offers.sellerCount === 0
                     && offers.amazonStock === 0;
 
-                // Shipping days: scrape Amazon.com.mx for actual delivery time, cache 7 days
-                let cachedShippingDays = (product as any).shipping_days ?? null;
-                const updatedAt = (product as any).shipping_days_updated_at;
-                const isStale = !updatedAt || (Date.now() - new Date(updatedAt).getTime()) > 7 * 24 * 60 * 60 * 1000;
                 const existingPauseReason = (product as any).pause_reason ?? null;
-
+                let cachedShippingDays = (product as any).shipping_days ?? null;
                 let scrapedAvailable: boolean | null = null;
                 let noBuyBox = false;
-                let pauseReasonToWrite: string | null | undefined = undefined; // undefined = don't update DB
-                if (cachedShippingDays === null || isStale) {
-                    if (scrapesThisRun >= MAX_SCRAPES_PER_RUN) {
-                        // Budget exhausted — skip scraping for this product this run.
-                        // Its timestamp stays stale so it will be picked up next invocation.
-                        console.log(`[amazon-ml-updater] ${sku} skip scraping (MAX_SCRAPES_PER_RUN=${MAX_SCRAPES_PER_RUN} reached)`);
-                        noBuyBox = (existingPauseReason === 'sin_buybox');
-                    } else {
-                        scrapesThisRun++;
-                        const scrapeResult = await fetchAmazonShippingDays(sku, settings.postal_code ?? null, soldByAmazon);
-                        scrapedAvailable = scrapeResult.available;
-                        noBuyBox = scrapeResult.hasBuyBox === false;
-                        pauseReasonToWrite = noBuyBox ? 'sin_buybox' : null;
-                        const scrapedDays = scrapeResult.days;
-                        if (noBuyBox) {
-                            // No buybox: update timestamp only so we don't re-scrape every run
-                            await supabase.from("products").update({
-                                shipping_days_updated_at: new Date().toISOString()
-                            }).eq("id", productId);
-                            console.log(`[amazon-ml-updater] ${sku} no buybox — pausing, skipping shipping days`);
-                        } else if (scrapedDays !== null) {
-                            cachedShippingDays = scrapedDays;
-                            await supabase.from("products").update({
-                                shipping_days: scrapedDays,
-                                shipping_days_updated_at: new Date().toISOString()
-                            }).eq("id", productId);
-                        } else if ((product as any).shipping_days !== null) {
-                            // Scrape failed but we have a previous value (possibly manually set)
-                            // — preserve it instead of overwriting with the generic fallback.
-                            // Refresh timestamp so we don't re-scrape on every run.
-                            cachedShippingDays = (product as any).shipping_days;
-                            await supabase.from("products").update({
-                                shipping_days_updated_at: new Date().toISOString()
-                            }).eq("id", productId);
-                            console.log(`[amazon-ml-updater] ${sku} scrape failed, preserving cached value: ${cachedShippingDays}`);
-                        } else {
-                            // No previous value and scrape failed — use configured default
-                            const fallback = currency === 'MXN'
-                                ? (settings.amazon_delivery_mx ?? null)
-                                : (settings.amazon_delivery_usa ?? null);
-                            cachedShippingDays = fallback;
-                            if (fallback !== null) {
-                                await supabase.from("products").update({
-                                    shipping_days: fallback,
-                                    shipping_days_updated_at: new Date().toISOString()
-                                }).eq("id", productId);
-                            }
-                            console.log(`[amazon-ml-updater] ${sku} scraping failed, fallback: ${fallback}`);
-                        }
+                let pauseReasonToWrite: string | null | undefined = undefined;
+
+                const scrapeResult = scrapeResultMap.get(sku) ?? null;
+                if (scrapeResult !== null) {
+                    scrapedAvailable = scrapeResult.available;
+                    noBuyBox = scrapeResult.hasBuyBox === false;
+                    pauseReasonToWrite = noBuyBox ? 'sin_buybox' : null;
+                    if (!noBuyBox && scrapeResult.days !== null) {
+                        cachedShippingDays = scrapeResult.days;
                     }
                 } else {
-                    // Cache fresh: derive noBuyBox from the stored pause_reason
                     noBuyBox = (existingPauseReason === 'sin_buybox');
                 }
 
