@@ -40,6 +40,11 @@ interface AmazonOffers {
     shippingDays: number | null;
 }
 
+interface ShippingResult {
+    days: number | null;
+    available: boolean | null; // false = Oxylabs confirmed unavailable; null = unknown
+}
+
 function findAllSpanishDates(text: string): number[] {
     const monthMap: Record<string, number> = {
         // Full names
@@ -68,6 +73,22 @@ function findAllSpanishDates(text: string): number[] {
         if (days >= 0 && days <= 60) results.push(days);
     }
     return results;
+}
+
+function buildAmazonLocationCookies(postalCode: string) {
+    // Amazon's LSEXSAV cookie stores the last selected delivery location set via
+    // the "Deliver to" glow widget. Injecting it lets Amazon render cross-border
+    // delivery dates without a full authenticated session.
+    const locationJson = JSON.stringify({
+        zipCode: postalCode,
+        countryCode: "MX",
+        addressType: "RESIDENTIAL",
+    });
+    return [
+        { key: "LSEXSAV", value: encodeURIComponent(locationJson), domain: ".amazon.com.mx" },
+        { key: "i18n-prefs",  value: "MXN",   domain: ".amazon.com.mx" },
+        { key: "lc-acbmx",    value: "es_MX", domain: ".amazon.com.mx" },
+    ];
 }
 
 function extractDeliverySection(html: string): string | null {
@@ -158,6 +179,8 @@ async function fetchDirectProductPageDays(asin: string, postalCode: string, auth
                 geo_location: postalCode,
                 render: "html",
                 parse: false,
+                cookies: buildAmazonLocationCookies(postalCode),
+                context: [{ key: "force_cookies", value: true }],
             }),
             signal: ctrl.signal,
         });
@@ -199,6 +222,82 @@ async function fetchDirectProductPageDays(asin: string, postalCode: string, auth
     }
 }
 
+async function fetchScrapedoDeliveryDays(asin: string): Promise<number | null> {
+    // Scrape.do uses real residential IPs + headless Chromium rendering.
+    // Unlike Oxylabs (datacenter IPs), Amazon shows delivery dates to residential IPs
+    // even without a session — the same way it works in the user's incognito browser.
+    const token = Deno.env.get("SCRAPEDO_TOKEN");
+    if (!token) {
+        console.log(`[fetchScrapedo] asin=${asin} SCRAPEDO_TOKEN not set, skipping`);
+        return null;
+    }
+
+    const targetUrl = `https://www.amazon.com.mx/dp/${asin}`;
+    const apiUrl = `https://api.scrape.do/?token=${token}&url=${encodeURIComponent(targetUrl)}&render=true&super=true&geoCode=mx`;
+    console.log(`[fetchScrapedo] asin=${asin} fetching with residential IP + JS render`);
+
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 40000);
+
+    try {
+        const res = await fetch(apiUrl, { signal: ctrl.signal });
+        clearTimeout(timer);
+
+        if (!res.ok) {
+            console.log(`[fetchScrapedo] asin=${asin} HTTP ${res.status}`);
+            return null;
+        }
+
+        const html = await res.text();
+
+        if (!html || html.length < 100) {
+            console.log(`[fetchScrapedo] asin=${asin} empty/short HTML`);
+            return null;
+        }
+
+        // Log global delivery snippets to confirm residential IP is working
+        const globalMatch = html.match(/(entrega|llega|recibe)[^<\n]{0,150}/gi);
+        if (globalMatch) {
+            console.log(`[fetchScrapedo] asin=${asin} delivery snippets: ${globalMatch.slice(0, 3).map(s => s.trim()).join(' || ')}`);
+        } else {
+            console.log(`[fetchScrapedo] asin=${asin} NO delivery keywords in HTML (${html.length} chars)`);
+        }
+
+        const deliverySection = extractDeliverySection(html);
+        console.log(`[fetchScrapedo] asin=${asin} deliverySection=${deliverySection !== null}`);
+
+        const searchText = deliverySection ?? html;
+
+        if (/(llega|entrega|recibe)\s+ma[ñn]ana/i.test(searchText)) {
+            console.log(`[fetchScrapedo] asin=${asin} → mañana (1 día)`);
+            return 1;
+        }
+        if (/(llega|entrega|recibe)\s+hoy/i.test(searchText)) {
+            console.log(`[fetchScrapedo] asin=${asin} → hoy (0 días)`);
+            return 0;
+        }
+
+        const dates = findAllSpanishDates(searchText);
+        if (dates.length > 0) {
+            const max = Math.max(...dates);
+            const snippet = [...searchText.matchAll(/(?:entrega|llega|recibe)[^<\n]{0,120}/gi)].slice(0, 2).map(m => m[0].trim()).join(' || ');
+            console.log(`[fetchScrapedo] asin=${asin} → ${max} días. snippet: ${snippet}`);
+            return max;
+        }
+
+        if (deliverySection) {
+            console.log(`[fetchScrapedo] asin=${asin} section found but no dates: ${deliverySection.slice(0, 400)}`);
+        } else {
+            console.log(`[fetchScrapedo] asin=${asin} no delivery dates found`);
+        }
+        return null;
+    } catch (e) {
+        clearTimeout(timer);
+        console.log(`[fetchScrapedo] asin=${asin} error: ${e}`);
+        return null;
+    }
+}
+
 async function fetchSearchPageDeliveryDays(asin: string, postalCode: string, auth: string): Promise<number | null> {
     // Search for the ASIN on Amazon's search page.
     // Search result cards show delivery dates as static text based on geo_location (IP),
@@ -221,6 +320,8 @@ async function fetchSearchPageDeliveryDays(asin: string, postalCode: string, aut
                 geo_location: postalCode,
                 render: "html",
                 parse: false,
+                cookies: buildAmazonLocationCookies(postalCode),
+                context: [{ key: "force_cookies", value: true }],
             }),
             signal: ctrl.signal,
         });
@@ -236,20 +337,35 @@ async function fetchSearchPageDeliveryDays(asin: string, postalCode: string, aut
             return null;
         }
 
+        // Global scan: check if delivery keywords appear ANYWHERE in the full HTML
+        const globalDeliveryMatch = html.match(/(entrega|llega|recibe)[^<\n]{0,120}/gi);
+        if (globalDeliveryMatch) {
+            console.log(`[fetchSearchPageDelivery] asin=${asin} global delivery snippets: ${globalDeliveryMatch.slice(0,3).map(s=>s.trim()).join(' || ')}`);
+        } else {
+            console.log(`[fetchSearchPageDelivery] asin=${asin} NO delivery keywords anywhere in HTML (${html.length} chars)`);
+        }
+
         // Find ALL occurrences of data-asin="ASIN" — iterate them all and return the
         // first card that contains a delivery date. Sponsored results for the same ASIN
         // may appear first but typically lack delivery text; the organic card has it.
         const cardMarker = `data-asin="${asin}"`;
         let searchFrom = 0;
         let found = false;
+        let cardCount = 0;
 
         while (true) {
             const cardIdx = html.indexOf(cardMarker, searchFrom);
             if (cardIdx === -1) break;
             found = true;
+            cardCount++;
 
-            // Each search card spans ~3000-5000 chars from the data-asin marker
-            const cardSection = html.slice(cardIdx, cardIdx + 5000);
+            // Expand window to 8000 chars to capture more of the card
+            const cardSection = html.slice(cardIdx, cardIdx + 8000);
+
+            // Log first 600 chars of the first card for diagnostics
+            if (cardCount === 1) {
+                console.log(`[fetchSearchPageDelivery] asin=${asin} card#1 preview: ${cardSection.slice(0, 600).replace(/\s+/g, ' ')}`);
+            }
 
             if (/(llega|entrega|recibe)\s+ma[ñn]ana/i.test(cardSection)) {
                 console.log(`[fetchSearchPageDelivery] asin=${asin} → mañana (1 día)`);
@@ -272,9 +388,9 @@ async function fetchSearchPageDeliveryDays(asin: string, postalCode: string, aut
         }
 
         if (!found) {
-            console.log(`[fetchSearchPageDelivery] asin=${asin} product card (data-asin) not found in search HTML`);
+            console.log(`[fetchSearchPageDelivery] asin=${asin} product card (data-asin) not found in search HTML (${html.length} chars)`);
         } else {
-            console.log(`[fetchSearchPageDelivery] asin=${asin} cards found but no delivery dates`);
+            console.log(`[fetchSearchPageDelivery] asin=${asin} ${cardCount} cards found but no delivery dates`);
         }
         return null;
     } catch (e) {
@@ -305,6 +421,8 @@ async function fetchAmazonAjaxDeliveryDays(asin: string, postalCode: string, aut
                 geo_location: postalCode,
                 render: "html",
                 parse: false,
+                cookies: buildAmazonLocationCookies(postalCode),
+                context: [{ key: "force_cookies", value: true }],
             }),
             signal: ctrl.signal,
         });
@@ -365,6 +483,8 @@ async function fetchAodDeliveryDays(asin: string, postalCode: string, auth: stri
                 geo_location: postalCode,
                 render: "html",
                 parse: false,
+                cookies: buildAmazonLocationCookies(postalCode),
+                context: [{ key: "force_cookies", value: true }],
             }),
             signal: ctrl.signal,
         });
@@ -415,14 +535,14 @@ async function fetchAodDeliveryDays(asin: string, postalCode: string, auth: stri
     }
 }
 
-async function fetchAmazonShippingDays(asin: string, postalCode?: string | null): Promise<number | null> {
+async function fetchAmazonShippingDays(asin: string, postalCode?: string | null): Promise<ShippingResult> {
     try {
         const oxylabsUser = Deno.env.get("OXYLABS_USERNAME");
         const oxylabsPass = Deno.env.get("OXYLABS_PASSWORD");
 
         if (!oxylabsUser || !oxylabsPass) {
             console.log(`[fetchAmazonShippingDays] asin=${asin} OXYLABS_USERNAME/PASSWORD not set`);
-            return null;
+            return { days: null, available: null };
         }
 
         const auth = `Basic ${btoa(`${oxylabsUser}:${oxylabsPass}`)}`;
@@ -448,9 +568,11 @@ async function fetchAmazonShippingDays(asin: string, postalCode?: string | null)
                 query: asin,
                 parse: true,
                 render: "html",
-                // geo_location sets the delivery postal code so Amazon shows actual dates.
-                // Without it, the scrape returns delivery:[] for cross-border sellers.
-                ...(postalCode ? { geo_location: postalCode } : {}),
+                ...(postalCode ? {
+                    geo_location: postalCode,
+                    cookies: buildAmazonLocationCookies(postalCode),
+                    context: [{ key: "force_cookies", value: true }],
+                } : {}),
             }),
             signal: controller.signal,
         });
@@ -458,7 +580,7 @@ async function fetchAmazonShippingDays(asin: string, postalCode?: string | null)
 
         if (!res.ok) {
             console.log(`[fetchAmazonShippingDays] asin=${asin} amazon_product HTTP ${res.status}`);
-            return null;
+            return { days: null, available: null };
         }
 
         const data = await res.json();
@@ -548,7 +670,7 @@ async function fetchAmazonShippingDays(asin: string, postalCode?: string | null)
             if (allCollectedDays.length > 0) {
                 const max = Math.max(...allCollectedDays);
                 console.log(`[fetchAmazonShippingDays] asin=${asin} allDays=${JSON.stringify(allCollectedDays)} → ${max} días`);
-                return max;
+                return { days: max, available: true };
             }
 
             // delivery:[] means Oxylabs' structured parser didn't extract a delivery date.
@@ -561,25 +683,33 @@ async function fetchAmazonShippingDays(asin: string, postalCode?: string | null)
                 const sellerName: string = content?.buybox?.[0]?.seller_name ?? '';
                 console.log(`[fetchAmazonShippingDays] asin=${asin} delivery=[] seller="${sellerName}", trying fallbacks`);
                 if (postalCode) {
-                    // 1st: search page — delivery shown as static text in product cards based on geo_location
+                    // 1st: Scrape.do — residential IP + JS render, sees dates like a real browser
+                    const scrapedoDays = await fetchScrapedoDeliveryDays(asin);
+                    if (scrapedoDays !== null) return { days: scrapedoDays, available: true };
+                    // 2nd–5th: Oxylabs fallbacks (kept as backup)
                     const searchDays = await fetchSearchPageDeliveryDays(asin, postalCode, auth);
-                    if (searchDays !== null) return searchDays;
-                    // 2nd: direct product page with ?zip= param
+                    if (searchDays !== null) return { days: searchDays, available: true };
                     const pageDays = await fetchDirectProductPageDays(asin, postalCode, auth);
-                    if (pageDays !== null) return pageDays;
-                    // 3rd: Amazon internal delivery AJAX endpoint
+                    if (pageDays !== null) return { days: pageDays, available: true };
                     const ajaxDays = await fetchAmazonAjaxDeliveryDays(asin, postalCode, auth);
-                    if (ajaxDays !== null) return ajaxDays;
-                    // 4th: AOD endpoint — works for products WITHOUT a buybox ("Ver opciones de compra")
+                    if (ajaxDays !== null) return { days: ajaxDays, available: true };
                     const aodDays = await fetchAodDeliveryDays(asin, postalCode, auth);
-                    if (aodDays !== null) return aodDays;
+                    if (aodDays !== null) return { days: aodDays, available: true };
+                    // All fallbacks exhausted — if Oxylabs also shows no buybox/price, the
+                    // product is genuinely not available on Amazon.com.mx (suppressed ASIN).
+                    const hasBuyBox = Array.isArray(content?.buybox) && content.buybox.length > 0;
+                    const hasPrice = content?.price !== null && content?.price !== undefined;
+                    if (!hasBuyBox && !hasPrice) {
+                        console.log(`[fetchAmazonShippingDays] asin=${asin} unavailable — no buybox, no price, all fallbacks failed`);
+                        return { days: null, available: false };
+                    }
                 } else {
                     console.log(`[fetchAmazonShippingDays] asin=${asin} no postal code — cannot fetch delivery pages`);
                 }
             }
 
             console.log(`[fetchAmazonShippingDays] asin=${asin} parsed content: no delivery date in known fields`);
-            return null;
+            return { days: null, available: null };
 
         } else if (typeof content === 'string' && content.length > 100) {
             // Structured parsing was off — got raw HTML.
@@ -594,18 +724,18 @@ async function fetchAmazonShippingDays(asin: string, postalCode?: string | null)
             if (dates.length > 0) {
                 const max = Math.max(...dates);
                 console.log(`[fetchAmazonShippingDays] asin=${asin} HTML dates=${JSON.stringify(dates)} → ${max} días`);
-                return max;
+                return { days: max, available: true };
             }
             console.log(`[fetchAmazonShippingDays] asin=${asin} HTML: no specific dates found`);
-            return null;
+            return { days: null, available: null };
         }
 
         console.log(`[fetchAmazonShippingDays] asin=${asin} empty/null content from Oxylabs`);
-        return null;
+        return { days: null, available: null };
 
     } catch (e) {
         console.error(`[fetchAmazonShippingDays] asin=${asin}:`, e);
-        return null;
+        return { days: null, available: null };
     }
 }
 
@@ -885,7 +1015,7 @@ serve(async (req) => {
 
             const { data: products } = await supabase
                 .from("products")
-                .select("id, meli_id, sku, price_mxn, stock_meli, currency, description_text, shipping_days, shipping_days_updated_at")
+                .select("id, meli_id, sku, price_mxn, stock_meli, status, currency, description_text, shipping_days, shipping_days_updated_at")
                 .eq("user_id", userId)
                 .eq("in_updater", true)
                 .not("meli_id", "is", null)
@@ -943,18 +1073,24 @@ serve(async (req) => {
                 const sellerCount   = offers?.sellerCount ?? null;
                 const soldByAmazon  = offers?.soldByAmazon ?? null;
                 const amazonStock   = offers?.amazonStock ?? null;
-                // True when Amazon responded but the product has no listing (404, removed, no offers)
+                // True only when Amazon's API explicitly confirmed the product doesn't exist (404/400).
+                // Error responses (network failures, auth errors) return amazonStock:null — excluded here
+                // to avoid incorrectly pausing products when the SP-API is temporarily unavailable.
                 const isUnavailableOnAmazon = offers !== undefined
                     && offers.price === null
-                    && offers.sellerCount === 0;
+                    && offers.sellerCount === 0
+                    && offers.amazonStock === 0;
 
                 // Shipping days: scrape Amazon.com.mx for actual delivery time, cache 7 days
                 let cachedShippingDays = (product as any).shipping_days ?? null;
                 const updatedAt = (product as any).shipping_days_updated_at;
                 const isStale = !updatedAt || (Date.now() - new Date(updatedAt).getTime()) > 7 * 24 * 60 * 60 * 1000;
 
+                let scrapedAvailable: boolean | null = null;
                 if (cachedShippingDays === null || isStale) {
-                    const scrapedDays = await fetchAmazonShippingDays(sku, settings.postal_code ?? null);
+                    const scrapeResult = await fetchAmazonShippingDays(sku, settings.postal_code ?? null);
+                    scrapedAvailable = scrapeResult.available;
+                    const scrapedDays = scrapeResult.days;
                     if (scrapedDays !== null) {
                         cachedShippingDays = scrapedDays;
                         await supabase.from("products").update({
@@ -986,9 +1122,28 @@ serve(async (req) => {
                     }
                 }
 
-                if (amazonStock === 0 || isUnavailableOnAmazon) {
+                const currentStatus = (product as any).status ?? 'active';
+                const scrapedUnavailable = scrapedAvailable === false;
+                if (amazonStock === 0 || isUnavailableOnAmazon || scrapedUnavailable) {
                     updatePayload.status = "paused";
-                    console.log(`[amazon-ml-updater] meliId=${meliId} pausing — ${isUnavailableOnAmazon ? 'product unavailable on Amazon' : 'Amazon stock = 0'}`);
+                    const pauseReason = scrapedUnavailable
+                        ? 'Oxylabs confirms product unavailable on Amazon.com.mx'
+                        : isUnavailableOnAmazon ? 'product unavailable on Amazon (SP-API 404/400)'
+                        : 'Amazon stock = 0';
+                    console.log(`[amazon-ml-updater] meliId=${meliId} pausing — ${pauseReason}`);
+                } else if (currentStatus === 'paused' && offers !== undefined && !isUnavailableOnAmazon && !scrapedUnavailable) {
+                    // ML rejects status:"active" combined with price/stock in the same payload.
+                    // Send reactivation as a standalone PUT, then let the main update handle price/stock.
+                    console.log(`[amazon-ml-updater] meliId=${meliId} reactivating — Amazon product available again`);
+                    const reactivateResult = await updateMeliItem(meliId, { status: "active" }, mlToken);
+                    if (reactivateResult.ok) {
+                        await supabase.from("products").update({ status: "active" }).eq("meli_id", meliId);
+                        console.log(`[amazon-ml-updater] meliId=${meliId} reactivation succeeded`);
+                    } else {
+                        // ML may block reactivation for quality/health reasons — do not hard-fail
+                        console.log(`[amazon-ml-updater] meliId=${meliId} ML blocked reactivation (continuing): ${reactivateResult.error}`);
+                    }
+                    // Do NOT put status in updatePayload — reactivation already handled above
                 }
 
                 if (syncParams.price) {
@@ -1009,7 +1164,7 @@ serve(async (req) => {
                     }
                 }
 
-                if (syncParams.stock && amazonStock !== 0 && !isUnavailableOnAmazon) {
+                if (syncParams.stock && amazonStock !== 0 && !isUnavailableOnAmazon && !scrapedUnavailable) {
                     const stockToSync = amazonStock !== null ? Math.min(amazonStock, defaultStock) : defaultStock;
                     updatePayload.available_quantity = stockToSync;
                 }

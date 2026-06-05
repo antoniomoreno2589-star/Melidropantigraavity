@@ -108,7 +108,7 @@ export const UpdaterPage: React.FC = () => {
                                 if (job) setSyncJob(job);
                             }
                         } else {
-                            setSyncResult(`❌ Error en sincronización programada: ${data.error}`);
+                            setSyncResult(`❌ Error en sincronización programada: ${data.error ?? data.message ?? 'Error desconocido'}`);
                         }
                     } catch (e: any) {
                         setSyncResult(`❌ Error de red en sincronización programada: ${e.message}`);
@@ -155,7 +155,7 @@ export const UpdaterPage: React.FC = () => {
                                 if (job) setSyncJob(job);
                             }
                         } else {
-                            setSyncResult(`❌ Error en actualización programada: ${data.error}`);
+                            setSyncResult(`❌ Error en actualización programada: ${data.error ?? data.message ?? 'Error desconocido'}`);
                         }
                     } catch (e: any) {
                         setSyncResult(`❌ Error de red en actualización programada: ${e.message}`);
@@ -454,7 +454,7 @@ export const UpdaterPage: React.FC = () => {
                     if (job) setSyncJob(job);
                 }
             } else {
-                setSyncResult(`❌ Error: ${data.error}`);
+                setSyncResult(`❌ Error: ${data.error ?? data.message ?? 'Error desconocido'}`);
             }
         } catch (e: any) {
             setSyncResult(`❌ Error de red: ${e.message}`);
