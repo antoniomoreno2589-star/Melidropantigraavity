@@ -516,6 +516,7 @@ export const UpdaterPage: React.FC = () => {
     };
 
     return (
+        <>
         <div className="flex-1 overflow-y-auto p-4 md:p-8">
             <div className="w-full max-w-7xl mx-auto flex flex-col gap-6">
 
@@ -1076,5 +1077,6 @@ export const UpdaterPage: React.FC = () => {
                 </div>
             </div>
         )}
+        </>
     );
 };
