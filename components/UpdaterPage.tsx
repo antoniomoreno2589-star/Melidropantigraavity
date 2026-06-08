@@ -69,6 +69,9 @@ export const UpdaterPage: React.FC = () => {
     const [syncRunning, setSyncRunning] = useState(false);
     const [syncResult, setSyncResult] = useState<string>('');
     const [prepDays, setPrepDays] = useState<number>(3);
+    const [postalCode, setPostalCode] = useState<string>('');
+    const [scrapeDebug, setScrapeDebug] = useState<{ product: Product; result: any } | null>(null);
+    const [scrapeDebugLoading, setScrapeDebugLoading] = useState<string | null>(null);
 
     useEffect(() => {
         loadProducts();
@@ -303,6 +306,25 @@ export const UpdaterPage: React.FC = () => {
         const rules = (connData as any)?.margin_rules ?? {};
         const pd = rules.prep_days ?? rules.handling_time_mx ?? 3;
         setPrepDays(typeof pd === 'number' ? pd : parseInt(pd) || 3);
+        const pc = rules.postal_code ?? '';
+        setPostalCode(typeof pc === 'string' ? pc : String(pc));
+    };
+
+    const handleDebugScrape = async (product: Product) => {
+        setScrapeDebugLoading(product.id);
+        try {
+            const res = await fetch(UPDATER_URL, {
+                method: 'POST',
+                headers: { 'Authorization': `Bearer ${ANON_KEY}`, 'Content-Type': 'application/json' },
+                body: JSON.stringify({ debugHtml: product.sku, zipcode: postalCode }),
+            });
+            const data = await res.json();
+            setScrapeDebug({ product, result: data });
+        } catch (e: any) {
+            setScrapeDebug({ product, result: { error: e.message } });
+        } finally {
+            setScrapeDebugLoading(null);
+        }
     };
 
     const filtered = useMemo(() => {
@@ -922,12 +944,23 @@ export const UpdaterPage: React.FC = () => {
                                             </>
                                         )}
                                     </div>
-                                    <div className="hidden xl:flex justify-center">
+                                    <div className="hidden xl:flex justify-center items-center gap-1">
                                         {product.shippingDays === null || product.shippingDays === undefined ? (
                                             <span className="text-xs text-slate-300 dark:text-slate-600">—</span>
                                         ) : (
                                             <span className="px-2 py-0.5 rounded-full text-xs font-black bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-400" title={`Amazon: ${product.shippingDays}d + prep: ${prepDays}d`}>{product.shippingDays + prepDays} días</span>
                                         )}
+                                        <button
+                                            onClick={() => handleDebugScrape(product)}
+                                            disabled={scrapeDebugLoading === product.id}
+                                            title="Ver HTML que recibió el scraper"
+                                            className="p-0.5 rounded hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 transition-colors disabled:opacity-50"
+                                        >
+                                            {scrapeDebugLoading === product.id
+                                                ? <span className="material-symbols-outlined text-[14px] animate-spin">progress_activity</span>
+                                                : <span className="material-symbols-outlined text-[14px]">search</span>
+                                            }
+                                        </button>
                                     </div>
                                     <div className="flex justify-center">
                                         <button
@@ -964,5 +997,84 @@ export const UpdaterPage: React.FC = () => {
 
             </div>
         </div>
+
+        {/* Modal debug scraper */}
+        {scrapeDebug && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm" onClick={() => setScrapeDebug(null)}>
+                <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl w-full max-w-3xl max-h-[90vh] flex flex-col" onClick={e => e.stopPropagation()}>
+                    {/* Header */}
+                    <div className="flex items-center justify-between px-5 py-4 border-b border-slate-200 dark:border-slate-700">
+                        <div>
+                            <h2 className="text-base font-bold text-slate-900 dark:text-white">Debug scraper Amazon</h2>
+                            <p className="text-xs text-slate-500 mt-0.5">SKU: <span className="font-mono">{scrapeDebug.product.sku}</span> · CP: <span className="font-mono">{postalCode || '(no configurado)'}</span></p>
+                        </div>
+                        <button onClick={() => setScrapeDebug(null)} className="p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors">
+                            <span className="material-symbols-outlined text-slate-500">close</span>
+                        </button>
+                    </div>
+
+                    <div className="overflow-y-auto flex-1 p-5 space-y-4">
+                        {scrapeDebug.result.error ? (
+                            <div className="p-3 rounded-lg bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-400 text-sm font-mono">{scrapeDebug.result.error}</div>
+                        ) : (
+                            <>
+                                {/* Resumen */}
+                                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                                    {[
+                                        { label: 'Días detectados', value: scrapeDebug.result.maxDays !== null ? `${scrapeDebug.result.maxDays} días` : '—', color: scrapeDebug.result.maxDays !== null ? 'text-blue-600' : 'text-slate-400' },
+                                        { label: 'Buy Box', value: scrapeDebug.result.hasBuyBox === true ? 'Sí' : scrapeDebug.result.hasBuyBox === false ? 'No' : '?', color: scrapeDebug.result.hasBuyBox ? 'text-green-600' : 'text-red-500' },
+                                        { label: 'Sección entrega', value: scrapeDebug.result.deliverySectionFound ? 'Encontrada' : 'No encontrada', color: scrapeDebug.result.deliverySectionFound ? 'text-green-600' : 'text-amber-500' },
+                                        { label: 'Tamaño HTML', value: scrapeDebug.result.htmlLen ? `${(scrapeDebug.result.htmlLen / 1024).toFixed(0)} KB` : '—', color: 'text-slate-600' },
+                                    ].map(item => (
+                                        <div key={item.label} className="bg-slate-50 dark:bg-slate-800 rounded-xl p-3">
+                                            <p className="text-xs text-slate-400 mb-1">{item.label}</p>
+                                            <p className={`text-sm font-bold ${item.color}`}>{item.value}</p>
+                                        </div>
+                                    ))}
+                                </div>
+
+                                {/* Fechas encontradas */}
+                                {scrapeDebug.result.datesFound?.length > 0 && (
+                                    <div>
+                                        <p className="text-xs font-semibold text-slate-500 uppercase mb-2">Fechas encontradas (días desde hoy)</p>
+                                        <div className="flex flex-wrap gap-2">
+                                            {scrapeDebug.result.datesFound.map((d: number, i: number) => (
+                                                <span key={i} className="px-2 py-1 rounded-lg bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 text-xs font-mono font-bold">{d} días</span>
+                                            ))}
+                                        </div>
+                                    </div>
+                                )}
+
+                                {/* Snippets de entrega */}
+                                {scrapeDebug.result.allDeliverySnippets?.length > 0 && (
+                                    <div>
+                                        <p className="text-xs font-semibold text-slate-500 uppercase mb-2">Texto de entrega que encontró Amazon ({scrapeDebug.result.allDeliverySnippets.length} coincidencias)</p>
+                                        <div className="space-y-1.5">
+                                            {scrapeDebug.result.allDeliverySnippets.map((s: string, i: number) => (
+                                                <div key={i} className="px-3 py-2 rounded-lg bg-amber-50 dark:bg-amber-900/20 text-amber-900 dark:text-amber-200 text-xs font-mono break-all">{s}</div>
+                                            ))}
+                                        </div>
+                                    </div>
+                                )}
+
+                                {/* Sección de entrega (HTML) */}
+                                {scrapeDebug.result.deliverySection && (
+                                    <div>
+                                        <p className="text-xs font-semibold text-slate-500 uppercase mb-2">Sección de entrega (HTML raw · primeros 2000 chars)</p>
+                                        <pre className="text-[11px] font-mono bg-slate-900 text-green-400 p-4 rounded-xl overflow-x-auto whitespace-pre-wrap break-all leading-relaxed">{scrapeDebug.result.deliverySection}</pre>
+                                    </div>
+                                )}
+
+                                {/* Inicio del HTML */}
+                                <div>
+                                    <p className="text-xs font-semibold text-slate-500 uppercase mb-2">Inicio del HTML (primeros 3000 chars)</p>
+                                    <pre className="text-[11px] font-mono bg-slate-900 text-slate-300 p-4 rounded-xl overflow-x-auto whitespace-pre-wrap break-all leading-relaxed">{scrapeDebug.result.rawHtmlStart}</pre>
+                                </div>
+                            </>
+                        )}
+                    </div>
+                </div>
+            </div>
+        )}
     );
 };
