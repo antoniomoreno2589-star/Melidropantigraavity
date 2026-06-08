@@ -1009,9 +1009,28 @@ export const UpdaterPage: React.FC = () => {
                             <h2 className="text-base font-bold text-slate-900 dark:text-white">Debug scraper Amazon</h2>
                             <p className="text-xs text-slate-500 mt-0.5">SKU: <span className="font-mono">{scrapeDebug.product.sku}</span> · CP: <span className="font-mono">{postalCode || '(no configurado)'}</span></p>
                         </div>
-                        <button onClick={() => setScrapeDebug(null)} className="p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors">
-                            <span className="material-symbols-outlined text-slate-500">close</span>
-                        </button>
+                        <div className="flex items-center gap-2">
+                            {scrapeDebug.result.rawHtml && (
+                                <button
+                                    onClick={() => {
+                                        const blob = new Blob([scrapeDebug.result.rawHtml], { type: 'text/html' });
+                                        const url = URL.createObjectURL(blob);
+                                        const a = document.createElement('a');
+                                        a.href = url;
+                                        a.download = `amazon-${scrapeDebug.product.sku}.html`;
+                                        a.click();
+                                        URL.revokeObjectURL(url);
+                                    }}
+                                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold transition-colors"
+                                >
+                                    <span className="material-symbols-outlined text-[15px]">download</span>
+                                    Descargar HTML
+                                </button>
+                            )}
+                            <button onClick={() => setScrapeDebug(null)} className="p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors">
+                                <span className="material-symbols-outlined text-slate-500">close</span>
+                            </button>
+                        </div>
                     </div>
 
                     <div className="overflow-y-auto flex-1 p-5 space-y-4">
@@ -1067,10 +1086,12 @@ export const UpdaterPage: React.FC = () => {
                                 )}
 
                                 {/* Inicio del HTML */}
-                                <div>
-                                    <p className="text-xs font-semibold text-slate-500 uppercase mb-2">Inicio del HTML (primeros 3000 chars)</p>
-                                    <pre className="text-[11px] font-mono bg-slate-900 text-slate-300 p-4 rounded-xl overflow-x-auto whitespace-pre-wrap break-all leading-relaxed">{scrapeDebug.result.rawHtmlStart}</pre>
-                                </div>
+                                {scrapeDebug.result.rawHtml && (
+                                    <div>
+                                        <p className="text-xs font-semibold text-slate-500 uppercase mb-2">Preview HTML (primeros 3000 chars · descarga el archivo para verlo completo)</p>
+                                        <pre className="text-[11px] font-mono bg-slate-900 text-slate-300 p-4 rounded-xl overflow-x-auto whitespace-pre-wrap break-all leading-relaxed">{scrapeDebug.result.rawHtml.slice(0, 3000)}</pre>
+                                    </div>
+                                )}
                             </>
                         )}
                     </div>

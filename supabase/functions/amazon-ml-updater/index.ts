@@ -915,7 +915,7 @@ serve(async (req) => {
                 datesFound: dates,
                 maxDays: dates.length > 0 ? Math.max(...dates) : null,
                 hasBuyBox: !html.includes('id="see-all-buying-choices"') && (html.includes('id="add-to-cart-button"') || html.includes('name="submit.add-to-cart"')),
-                rawHtmlStart: html.slice(0, 3000),
+                rawHtml: html,
             }, null, 2), { headers: corsHeaders });
         } catch (e: any) {
             return new Response(JSON.stringify({ error: e.message }), { headers: corsHeaders });
