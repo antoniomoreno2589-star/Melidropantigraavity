@@ -108,7 +108,7 @@ function parseDeliveryDays(text: string): number | null {
     // Combined Spanish + English date detection for delivery-scoped text.
     // Explicit dates are the most reliable signal; "tomorrow/today" are fallbacks.
     const dates = [...findAllSpanishDates(text), ...findAllEnglishDates(text)];
-    if (dates.length > 0) return Math.max(...dates);
+    if (dates.length > 0) return Math.min(...dates);
     if (/\b(ma[ñn]ana|tomorrow)\b/i.test(text)) return 1;
     if (/\b(hoy|today)\b/i.test(text)) return 0;
     return null;
@@ -727,6 +727,81 @@ function extractOxylabsDeliveryText(content: any): string {
     return parts.join(' ');
 }
 
+async function fetchRainforestDelivery(asin: string, postalCode: string | null, apiKey: string): Promise<number | null> {
+    console.log(`[fetchRainforest] asin=${asin} CP=${postalCode ?? 'none'} fetching`);
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 30000);
+    try {
+        const params = new URLSearchParams({
+            api_key: apiKey,
+            type: 'product',
+            asin: asin,
+            amazon_domain: 'amazon.com.mx',
+        });
+        if (postalCode) params.set('zipcode', postalCode);
+
+        const res = await fetch(`https://api.rainforestapi.com/request?${params.toString()}`, {
+            signal: ctrl.signal,
+        });
+        clearTimeout(timer);
+
+        if (!res.ok) {
+            const errBody = await res.text().catch(() => '');
+            console.log(`[fetchRainforest] asin=${asin} HTTP ${res.status}: ${errBody.slice(0, 200)}`);
+            return null;
+        }
+
+        const data = await res.json();
+        const product = data?.product;
+        if (!product) {
+            console.log(`[fetchRainforest] asin=${asin} no product in response`);
+            return null;
+        }
+
+        const deliveries: any[] = product.delivery ?? [];
+        console.log(`[fetchRainforest] asin=${asin} delivery items: ${JSON.stringify(deliveries).slice(0, 400)}`);
+
+        const now = new Date();
+        const daysCandidates: number[] = [];
+
+        for (const d of deliveries) {
+            if (d.date_utc) {
+                const deliveryDate = new Date(d.date_utc);
+                const diffMs = deliveryDate.getTime() - now.getTime();
+                const days = Math.ceil(diffMs / (24 * 60 * 60 * 1000));
+                if (days >= 0 && days <= 60) { daysCandidates.push(days); continue; }
+            }
+            const text = [d.date_raw, d.tagline, d.raw].filter(Boolean).join(' ');
+            if (text) {
+                const days = parseDeliveryDays(text);
+                if (days !== null) daysCandidates.push(days);
+            }
+        }
+
+        if (daysCandidates.length > 0) {
+            const min = Math.min(...daysCandidates);
+            console.log(`[fetchRainforest] asin=${asin} → ${min} días`);
+            return min;
+        }
+
+        const shippingRaw = product.buybox_winner?.shipping?.raw ?? '';
+        if (shippingRaw) {
+            const days = parseDeliveryDays(shippingRaw);
+            if (days !== null) {
+                console.log(`[fetchRainforest] asin=${asin} → ${days} días (from shipping.raw)`);
+                return days;
+            }
+        }
+
+        console.log(`[fetchRainforest] asin=${asin} no delivery date. deliveries=${JSON.stringify(deliveries).slice(0, 300)}`);
+        return null;
+    } catch (e) {
+        clearTimeout(timer);
+        console.log(`[fetchRainforest] asin=${asin} error: ${e}`);
+        return null;
+    }
+}
+
 async function fetchOxylabsStructuredDelivery(asin: string, postalCode: string | null, auth: string): Promise<number | null> {
     // Oxylabs E-commerce Scraper API with parse:true returns a structured `delivery`
     // object. Unlike the render:html proxy we use elsewhere, the amazon_product source
@@ -765,26 +840,17 @@ async function fetchOxylabsStructuredDelivery(asin: string, postalCode: string |
             return null;
         }
 
-        // Prefer the delivery-scoped fields; fall back to scanning the whole content.
         const deliveryText = extractOxylabsDeliveryText(content);
+        console.log(`[fetchOxylabsStructured] asin=${asin} delivery raw: ${deliveryText.slice(0, 400) || '(none)'}`);
         if (deliveryText) {
             const days = parseDeliveryDays(deliveryText);
             if (days !== null) {
-                console.log(`[fetchOxylabsStructured] asin=${asin} → ${days} días. delivery: ${deliveryText.slice(0, 250)}`);
+                console.log(`[fetchOxylabsStructured] asin=${asin} → ${days} días`);
                 return days;
             }
         }
 
-        // No date in the delivery field — scan the full parsed payload for any date string.
-        const fullText = JSON.stringify(content);
-        const dates = [...findAllSpanishDates(fullText), ...findAllEnglishDates(fullText)];
-        if (dates.length > 0) {
-            const max = Math.max(...dates);
-            console.log(`[fetchOxylabsStructured] asin=${asin} → ${max} días (from full content scan)`);
-            return max;
-        }
-
-        console.log(`[fetchOxylabsStructured] asin=${asin} no delivery date in parsed content. delivery field: ${deliveryText.slice(0, 250) || '(none)'}`);
+        console.log(`[fetchOxylabsStructured] asin=${asin} no delivery date in delivery fields. delivery field: ${deliveryText.slice(0, 250) || '(none)'}`);
         return null;
     } catch (e) {
         clearTimeout(timer);
@@ -824,6 +890,15 @@ async function fetchAmazonShippingDays(asin: string, postalCode?: string | null,
             if (oxyStructuredDays !== null) {
                 console.log(`[fetchAmazonShippingDays] asin=${asin} Oxylabs structured → ${oxyStructuredDays} días`);
                 return { days: oxyStructuredDays, available: true, hasBuyBox: scrapedoResult.hasBuyBox ?? null };
+            }
+        }
+
+        const rainforestKey = Deno.env.get("RAINFOREST_API_KEY");
+        if (rainforestKey) {
+            const rfDays = await fetchRainforestDelivery(asin, postalCode ?? null, rainforestKey);
+            if (rfDays !== null) {
+                console.log(`[fetchAmazonShippingDays] asin=${asin} Rainforest → ${rfDays} días`);
+                return { days: rfDays, available: true, hasBuyBox: scrapedoResult.hasBuyBox ?? null };
             }
         }
 
@@ -1065,6 +1140,54 @@ serve(async (req) => {
                 oxylabsError = "OXYLABS credentials not set";
             }
 
+            // Probe Rainforest API — capture raw response for debug inspection
+            let rainforestDays: number | null = null;
+            let rainforestError: string | null = null;
+            let rainforestRaw: any = null;
+            const rfKey = Deno.env.get("RAINFOREST_API_KEY");
+            if (rfKey) {
+                try {
+                    const rfParams = new URLSearchParams({
+                        api_key: rfKey,
+                        type: 'product',
+                        asin: debugHtmlAsin,
+                        amazon_domain: 'amazon.com.mx',
+                    });
+                    if (debugHtmlZip) rfParams.set('zipcode', debugHtmlZip);
+                    const rfCtrl = new AbortController();
+                    const rfTimer = setTimeout(() => rfCtrl.abort(), 30000);
+                    try {
+                        const rfRes = await fetch(`https://api.rainforestapi.com/request?${rfParams.toString()}`, { signal: rfCtrl.signal });
+                        clearTimeout(rfTimer);
+                        if (rfRes.ok) {
+                            const rfData = await rfRes.json();
+                            const rfProduct = rfData?.product;
+                            rainforestRaw = rfProduct ? {
+                                title: rfProduct.title?.slice(0, 80),
+                                delivery: rfProduct.delivery ?? null,
+                                buybox_winner: rfProduct.buybox_winner ? {
+                                    shipping: rfProduct.buybox_winner.shipping,
+                                    fulfillment: rfProduct.buybox_winner.fulfillment,
+                                    price: rfProduct.buybox_winner.price,
+                                } : null,
+                                shipping: rfProduct.shipping ?? null,
+                            } : { raw_keys: Object.keys(rfData ?? {}) };
+                            rainforestDays = await fetchRainforestDelivery(debugHtmlAsin, debugHtmlZip, rfKey);
+                        } else {
+                            const errText = await rfRes.text().catch(() => '');
+                            rainforestError = `HTTP ${rfRes.status}: ${errText.slice(0, 200)}`;
+                        }
+                    } catch (fetchErr: any) {
+                        clearTimeout(rfTimer);
+                        rainforestError = fetchErr?.message ?? String(fetchErr);
+                    }
+                } catch (e: any) {
+                    rainforestError = e?.message ?? String(e);
+                }
+            } else {
+                rainforestError = "RAINFOREST_API_KEY not set";
+            }
+
             return new Response(JSON.stringify({
                 asin: debugHtmlAsin,
                 zip: debugHtmlZip,
@@ -1077,6 +1200,9 @@ serve(async (req) => {
                 maxDays: dates.length > 0 ? Math.max(...dates) : null,
                 oxylabsDays,
                 oxylabsError,
+                rainforestDays,
+                rainforestError,
+                rainforestRaw,
                 hasBuyBox: !html.includes('id="see-all-buying-choices"') && (html.includes('id="add-to-cart-button"') || html.includes('name="submit.add-to-cart"')),
                 rawHtml: html,
             }, null, 2), { headers: corsHeaders });
