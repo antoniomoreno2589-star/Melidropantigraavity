@@ -741,11 +741,14 @@ function extractRainforestDays(data: any, label: string, asin: string): number |
             const days = Math.ceil((dt.getTime() - now.getTime()) / (24 * 60 * 60 * 1000));
             if (days >= 0 && days <= 60) { candidates.push(days); continue; }
         }
-        const text = [d.date_raw, d.tagline, d.raw].filter(Boolean).join(' ');
+        const text = [d.date_raw, d.tagline, d.raw, d.comment, d.comments, d.date, d.price?.raw].filter(Boolean).join(' ');
         if (text) { const d2 = parseDeliveryDays(text); if (d2 !== null) candidates.push(d2); }
+        if (d.countdown) { const d2 = parseDeliveryDays(d.countdown); if (d2 !== null) candidates.push(d2); }
     }
 
     // offers[].delivery (type=offers) — each offer has a delivery object
+    // delivery.comments (plural) contains the Spanish date text e.g. "el lunes, 15 de junio"
+    // delivery.price.raw contains "Entrega GRATIS el lunes. 15 de junio. Ver detalles"
     const offersList: any[] = data?.offers_results?.offers ?? data?.offers ?? [];
     for (const offer of offersList) {
         const del = offer?.delivery;
@@ -756,8 +759,8 @@ function extractRainforestDays(data: any, label: string, asin: string): number |
             const days = Math.ceil((dt.getTime() - now.getTime()) / (24 * 60 * 60 * 1000));
             if (days >= 0 && days <= 60) { candidates.push(days); continue; }
         }
-        // delivery.date_raw, .tagline, .raw, .comment
-        const text = [del.date_raw, del.tagline, del.raw, del.comment, del.date].filter(Boolean).join(' ');
+        // delivery.date_raw, .tagline, .raw, .comment, .comments, .date, .price.raw
+        const text = [del.date_raw, del.tagline, del.raw, del.comment, del.comments, del.date, del.price?.raw].filter(Boolean).join(' ');
         if (text) { const d2 = parseDeliveryDays(text); if (d2 !== null) candidates.push(d2); }
         // delivery.countdown (e.g. "Order within 2 hrs 30 mins … arrives Jun 17")
         if (del.countdown) { const d2 = parseDeliveryDays(del.countdown); if (d2 !== null) candidates.push(d2); }
@@ -766,6 +769,12 @@ function extractRainforestDays(data: any, label: string, asin: string): number |
     // buybox_winner.shipping.raw (type=product fallback)
     const shippingRaw = data?.product?.buybox_winner?.shipping?.raw ?? '';
     if (shippingRaw) { const d2 = parseDeliveryDays(shippingRaw); if (d2 !== null) candidates.push(d2); }
+
+    // Full JSON scan as last resort when structured fields yielded nothing
+    if (candidates.length === 0) {
+        const fullText = JSON.stringify(data);
+        candidates.push(...findAllSpanishDates(fullText), ...findAllEnglishDates(fullText));
+    }
 
     if (candidates.length > 0) {
         const min = Math.min(...candidates);
@@ -925,15 +934,12 @@ async function fetchAmazonShippingDays(asin: string, postalCode?: string | null,
             return { days: scrapedoResult.days, available: true, hasBuyBox: scrapedoResult.hasBuyBox ?? null };
         }
 
-        // Scrape.do loaded the page but found no delivery dates — try AOD as fallback.
-        // The AOD endpoint (/gp/aod/ajax) sometimes exposes dates not visible on the main page.
+        // Scrape.do loaded the page but found no delivery dates.
         const oxylabsUser = Deno.env.get("OXYLABS_USERNAME");
         const oxylabsPass = Deno.env.get("OXYLABS_PASSWORD");
         const auth = (oxylabsUser && oxylabsPass) ? `Basic ${btoa(`${oxylabsUser}:${oxylabsPass}`)}` : null;
 
         if (auth) {
-            // Oxylabs structured parse (parse:true) sets the delivery location natively
-            // and can surface cross-border delivery dates the anonymous scrape misses.
             const oxyStructuredDays = await fetchOxylabsStructuredDelivery(asin, postalCode ?? null, auth);
             if (oxyStructuredDays !== null) {
                 console.log(`[fetchAmazonShippingDays] asin=${asin} Oxylabs structured → ${oxyStructuredDays} días`);
@@ -957,7 +963,6 @@ async function fetchAmazonShippingDays(asin: string, postalCode?: string | null,
                 return { days: aodDays, available: true, hasBuyBox: scrapedoResult.hasBuyBox ?? null };
             }
         }
-
 
         return { days: null, available: null };
     } catch (e) {
@@ -1171,8 +1176,6 @@ serve(async (req) => {
             const dates = deliverySection ? findAllSpanishDates(deliverySection) : findAllSpanishDates(html);
             const isCrossBorder = detectCrossBorder(html);
 
-            // Also probe Oxylabs structured parse so the debug modal can show whether the
-            // paid E-commerce API surfaces a cross-border delivery date Scrape.do can't.
             let oxylabsDays: number | null = null;
             let oxylabsError: string | null = null;
             const oxyUser = Deno.env.get("OXYLABS_USERNAME");
@@ -1290,6 +1293,7 @@ serve(async (req) => {
             } else {
                 aodError = "zipcode required for AOD probe";
             }
+
 
             return new Response(JSON.stringify({
                 asin: debugHtmlAsin,

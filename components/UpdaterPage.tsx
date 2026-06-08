@@ -1057,7 +1057,7 @@ export const UpdaterPage: React.FC = () => {
                                     ))}
                                 </div>
 
-                                {/* Veredicto cross-border / Oxylabs */}
+                                {/* Veredicto cross-border */}
                                 {scrapeDebug.result.isCrossBorder && (
                                     <div className="p-3 rounded-lg bg-amber-50 dark:bg-amber-900/20 text-amber-800 dark:text-amber-300 text-xs leading-relaxed">
                                         <span className="font-semibold">Producto importado (Amazon Estados Unidos).</span>{' '}
