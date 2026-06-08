@@ -1188,6 +1188,24 @@ serve(async (req) => {
                 rainforestError = "RAINFOREST_API_KEY not set";
             }
 
+            // Probe AOD endpoint (All Offers Display) — best fallback for cross-border products
+            let aodDays: number | null = null;
+            let aodError: string | null = null;
+            const aodUser = Deno.env.get("OXYLABS_USERNAME");
+            const aodPass = Deno.env.get("OXYLABS_PASSWORD");
+            if (aodUser && aodPass && debugHtmlZip) {
+                try {
+                    const aodAuth = `Basic ${btoa(`${aodUser}:${aodPass}`)}`;
+                    aodDays = await fetchAodDeliveryDays(debugHtmlAsin, debugHtmlZip, aodAuth);
+                } catch (e: any) {
+                    aodError = e?.message ?? String(e);
+                }
+            } else if (!aodUser || !aodPass) {
+                aodError = "OXYLABS credentials not set";
+            } else {
+                aodError = "zipcode required for AOD probe";
+            }
+
             return new Response(JSON.stringify({
                 asin: debugHtmlAsin,
                 zip: debugHtmlZip,
@@ -1203,6 +1221,8 @@ serve(async (req) => {
                 rainforestDays,
                 rainforestError,
                 rainforestRaw,
+                aodDays,
+                aodError,
                 hasBuyBox: !html.includes('id="see-all-buying-choices"') && (html.includes('id="add-to-cart-button"') || html.includes('name="submit.add-to-cart"')),
                 rawHtml: html,
             }, null, 2), { headers: corsHeaders });

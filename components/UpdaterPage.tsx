@@ -1044,6 +1044,7 @@ export const UpdaterPage: React.FC = () => {
                                         { label: 'Scrape.do (días)', value: scrapeDebug.result.maxDays !== null ? `${scrapeDebug.result.maxDays} días` : '—', color: scrapeDebug.result.maxDays !== null ? 'text-blue-600' : 'text-slate-400' },
                                         { label: 'Oxylabs (días)', value: scrapeDebug.result.oxylabsDays !== null && scrapeDebug.result.oxylabsDays !== undefined ? `${scrapeDebug.result.oxylabsDays} días` : (scrapeDebug.result.oxylabsError ? '✕' : '—'), color: scrapeDebug.result.oxylabsDays !== null && scrapeDebug.result.oxylabsDays !== undefined ? 'text-emerald-600' : 'text-slate-400' },
                                         { label: 'Rainforest (días)', value: scrapeDebug.result.rainforestDays !== null && scrapeDebug.result.rainforestDays !== undefined ? `${scrapeDebug.result.rainforestDays} días` : (scrapeDebug.result.rainforestError === 'RAINFOREST_API_KEY not set' ? 'Sin clave' : scrapeDebug.result.rainforestError ? '✕' : '—'), color: scrapeDebug.result.rainforestDays !== null && scrapeDebug.result.rainforestDays !== undefined ? 'text-violet-600' : 'text-slate-400' },
+                                        { label: 'AOD (días)', value: scrapeDebug.result.aodDays !== null && scrapeDebug.result.aodDays !== undefined ? `${scrapeDebug.result.aodDays} días` : (scrapeDebug.result.aodError ? '✕' : '—'), color: scrapeDebug.result.aodDays !== null && scrapeDebug.result.aodDays !== undefined ? 'text-teal-600' : 'text-slate-400' },
                                         { label: 'Producto de USA', value: scrapeDebug.result.isCrossBorder ? 'Sí (importado)' : 'No', color: scrapeDebug.result.isCrossBorder ? 'text-amber-600' : 'text-slate-600' },
                                         { label: 'Buy Box', value: scrapeDebug.result.hasBuyBox === true ? 'Sí' : scrapeDebug.result.hasBuyBox === false ? 'No' : '?', color: scrapeDebug.result.hasBuyBox ? 'text-green-600' : 'text-red-500' },
                                         { label: 'Sección entrega', value: scrapeDebug.result.deliverySectionFound ? 'Encontrada' : 'No encontrada', color: scrapeDebug.result.deliverySectionFound ? 'text-green-600' : 'text-amber-500' },
@@ -1064,7 +1065,9 @@ export const UpdaterPage: React.FC = () => {
                                             ? `Rainforest obtuvo la fecha: ${scrapeDebug.result.rainforestDays} días. ✓`
                                             : scrapeDebug.result.oxylabsDays !== null && scrapeDebug.result.oxylabsDays !== undefined
                                                 ? `Oxylabs (parse:true) obtuvo la fecha: ${scrapeDebug.result.oxylabsDays} días. ✓`
-                                                : `Scrape.do y Oxylabs no ven la fecha (bloqueada por Prime).${scrapeDebug.result.rainforestError === 'RAINFOREST_API_KEY not set' ? ' Configura RAINFOREST_API_KEY en Supabase para activar Rainforest.' : scrapeDebug.result.rainforestError ? ` Rainforest error: ${scrapeDebug.result.rainforestError}` : ''}`}
+                                                : scrapeDebug.result.aodDays !== null && scrapeDebug.result.aodDays !== undefined
+                                                    ? `AOD (All Offers Display) obtuvo la fecha: ${scrapeDebug.result.aodDays} días. ✓`
+                                                    : `Ningún scraper obtiene la fecha (gated por Prime). El actualizador usará el valor default configurado en Ajustes → "Días de entrega Amazon USA".${scrapeDebug.result.aodError ? ` AOD: ${scrapeDebug.result.aodError}` : ''}`}
                                     </div>
                                 )}
 

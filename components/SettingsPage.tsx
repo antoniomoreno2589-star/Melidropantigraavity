@@ -384,6 +384,8 @@ export const SettingsPage = () => {
     const [exchangeRate, setExchangeRate] = useState<number>(() => parseFloat(localStorage.getItem('melidrop_exchange_rate') || '18.24'));
     const [prepDays, setPrepDays] = useState<number>(() => parseInt(localStorage.getItem('melidrop_prep_days') || '3'));
     const [postalCode, setPostalCode] = useState<string>(() => localStorage.getItem('melidrop_postal_code') || '');
+    const [deliveryDaysUsa, setDeliveryDaysUsa] = useState<number>(() => parseInt(localStorage.getItem('melidrop_delivery_days_usa') || '10'));
+    const [deliveryDaysMx, setDeliveryDaysMx] = useState<number>(() => parseInt(localStorage.getItem('melidrop_delivery_days_mx') || '3'));
     const [usaDefaultMargin, setUsaDefaultMargin] = useState<number>(30);
     const [mxDefaultMargin, setMxDefaultMargin] = useState<number>(20);
     const [isUpdatingDolar, setIsUpdatingDolar] = useState(false);
@@ -455,6 +457,8 @@ export const SettingsPage = () => {
         localStorage.setItem('melidrop_global_filters', globalFilters);
         localStorage.setItem('melidrop_prep_days', prepDays.toString());
         localStorage.setItem('melidrop_postal_code', postalCode);
+        localStorage.setItem('melidrop_delivery_days_usa', deliveryDaysUsa.toString());
+        localStorage.setItem('melidrop_delivery_days_mx', deliveryDaysMx.toString());
         localStorage.setItem('melidrop_warranty_months', warrantyMonths.toString());
         localStorage.setItem('melidrop_description_suffix', descriptionSuffix);
 
@@ -471,6 +475,8 @@ export const SettingsPage = () => {
                     prep_days: prepDays,
                     postal_code: postalCode,
                     warranty_months: warrantyMonths,
+                    amazon_delivery_usa: deliveryDaysUsa,
+                    amazon_delivery_mx: deliveryDaysMx,
                 }
             }, { onConflict: 'user_id' });
         }
@@ -591,6 +597,25 @@ export const SettingsPage = () => {
                                     <span className="text-xs text-blue-600 dark:text-blue-400">El tiempo de Amazon se obtiene automáticamente por producto. ML mostrará: días Amazon + {prepDays} días tuyos.</span>
                                 </div>
                             </div>
+                            <div className="flex flex-col gap-2">
+                                <label className="text-xs font-semibold text-slate-500 uppercase flex items-center gap-1">
+                                    <span className="material-symbols-outlined text-[14px] text-orange-500">local_shipping</span>
+                                    Días de entrega Amazon USA (default)
+                                </label>
+                                <div className="relative">
+                                    <input
+                                        className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg px-3 py-2 text-sm font-black"
+                                        type="number" min="1" max="60"
+                                        value={deliveryDaysUsa}
+                                        onChange={(e) => setDeliveryDaysUsa(Math.max(1, parseInt(e.target.value) || 10))}
+                                    />
+                                    <span className="absolute right-3 top-2 text-slate-400 text-xs">días</span>
+                                </div>
+                                <div className="bg-orange-50 dark:bg-orange-900/20 rounded-lg px-3 py-2 flex items-center gap-2">
+                                    <span className="material-symbols-outlined text-[14px] text-orange-500">info</span>
+                                    <span className="text-xs text-orange-600 dark:text-orange-400">Se usa para productos importados (Amazon Estados Unidos) cuando ningún scraper logra obtener la fecha de entrega.</span>
+                                </div>
+                            </div>
                         </div>
                         <div className="p-4 bg-slate-50 dark:bg-slate-800/50 border-t border-slate-100 dark:border-slate-800">
                             <button onClick={() => handleSaveSection('USA')} className="w-full bg-slate-900 dark:bg-slate-100 dark:text-slate-900 text-white font-black py-2.5 rounded-lg shadow-sm text-sm active:scale-95 transition-all">
@@ -635,6 +660,25 @@ export const SettingsPage = () => {
                                 <div className="bg-blue-50 dark:bg-blue-900/20 rounded-lg px-3 py-2 flex items-center gap-2">
                                     <span className="material-symbols-outlined text-[14px] text-blue-500">info</span>
                                     <span className="text-xs text-blue-600 dark:text-blue-400">El tiempo de Amazon se obtiene automáticamente por producto. ML mostrará: días Amazon + {prepDays} días tuyos.</span>
+                                </div>
+                            </div>
+                            <div className="flex flex-col gap-2">
+                                <label className="text-xs font-semibold text-slate-500 uppercase flex items-center gap-1">
+                                    <span className="material-symbols-outlined text-[14px] text-orange-500">local_shipping</span>
+                                    Días de entrega Amazon MX (default)
+                                </label>
+                                <div className="relative">
+                                    <input
+                                        className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg px-3 py-2 text-sm font-black"
+                                        type="number" min="1" max="30"
+                                        value={deliveryDaysMx}
+                                        onChange={(e) => setDeliveryDaysMx(Math.max(1, parseInt(e.target.value) || 3))}
+                                    />
+                                    <span className="absolute right-3 top-2 text-slate-400 text-xs">días</span>
+                                </div>
+                                <div className="bg-orange-50 dark:bg-orange-900/20 rounded-lg px-3 py-2 flex items-center gap-2">
+                                    <span className="material-symbols-outlined text-[14px] text-orange-500">info</span>
+                                    <span className="text-xs text-orange-600 dark:text-orange-400">Se usa para productos nacionales cuando ningún scraper logra obtener la fecha de entrega.</span>
                                 </div>
                             </div>
                         </div>
