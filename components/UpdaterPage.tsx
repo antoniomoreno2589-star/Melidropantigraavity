@@ -1039,9 +1039,11 @@ export const UpdaterPage: React.FC = () => {
                         ) : (
                             <>
                                 {/* Resumen */}
-                                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                                <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
                                     {[
-                                        { label: 'Días detectados', value: scrapeDebug.result.maxDays !== null ? `${scrapeDebug.result.maxDays} días` : '—', color: scrapeDebug.result.maxDays !== null ? 'text-blue-600' : 'text-slate-400' },
+                                        { label: 'Scrape.do (días)', value: scrapeDebug.result.maxDays !== null ? `${scrapeDebug.result.maxDays} días` : '—', color: scrapeDebug.result.maxDays !== null ? 'text-blue-600' : 'text-slate-400' },
+                                        { label: 'Oxylabs (días)', value: scrapeDebug.result.oxylabsDays !== null && scrapeDebug.result.oxylabsDays !== undefined ? `${scrapeDebug.result.oxylabsDays} días` : (scrapeDebug.result.oxylabsError ? '✕' : '—'), color: scrapeDebug.result.oxylabsDays !== null && scrapeDebug.result.oxylabsDays !== undefined ? 'text-emerald-600' : 'text-slate-400' },
+                                        { label: 'Producto de USA', value: scrapeDebug.result.isCrossBorder ? 'Sí (importado)' : 'No', color: scrapeDebug.result.isCrossBorder ? 'text-amber-600' : 'text-slate-600' },
                                         { label: 'Buy Box', value: scrapeDebug.result.hasBuyBox === true ? 'Sí' : scrapeDebug.result.hasBuyBox === false ? 'No' : '?', color: scrapeDebug.result.hasBuyBox ? 'text-green-600' : 'text-red-500' },
                                         { label: 'Sección entrega', value: scrapeDebug.result.deliverySectionFound ? 'Encontrada' : 'No encontrada', color: scrapeDebug.result.deliverySectionFound ? 'text-green-600' : 'text-amber-500' },
                                         { label: 'Tamaño HTML', value: scrapeDebug.result.htmlLen ? `${(scrapeDebug.result.htmlLen / 1024).toFixed(0)} KB` : '—', color: 'text-slate-600' },
@@ -1052,6 +1054,16 @@ export const UpdaterPage: React.FC = () => {
                                         </div>
                                     ))}
                                 </div>
+
+                                {/* Veredicto cross-border / Oxylabs */}
+                                {scrapeDebug.result.isCrossBorder && (
+                                    <div className="p-3 rounded-lg bg-amber-50 dark:bg-amber-900/20 text-amber-800 dark:text-amber-300 text-xs leading-relaxed">
+                                        <span className="font-semibold">Producto importado (Amazon Estados Unidos).</span>{' '}
+                                        {scrapeDebug.result.oxylabsDays !== null && scrapeDebug.result.oxylabsDays !== undefined
+                                            ? `Oxylabs (parse:true) sí obtuvo la fecha: ${scrapeDebug.result.oxylabsDays} días. ✓`
+                                            : `Scrape.do anónimo no ve la fecha (bloqueada por Prime). Oxylabs estructurado tampoco la obtuvo${scrapeDebug.result.oxylabsError ? ` (${scrapeDebug.result.oxylabsError})` : ''} — habría que evaluar una API con pool autenticado (Rainforest/ScraperAPI).`}
+                                    </div>
+                                )}
 
                                 {/* Fechas encontradas */}
                                 {scrapeDebug.result.datesFound?.length > 0 && (

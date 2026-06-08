@@ -76,6 +76,54 @@ function findAllSpanishDates(text: string): number[] {
     return results;
 }
 
+function findAllEnglishDates(text: string): number[] {
+    // English-language delivery text from structured parsers / cross-border listings:
+    // "June 17", "Wednesday, June 17", "Jun 17". Mirrors findAllSpanishDates.
+    const monthMap: Record<string, number> = {
+        'january': 0, 'february': 1, 'march': 2, 'april': 3, 'may': 4,
+        'june': 5, 'july': 6, 'august': 7, 'september': 8, 'october': 9,
+        'november': 10, 'december': 11,
+        'jan': 0, 'feb': 1, 'mar': 2, 'apr': 3, 'jun': 5, 'jul': 6,
+        'aug': 7, 'sep': 8, 'sept': 8, 'oct': 9, 'nov': 10, 'dec': 11,
+    };
+    const regex = /(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sept|sep|oct|nov|dec)\.?\s+(\d{1,2})/gi;
+    const results: number[] = [];
+    const now = new Date();
+    let m: RegExpExecArray | null;
+    while ((m = regex.exec(text)) !== null) {
+        const month = monthMap[m[1].toLowerCase()];
+        const day = parseInt(m[2]);
+        if (month === undefined || isNaN(day)) continue;
+        const year = now.getFullYear();
+        const deliveryDate = new Date(year, month, day);
+        if (deliveryDate < now) deliveryDate.setFullYear(year + 1);
+        const diffMs = deliveryDate.getTime() - now.getTime();
+        const days = Math.ceil(diffMs / (24 * 60 * 60 * 1000));
+        if (days >= 0 && days <= 60) results.push(days);
+    }
+    return results;
+}
+
+function parseDeliveryDays(text: string): number | null {
+    // Combined Spanish + English date detection for delivery-scoped text.
+    // Explicit dates are the most reliable signal; "tomorrow/today" are fallbacks.
+    const dates = [...findAllSpanishDates(text), ...findAllEnglishDates(text)];
+    if (dates.length > 0) return Math.max(...dates);
+    if (/\b(ma[ñn]ana|tomorrow)\b/i.test(text)) return 1;
+    if (/\b(hoy|today)\b/i.test(text)) return 0;
+    return null;
+}
+
+function detectCrossBorder(html: string): boolean {
+    // A cross-border (imported) listing is sold by "Amazon Estados Unidos" and shows
+    // an "es importado" notice. These products have the Prime-gated delivery date that
+    // anonymous scrapes can't see, so flagging them helps route to the right fallback.
+    return /Amazon\s+Estados\s+Unidos/i.test(html) ||
+           /vendido\s+por\s+Amazon[^<]{0,80}(Estados\s+Unidos|EE\.?\s*UU)/i.test(html) ||
+           /este\s+producto[^<]{0,60}importado/i.test(html) ||
+           html.includes(AMAZON_SELLER_USA);
+}
+
 function buildAmazonLocationCookies(postalCode: string) {
     // Amazon's LSEXSAV cookie stores the last selected delivery location set via
     // the "Deliver to" glow widget. Injecting it lets Amazon render cross-border
@@ -343,6 +391,11 @@ async function fetchScrapedoProductData(asin: string, postalCode?: string | null
         if (/Type the characters you see|robot check|captcha|automated access/i.test(html)) {
             console.log(`[fetchScrapedoProduct] asin=${asin} CAPTCHA/robot-check page detected, skipping`);
             return { hasBuyBox: null, days: null, available: null };
+        }
+
+        const isCrossBorder = detectCrossBorder(html);
+        if (isCrossBorder) {
+            console.log(`[fetchScrapedoProduct] asin=${asin} CROSS-BORDER (Amazon Estados Unidos) — delivery date may be Prime-gated for anonymous scrape`);
         }
 
         // Log raw HTML around buy box area for diagnosis when signals are ambiguous
@@ -662,6 +715,84 @@ async function fetchAodDeliveryDays(asin: string, postalCode: string, auth: stri
     }
 }
 
+function extractOxylabsDeliveryText(content: any): string {
+    // Collect any delivery/shipping-related fields from Oxylabs' parsed amazon_product
+    // response. Field names vary by parser version, so probe several known keys.
+    if (!content || typeof content !== 'object') return '';
+    const parts: string[] = [];
+    for (const key of ['delivery', 'delivery_information', 'shipping_information',
+                        'delivery_details', 'fastest_delivery', 'arrives', 'shipping']) {
+        if (content[key] !== undefined) parts.push(JSON.stringify(content[key]));
+    }
+    return parts.join(' ');
+}
+
+async function fetchOxylabsStructuredDelivery(asin: string, postalCode: string | null, auth: string): Promise<number | null> {
+    // Oxylabs E-commerce Scraper API with parse:true returns a structured `delivery`
+    // object. Unlike the render:html proxy we use elsewhere, the amazon_product source
+    // sets the "Deliver to" location natively via geo_location, which can surface
+    // cross-border (Amazon Estados Unidos) delivery dates the anonymous scrape misses.
+    console.log(`[fetchOxylabsStructured] asin=${asin} CP=${postalCode ?? 'none'} fetching parsed amazon_product`);
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 30000);
+    try {
+        const payload: Record<string, unknown> = {
+            source: "amazon_product",
+            domain: "com.mx",
+            query: asin,
+            parse: true,
+        };
+        if (postalCode) payload.geo_location = postalCode;
+
+        const res = await fetch("https://realtime.oxylabs.io/v1/queries", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "Authorization": auth },
+            body: JSON.stringify(payload),
+            signal: ctrl.signal,
+        });
+        clearTimeout(timer);
+
+        if (!res.ok) {
+            const errBody = await res.text().catch(() => '');
+            console.log(`[fetchOxylabsStructured] asin=${asin} HTTP ${res.status}: ${errBody.slice(0, 200)}`);
+            return null;
+        }
+
+        const data = await res.json();
+        const content = data?.results?.[0]?.content;
+        if (!content) {
+            console.log(`[fetchOxylabsStructured] asin=${asin} no parsed content`);
+            return null;
+        }
+
+        // Prefer the delivery-scoped fields; fall back to scanning the whole content.
+        const deliveryText = extractOxylabsDeliveryText(content);
+        if (deliveryText) {
+            const days = parseDeliveryDays(deliveryText);
+            if (days !== null) {
+                console.log(`[fetchOxylabsStructured] asin=${asin} → ${days} días. delivery: ${deliveryText.slice(0, 250)}`);
+                return days;
+            }
+        }
+
+        // No date in the delivery field — scan the full parsed payload for any date string.
+        const fullText = JSON.stringify(content);
+        const dates = [...findAllSpanishDates(fullText), ...findAllEnglishDates(fullText)];
+        if (dates.length > 0) {
+            const max = Math.max(...dates);
+            console.log(`[fetchOxylabsStructured] asin=${asin} → ${max} días (from full content scan)`);
+            return max;
+        }
+
+        console.log(`[fetchOxylabsStructured] asin=${asin} no delivery date in parsed content. delivery field: ${deliveryText.slice(0, 250) || '(none)'}`);
+        return null;
+    } catch (e) {
+        clearTimeout(timer);
+        console.log(`[fetchOxylabsStructured] asin=${asin} error: ${e}`);
+        return null;
+    }
+}
+
 async function fetchAmazonShippingDays(asin: string, postalCode?: string | null, soldByAmazon?: boolean | null): Promise<ShippingResult> {
     try {
         // Scrape.do (residential IP + JS render) is the primary source for ALL products.
@@ -686,11 +817,21 @@ async function fetchAmazonShippingDays(asin: string, postalCode?: string | null,
         const oxylabsPass = Deno.env.get("OXYLABS_PASSWORD");
         const auth = (oxylabsUser && oxylabsPass) ? `Basic ${btoa(`${oxylabsUser}:${oxylabsPass}`)}` : null;
 
+        if (auth) {
+            // Oxylabs structured parse (parse:true) sets the delivery location natively
+            // and can surface cross-border delivery dates the anonymous scrape misses.
+            const oxyStructuredDays = await fetchOxylabsStructuredDelivery(asin, postalCode ?? null, auth);
+            if (oxyStructuredDays !== null) {
+                console.log(`[fetchAmazonShippingDays] asin=${asin} Oxylabs structured → ${oxyStructuredDays} días`);
+                return { days: oxyStructuredDays, available: true, hasBuyBox: scrapedoResult.hasBuyBox ?? null };
+            }
+        }
+
         if (postalCode && auth) {
             const aodDays = await fetchAodDeliveryDays(asin, postalCode, auth);
             if (aodDays !== null) {
                 console.log(`[fetchAmazonShippingDays] asin=${asin} AOD fallback → ${aodDays} días`);
-                return { days: aodDays, available: true };
+                return { days: aodDays, available: true, hasBuyBox: scrapedoResult.hasBuyBox ?? null };
             }
         }
 
@@ -905,15 +1046,37 @@ serve(async (req) => {
             const deliverySection = extractDeliverySection(html);
             const allDeliverySnippets = [...html.matchAll(/(entrega|llega|recibe)[^<\n]{0,150}/gi)].map(m => m[0].trim());
             const dates = deliverySection ? findAllSpanishDates(deliverySection) : findAllSpanishDates(html);
+            const isCrossBorder = detectCrossBorder(html);
+
+            // Also probe Oxylabs structured parse so the debug modal can show whether the
+            // paid E-commerce API surfaces a cross-border delivery date Scrape.do can't.
+            let oxylabsDays: number | null = null;
+            let oxylabsError: string | null = null;
+            const oxyUser = Deno.env.get("OXYLABS_USERNAME");
+            const oxyPass = Deno.env.get("OXYLABS_PASSWORD");
+            if (oxyUser && oxyPass) {
+                try {
+                    const oxyAuth = `Basic ${btoa(`${oxyUser}:${oxyPass}`)}`;
+                    oxylabsDays = await fetchOxylabsStructuredDelivery(debugHtmlAsin, debugHtmlZip, oxyAuth);
+                } catch (e: any) {
+                    oxylabsError = e?.message ?? String(e);
+                }
+            } else {
+                oxylabsError = "OXYLABS credentials not set";
+            }
+
             return new Response(JSON.stringify({
                 asin: debugHtmlAsin,
                 zip: debugHtmlZip,
                 htmlLen: html.length,
+                isCrossBorder,
                 deliverySectionFound: deliverySection !== null,
                 deliverySection: deliverySection?.slice(0, 2000),
                 allDeliverySnippets,
                 datesFound: dates,
                 maxDays: dates.length > 0 ? Math.max(...dates) : null,
+                oxylabsDays,
+                oxylabsError,
                 hasBuyBox: !html.includes('id="see-all-buying-choices"') && (html.includes('id="add-to-cart-button"') || html.includes('name="submit.add-to-cart"')),
                 rawHtml: html,
             }, null, 2), { headers: corsHeaders });
