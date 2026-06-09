@@ -916,6 +916,120 @@ async function fetchOxylabsStructuredDelivery(asin: string, postalCode: string |
     }
 }
 
+function extractRainforestDays(data: any, label: string, asin: string): number | null {
+    const now = new Date();
+    const candidates: number[] = [];
+
+    // product.delivery[] (type=product)
+    const productDeliveries: any[] = data?.product?.delivery ?? [];
+    for (const d of productDeliveries) {
+        if (d.date_utc) {
+            const dt = new Date(d.date_utc);
+            if (!isNaN(dt.getTime())) {
+                const days = Math.ceil((dt.getTime() - now.getTime()) / (24 * 60 * 60 * 1000));
+                if (days >= 0 && days <= 60) candidates.push(days);
+            }
+        }
+        const text = [d.date_raw, d.tagline, d.raw, d.comment, d.comments, d.date, d.price?.raw].filter(Boolean).join(' ');
+        if (text) { const d2 = parseDeliveryDays(text); if (d2 !== null) candidates.push(d2); }
+        if (d.countdown) { const d2 = parseDeliveryDays(d.countdown); if (d2 !== null) candidates.push(d2); }
+    }
+
+    // offers[].delivery (type=offers)
+    // del.comments (plural) = "el lunes, 15 de junio"
+    // del.price.raw = "Entrega GRATIS el lunes. 15 de junio. Ver detalles"
+    const offersList: any[] = data?.offers_results?.offers ?? data?.offers ?? [];
+    for (const offer of offersList) {
+        const del = offer?.delivery;
+        if (!del) continue;
+        if (del.date_utc) {
+            const dt = new Date(del.date_utc);
+            if (!isNaN(dt.getTime())) {
+                const days = Math.ceil((dt.getTime() - now.getTime()) / (24 * 60 * 60 * 1000));
+                if (days >= 0 && days <= 60) candidates.push(days);
+            }
+        }
+        const text = [del.date_raw, del.tagline, del.raw, del.comment, del.comments, del.date, del.price?.raw].filter(Boolean).join(' ');
+        if (text) { const d2 = parseDeliveryDays(text); if (d2 !== null) candidates.push(d2); }
+        if (del.countdown) { const d2 = parseDeliveryDays(del.countdown); if (d2 !== null) candidates.push(d2); }
+    }
+
+    // buybox_winner.shipping.raw (type=product fallback)
+    const shippingRaw = data?.product?.buybox_winner?.shipping?.raw ?? '';
+    if (shippingRaw) { const d2 = parseDeliveryDays(shippingRaw); if (d2 !== null) candidates.push(d2); }
+
+    // Full JSON scan as last resort
+    if (candidates.length === 0) {
+        const fullText = JSON.stringify(data);
+        candidates.push(...findAllSpanishDates(fullText), ...findAllEnglishDates(fullText));
+    }
+
+    if (candidates.length > 0) {
+        const min = Math.min(...candidates);
+        console.log(`[fetchRainforest] asin=${asin} ${label} → ${min} días (candidates=${JSON.stringify(candidates)})`);
+        return min;
+    }
+    return null;
+}
+
+async function fetchRainforestDelivery(asin: string, postalCode: string | null, apiKey: string): Promise<number | null> {
+    // Strategy 1: type=offers+customer_location=MX — scrapes the AOD popup.
+    // Rainforest routes through a Mexican residential exit node when customer_location=mx,
+    // so Amazon shows the cross-border delivery date that is Prime-gated for anonymous scrapers.
+    // The date lives in delivery.comments (plural) and delivery.price.raw on each offer.
+    try {
+        const p1 = new URLSearchParams({
+            api_key: apiKey, type: 'offers',
+            amazon_domain: 'amazon.com.mx', asin,
+            customer_location: 'mx',
+        });
+        if (postalCode) p1.set('customer_zipcode', postalCode);
+        console.log(`[fetchRainforest] asin=${asin} type=offers+MX fetching`);
+        const ctrl1 = new AbortController();
+        const t1 = setTimeout(() => ctrl1.abort(), 30000);
+        const res1 = await fetch(`https://api.rainforestapi.com/request?${p1.toString()}`, { signal: ctrl1.signal });
+        clearTimeout(t1);
+        if (res1.ok) {
+            const data1 = await res1.json();
+            if (data1?.request_info?.success !== false) {
+                const days = extractRainforestDays(data1, 'offers+MX', asin);
+                if (days !== null) return days;
+            } else {
+                console.log(`[fetchRainforest] asin=${asin} offers+MX failed: ${data1?.request_info?.message}`);
+            }
+        } else {
+            console.log(`[fetchRainforest] asin=${asin} offers+MX HTTP ${res1.status}`);
+        }
+    } catch (e) { console.log(`[fetchRainforest] asin=${asin} offers+MX error: ${e}`); }
+
+    // Strategy 2: type=product+customer_location=MX
+    try {
+        const p2 = new URLSearchParams({
+            api_key: apiKey, type: 'product',
+            amazon_domain: 'amazon.com.mx', asin,
+            customer_location: 'mx',
+        });
+        if (postalCode) p2.set('customer_zipcode', postalCode);
+        console.log(`[fetchRainforest] asin=${asin} type=product+MX fetching`);
+        const ctrl2 = new AbortController();
+        const t2 = setTimeout(() => ctrl2.abort(), 30000);
+        const res2 = await fetch(`https://api.rainforestapi.com/request?${p2.toString()}`, { signal: ctrl2.signal });
+        clearTimeout(t2);
+        if (res2.ok) {
+            const data2 = await res2.json();
+            if (data2?.request_info?.success !== false) {
+                return extractRainforestDays(data2, 'product+MX', asin);
+            } else {
+                console.log(`[fetchRainforest] asin=${asin} product+MX failed: ${data2?.request_info?.message}`);
+            }
+        } else {
+            console.log(`[fetchRainforest] asin=${asin} product+MX HTTP ${res2.status}`);
+        }
+    } catch (e) { console.log(`[fetchRainforest] asin=${asin} product+MX error: ${e}`); }
+
+    return null;
+}
+
 async function fetchAmazonShippingDays(asin: string, postalCode?: string | null, soldByAmazon?: boolean | null): Promise<ShippingResult> {
     try {
         // Scrape.do (residential IP + JS render) is the primary source for ALL products.
@@ -947,9 +1061,9 @@ async function fetchAmazonShippingDays(asin: string, postalCode?: string | null,
             }
         }
 
-        const rainforestKey = Deno.env.get("RAINFOREST_API_KEY");
-        if (rainforestKey) {
-            const rfDays = await fetchRainforestDelivery(asin, postalCode ?? null, rainforestKey);
+        const rfKey = Deno.env.get("RAINFOREST_API_KEY");
+        if (rfKey) {
+            const rfDays = await fetchRainforestDelivery(asin, postalCode ?? null, rfKey);
             if (rfDays !== null) {
                 console.log(`[fetchAmazonShippingDays] asin=${asin} Rainforest → ${rfDays} días`);
                 return { days: rfDays, available: true, hasBuyBox: scrapedoResult.hasBuyBox ?? null };
@@ -1191,84 +1305,55 @@ serve(async (req) => {
                 oxylabsError = "OXYLABS credentials not set";
             }
 
-            // Probe Rainforest API — capture raw response for debug inspection
-            // Runs both type=offers+MX and type=product+MX to show exactly what each returns
+            // Probe Rainforest API (offers+MX then product+MX)
             let rainforestDays: number | null = null;
             let rainforestError: string | null = null;
             let rainforestRaw: any = null;
-            const rfKey = Deno.env.get("RAINFOREST_API_KEY");
-            if (rfKey) {
+            const rfApiKey = Deno.env.get("RAINFOREST_API_KEY");
+            if (rfApiKey) {
                 try {
-                    // Probe 1: type=offers + customer_location=MX
-                    const rfOffersParams = new URLSearchParams({
-                        api_key: rfKey, type: 'offers', asin: debugHtmlAsin,
-                        amazon_domain: 'amazon.com.mx', customer_location: 'MX',
+                    const rfP1 = new URLSearchParams({
+                        api_key: rfApiKey, type: 'offers',
+                        amazon_domain: 'amazon.com.mx', asin: debugHtmlAsin,
+                        customer_location: 'mx',
                     });
-                    if (debugHtmlZip) rfOffersParams.set('zipcode', debugHtmlZip);
-                    const rfOffersCtrl = new AbortController();
-                    const rfOffersTimer = setTimeout(() => rfOffersCtrl.abort(), 30000);
-                    let offersRaw: any = null;
-                    try {
-                        const rfOffersRes = await fetch(`https://api.rainforestapi.com/request?${rfOffersParams.toString()}`, { signal: rfOffersCtrl.signal });
-                        clearTimeout(rfOffersTimer);
-                        if (rfOffersRes.ok) {
-                            const rfOffersData = await rfOffersRes.json();
-                            const offersList: any[] = rfOffersData?.offers_results?.offers ?? rfOffersData?.offers ?? [];
-                            offersRaw = {
-                                offers_count: offersList.length,
-                                first_offer: offersList[0] ? {
-                                    seller_name: offersList[0].seller?.name,
-                                    price: offersList[0].price,
-                                    delivery: offersList[0].delivery ?? null,
-                                    fulfillment: offersList[0].fulfillment ?? null,
-                                } : null,
-                                response_keys: Object.keys(rfOffersData ?? {}),
+                    if (debugHtmlZip) rfP1.set('customer_zipcode', debugHtmlZip);
+                    const rfCtrl1 = new AbortController();
+                    const rfT1 = setTimeout(() => rfCtrl1.abort(), 30000);
+                    const rfRes1 = await fetch(`https://api.rainforestapi.com/request?${rfP1.toString()}`, { signal: rfCtrl1.signal });
+                    clearTimeout(rfT1);
+                    if (rfRes1.ok) {
+                        const rfData1 = await rfRes1.json();
+                        const offersSlice = (rfData1?.offers_results?.offers ?? rfData1?.offers ?? []).slice(0, 3).map((o: any) => ({ delivery: o?.delivery }));
+                        rainforestRaw = { type: 'offers+MX', offers: offersSlice, request_info: rfData1?.request_info };
+                        if (rfData1?.request_info?.success !== false) {
+                            rainforestDays = extractRainforestDays(rfData1, 'offers+MX', debugHtmlAsin);
+                        }
+                    }
+                    if (rainforestDays === null) {
+                        const rfP2 = new URLSearchParams({
+                            api_key: rfApiKey, type: 'product',
+                            amazon_domain: 'amazon.com.mx', asin: debugHtmlAsin,
+                            customer_location: 'mx',
+                        });
+                        if (debugHtmlZip) rfP2.set('customer_zipcode', debugHtmlZip);
+                        const rfCtrl2 = new AbortController();
+                        const rfT2 = setTimeout(() => rfCtrl2.abort(), 30000);
+                        const rfRes2 = await fetch(`https://api.rainforestapi.com/request?${rfP2.toString()}`, { signal: rfCtrl2.signal });
+                        clearTimeout(rfT2);
+                        if (rfRes2.ok) {
+                            const rfData2 = await rfRes2.json();
+                            rainforestRaw = {
+                                type: 'product+MX',
+                                product_delivery: rfData2?.product?.delivery?.slice(0, 3) ?? null,
+                                buybox_shipping: rfData2?.product?.buybox_winner?.shipping ?? null,
+                                request_info: rfData2?.request_info,
                             };
-                        } else {
-                            const errText = await rfOffersRes.text().catch(() => '');
-                            offersRaw = { error: `HTTP ${rfOffersRes.status}: ${errText.slice(0, 200)}` };
+                            if (rfData2?.request_info?.success !== false) {
+                                rainforestDays = extractRainforestDays(rfData2, 'product+MX', debugHtmlAsin);
+                            }
                         }
-                    } catch (e2: any) {
-                        clearTimeout(rfOffersTimer);
-                        offersRaw = { error: e2?.message ?? String(e2) };
                     }
-
-                    // Probe 2: type=product + customer_location=MX
-                    const rfProductParams = new URLSearchParams({
-                        api_key: rfKey, type: 'product', asin: debugHtmlAsin,
-                        amazon_domain: 'amazon.com.mx', customer_location: 'MX',
-                    });
-                    if (debugHtmlZip) rfProductParams.set('zipcode', debugHtmlZip);
-                    const rfProdCtrl = new AbortController();
-                    const rfProdTimer = setTimeout(() => rfProdCtrl.abort(), 30000);
-                    let productRaw: any = null;
-                    try {
-                        const rfProdRes = await fetch(`https://api.rainforestapi.com/request?${rfProductParams.toString()}`, { signal: rfProdCtrl.signal });
-                        clearTimeout(rfProdTimer);
-                        if (rfProdRes.ok) {
-                            const rfProdData = await rfProdRes.json();
-                            const rfProduct = rfProdData?.product;
-                            productRaw = rfProduct ? {
-                                title: rfProduct.title?.slice(0, 80),
-                                delivery: rfProduct.delivery ?? null,
-                                buybox_winner: rfProduct.buybox_winner ? {
-                                    shipping: rfProduct.buybox_winner.shipping,
-                                    fulfillment: rfProduct.buybox_winner.fulfillment,
-                                    price: rfProduct.buybox_winner.price,
-                                } : null,
-                                shipping: rfProduct.shipping ?? null,
-                            } : { raw_keys: Object.keys(rfProdData ?? {}) };
-                        } else {
-                            const errText = await rfProdRes.text().catch(() => '');
-                            productRaw = { error: `HTTP ${rfProdRes.status}: ${errText.slice(0, 200)}` };
-                        }
-                    } catch (e2: any) {
-                        clearTimeout(rfProdTimer);
-                        productRaw = { error: e2?.message ?? String(e2) };
-                    }
-
-                    rainforestRaw = { offers: offersRaw, product: productRaw };
-                    rainforestDays = await fetchRainforestDelivery(debugHtmlAsin, debugHtmlZip, rfKey);
                 } catch (e: any) {
                     rainforestError = e?.message ?? String(e);
                 }
@@ -1276,22 +1361,20 @@ serve(async (req) => {
                 rainforestError = "RAINFOREST_API_KEY not set";
             }
 
-            // Probe AOD endpoint (All Offers Display) — best fallback for cross-border products
+            // Probe AOD (All Offers Display)
             let aodDays: number | null = null;
             let aodError: string | null = null;
-            const aodUser = Deno.env.get("OXYLABS_USERNAME");
-            const aodPass = Deno.env.get("OXYLABS_PASSWORD");
-            if (aodUser && aodPass && debugHtmlZip) {
+            if (oxyUser && oxyPass && debugHtmlZip) {
                 try {
-                    const aodAuth = `Basic ${btoa(`${aodUser}:${aodPass}`)}`;
-                    aodDays = await fetchAodDeliveryDays(debugHtmlAsin, debugHtmlZip, aodAuth);
+                    const oxyAuth2 = `Basic ${btoa(`${oxyUser}:${oxyPass}`)}`;
+                    aodDays = await fetchAodDeliveryDays(debugHtmlAsin, debugHtmlZip, oxyAuth2);
                 } catch (e: any) {
                     aodError = e?.message ?? String(e);
                 }
-            } else if (!aodUser || !aodPass) {
-                aodError = "OXYLABS credentials not set";
+            } else if (!debugHtmlZip) {
+                aodError = "CP no configurado";
             } else {
-                aodError = "zipcode required for AOD probe";
+                aodError = "OXYLABS credentials not set";
             }
 
 
