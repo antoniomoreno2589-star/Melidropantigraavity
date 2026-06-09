@@ -741,11 +741,13 @@ function extractRainforestDays(data: any, label: string, asin: string): number |
             const days = Math.ceil((dt.getTime() - now.getTime()) / (24 * 60 * 60 * 1000));
             if (days >= 0 && days <= 60) { candidates.push(days); continue; }
         }
-        const text = [d.date_raw, d.tagline, d.raw].filter(Boolean).join(' ');
+        const text = [d.date_raw, d.tagline, d.raw, d.comment, d.comments, d.date, d.price?.raw].filter(Boolean).join(' ');
         if (text) { const d2 = parseDeliveryDays(text); if (d2 !== null) candidates.push(d2); }
     }
 
     // offers[].delivery (type=offers) — each offer has a delivery object
+    // del.comments (plural) = "el lunes, 15 de junio"
+    // del.price.raw = "Entrega GRATIS el lunes. 15 de junio. Ver detalles"
     const offersList: any[] = data?.offers_results?.offers ?? data?.offers ?? [];
     for (const offer of offersList) {
         const del = offer?.delivery;
@@ -756,8 +758,8 @@ function extractRainforestDays(data: any, label: string, asin: string): number |
             const days = Math.ceil((dt.getTime() - now.getTime()) / (24 * 60 * 60 * 1000));
             if (days >= 0 && days <= 60) { candidates.push(days); continue; }
         }
-        // delivery.date_raw, .tagline, .raw, .comment
-        const text = [del.date_raw, del.tagline, del.raw, del.comment, del.date].filter(Boolean).join(' ');
+        // delivery.date_raw, .tagline, .raw, .comment, .comments (plural), .date, .price.raw
+        const text = [del.date_raw, del.tagline, del.raw, del.comment, del.comments, del.date, del.price?.raw].filter(Boolean).join(' ');
         if (text) { const d2 = parseDeliveryDays(text); if (d2 !== null) candidates.push(d2); }
         // delivery.countdown (e.g. "Order within 2 hrs 30 mins … arrives Jun 17")
         if (del.countdown) { const d2 = parseDeliveryDays(del.countdown); if (d2 !== null) candidates.push(d2); }
