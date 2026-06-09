@@ -793,9 +793,9 @@ async function fetchRainforestDelivery(asin: string, postalCode: string | null, 
             type: 'offers',
             asin: asin,
             amazon_domain: 'amazon.com.mx',
-            customer_location: 'MX',
+            customer_location: 'mx',
         });
-        if (postalCode) params1.set('zipcode', postalCode);
+        if (postalCode) params1.set('customer_zipcode', postalCode);
 
         const res1 = await fetch(`https://api.rainforestapi.com/request?${params1.toString()}`, { signal: ctrl1.signal });
         clearTimeout(timer1);
@@ -826,9 +826,9 @@ async function fetchRainforestDelivery(asin: string, postalCode: string | null, 
             type: 'product',
             asin: asin,
             amazon_domain: 'amazon.com.mx',
-            customer_location: 'MX',
+            customer_location: 'mx',
         });
-        if (postalCode) params2.set('zipcode', postalCode);
+        if (postalCode) params2.set('customer_zipcode', postalCode);
 
         const res2 = await fetch(`https://api.rainforestapi.com/request?${params2.toString()}`, { signal: ctrl2.signal });
         clearTimeout(timer2);
@@ -1201,9 +1201,9 @@ serve(async (req) => {
                     // Probe 1: type=offers + customer_location=MX
                     const rfOffersParams = new URLSearchParams({
                         api_key: rfKey, type: 'offers', asin: debugHtmlAsin,
-                        amazon_domain: 'amazon.com.mx', customer_location: 'MX',
+                        amazon_domain: 'amazon.com.mx', customer_location: 'mx',
                     });
-                    if (debugHtmlZip) rfOffersParams.set('zipcode', debugHtmlZip);
+                    if (debugHtmlZip) rfOffersParams.set('customer_zipcode', debugHtmlZip);
                     const rfOffersCtrl = new AbortController();
                     const rfOffersTimer = setTimeout(() => rfOffersCtrl.abort(), 30000);
                     let offersRaw: any = null;
@@ -1235,9 +1235,9 @@ serve(async (req) => {
                     // Probe 2: type=product + customer_location=MX
                     const rfProductParams = new URLSearchParams({
                         api_key: rfKey, type: 'product', asin: debugHtmlAsin,
-                        amazon_domain: 'amazon.com.mx', customer_location: 'MX',
+                        amazon_domain: 'amazon.com.mx', customer_location: 'mx',
                     });
-                    if (debugHtmlZip) rfProductParams.set('zipcode', debugHtmlZip);
+                    if (debugHtmlZip) rfProductParams.set('customer_zipcode', debugHtmlZip);
                     const rfProdCtrl = new AbortController();
                     const rfProdTimer = setTimeout(() => rfProdCtrl.abort(), 30000);
                     let productRaw: any = null;
