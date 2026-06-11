@@ -976,6 +976,34 @@ async function fetchAmazonOffers(
     }
 }
 
+async function fetchAmazonImages(
+    endpoint: string,
+    accessToken: string,
+    asinList: Array<{ asin: string; marketplaceId: string }>
+): Promise<Record<string, string[]>> {
+    const results: Record<string, string[]> = {};
+    const CONCURRENCY = 8;
+    for (let i = 0; i < asinList.length; i += CONCURRENCY) {
+        const chunk = asinList.slice(i, i + CONCURRENCY);
+        await Promise.allSettled(chunk.map(async ({ asin, marketplaceId }) => {
+            try {
+                const url = `${endpoint}/catalog/2022-04-01/items/${asin}?marketplaceIds=${marketplaceId}&includedData=images`;
+                const res = await fetch(url, { headers: { "x-amz-access-token": accessToken } });
+                if (!res.ok) { console.log(`[fetchAmazonImages] asin=${asin} HTTP ${res.status}`); return; }
+                const data = await res.json();
+                const imgs: any[] = data?.images?.[0]?.images ?? [];
+                const urls = imgs
+                    .filter((img: any) => img.variant === 'MAIN' || /^PT\d/.test(img.variant ?? ''))
+                    .sort((a: any, b: any) => (b.height ?? 0) - (a.height ?? 0))
+                    .map((img: any) => img.link)
+                    .filter(Boolean);
+                if (urls.length > 0) results[asin] = urls.slice(0, 10);
+            } catch (e) { console.log(`[fetchAmazonImages] asin=${asin} error: ${e}`); }
+        }));
+    }
+    return results;
+}
+
 async function fetchOffersBatch(
     endpoint: string,
     accessToken: string,
@@ -1263,7 +1291,7 @@ serve(async (req) => {
             const meliCreds     = conn.meli_credentials as any;
             const amazonCreds   = conn.amazon_credentials as any;
             const settings      = (conn.margin_rules ?? {}) as any;
-            const syncParams       = settings.sync_params   ?? { price: true, stock: true };
+            const syncParams       = settings.sync_params   ?? { price: true, stock: true, description: true, shipping: true, photos: true };
             const allowDecrease   = settings.allow_price_decrease ?? false;
             const defaultStock    = settings.default_stock ?? 3;
             const exchangeRate    = conn.exchange_rate      ?? settings.exchange_rate ?? 18.5;
@@ -1369,6 +1397,16 @@ serve(async (req) => {
             ]);
             const asinOffers: Record<string, AmazonOffers> = { ...usdOffers, ...mxnOffers };
 
+            const asinImages: Record<string, string[]> = {};
+            if (syncParams.photos) {
+                const imageRequests = (products as any[]).map(p => ({
+                    asin: p.sku,
+                    marketplaceId: (p.currency ?? 'USD') !== 'MXN' ? MARKETPLACE_USA : MARKETPLACE_MXN,
+                }));
+                Object.assign(asinImages, await fetchAmazonImages(endpoint, accessToken, imageRequests));
+                console.log(`[amazon-ml-updater] fetched images for ${Object.keys(asinImages).length}/${products.length} products`);
+            }
+
             let mlToken: string;
             try {
                 mlToken = await getValidMeliToken(meliCreds);
@@ -1379,14 +1417,18 @@ serve(async (req) => {
             let updated = 0, errors = 0, firstError: string | undefined;
             const debugItems: any[] = [];
             // Scrape.do only (residential IP) — ~30 s each → 5 × 30 s = 150 s within edge function limit.
-            // Cross-border (USD) products skip scraping entirely and receive the configured default.
             const MAX_SCRAPES_PER_RUN = 5;
-            // Delivery time is stable — refresh every 14 days to halve Scrape.do credit usage.
+            // Delivery time is stable — re-scrape domestic MXN products every 14 days.
             const STALE_MS = 14 * 24 * 60 * 60 * 1000;
             const staleForScraping = (products as any[]).filter(p => {
-                if ((p.currency ?? 'USD') !== 'MXN') return false;
                 const ua = p.shipping_days_updated_at;
-                return p.shipping_days === null || !ua || (Date.now() - new Date(ua).getTime()) > STALE_MS;
+                // First time (never scraped before) → scrape ALL products regardless of currency.
+                // If Scrape.do can't determine delivery, the fallback default kicks in afterward.
+                if (!ua) return true;
+                // Subsequent refreshes: only re-scrape domestic MXN. Cross-border keeps its
+                // cached value (or uses the configured default when cached value is null).
+                if ((p.currency ?? 'USD') !== 'MXN') return false;
+                return (Date.now() - new Date(ua).getTime()) > STALE_MS;
             }).slice(0, MAX_SCRAPES_PER_RUN);
 
             const scrapeResultMap = new Map<string, ShippingResult>();
@@ -1522,6 +1564,15 @@ serve(async (req) => {
                         console.log(`[amazon-ml-updater] meliId=${meliId} shipping=${cachedShippingDays} + prep=${prepDays} = ${totalHandlingTime}`);
                     }
                 }
+
+                if (syncParams.photos) {
+                    const images = asinImages[sku];
+                    if (images?.length > 0) {
+                        updatePayload.pictures = images.map((url: string) => ({ source: url }));
+                        debug.photosCount = images.length;
+                    }
+                }
+
                 debug.payloadKeys = Object.keys(updatePayload);
 
                 if (Object.keys(updatePayload).length > 0) {
