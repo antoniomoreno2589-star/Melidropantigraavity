@@ -727,131 +727,6 @@ function extractOxylabsDeliveryText(content: any): string {
     return parts.join(' ');
 }
 
-function extractRainforestDays(data: any, label: string, asin: string): number | null {
-    // Extract delivery days from either a product or offers Rainforest response.
-    // Checks: product.delivery[], offers[].delivery, buybox_winner.shipping.raw
-    const now = new Date();
-    const candidates: number[] = [];
-
-    // product.delivery[] array (type=product)
-    const productDeliveries: any[] = data?.product?.delivery ?? [];
-    for (const d of productDeliveries) {
-        if (d.date_utc) {
-            const dt = new Date(d.date_utc);
-            const days = Math.ceil((dt.getTime() - now.getTime()) / (24 * 60 * 60 * 1000));
-            if (days >= 0 && days <= 60) { candidates.push(days); continue; }
-        }
-        const text = [d.date_raw, d.tagline, d.raw, d.comment, d.comments, d.date, d.price?.raw].filter(Boolean).join(' ');
-        if (text) { const d2 = parseDeliveryDays(text); if (d2 !== null) candidates.push(d2); }
-    }
-
-    // offers[].delivery (type=offers) — each offer has a delivery object
-    // del.comments (plural) = "el lunes, 15 de junio"
-    // del.price.raw = "Entrega GRATIS el lunes. 15 de junio. Ver detalles"
-    const offersList: any[] = data?.offers_results?.offers ?? data?.offers ?? [];
-    for (const offer of offersList) {
-        const del = offer?.delivery;
-        if (!del) continue;
-        // delivery.date_utc
-        if (del.date_utc) {
-            const dt = new Date(del.date_utc);
-            const days = Math.ceil((dt.getTime() - now.getTime()) / (24 * 60 * 60 * 1000));
-            if (days >= 0 && days <= 60) { candidates.push(days); continue; }
-        }
-        // delivery.date_raw, .tagline, .raw, .comment, .comments (plural), .date, .price.raw
-        const text = [del.date_raw, del.tagline, del.raw, del.comment, del.comments, del.date, del.price?.raw].filter(Boolean).join(' ');
-        if (text) { const d2 = parseDeliveryDays(text); if (d2 !== null) candidates.push(d2); }
-        // delivery.countdown (e.g. "Order within 2 hrs 30 mins … arrives Jun 17")
-        if (del.countdown) { const d2 = parseDeliveryDays(del.countdown); if (d2 !== null) candidates.push(d2); }
-    }
-
-    // buybox_winner.shipping.raw (type=product fallback)
-    const shippingRaw = data?.product?.buybox_winner?.shipping?.raw ?? '';
-    if (shippingRaw) { const d2 = parseDeliveryDays(shippingRaw); if (d2 !== null) candidates.push(d2); }
-
-    if (candidates.length > 0) {
-        const min = Math.min(...candidates);
-        console.log(`[fetchRainforest] asin=${asin} ${label} → ${min} días (candidates=${JSON.stringify(candidates)})`);
-        return min;
-    }
-    return null;
-}
-
-async function fetchRainforestDelivery(asin: string, postalCode: string | null, apiKey: string): Promise<number | null> {
-    console.log(`[fetchRainforest] asin=${asin} CP=${postalCode ?? 'none'} fetching`);
-
-    // Strategy 1: type=offers + customer_location=MX
-    // The offers endpoint scrapes Amazon's "All Offers" popup (same as AOD).
-    // It returns structured per-offer delivery objects including date_raw/countdown.
-    // customer_location=MX routes through a Mexican residential exit node so Amazon
-    // shows the cross-border delivery date to a local MX customer.
-    const ctrl1 = new AbortController();
-    const timer1 = setTimeout(() => ctrl1.abort(), 30000);
-    try {
-        const params1 = new URLSearchParams({
-            api_key: apiKey,
-            type: 'offers',
-            asin: asin,
-            amazon_domain: 'amazon.com.mx',
-            customer_location: 'mx',
-        });
-        if (postalCode) params1.set('customer_zipcode', postalCode);
-
-        const res1 = await fetch(`https://api.rainforestapi.com/request?${params1.toString()}`, { signal: ctrl1.signal });
-        clearTimeout(timer1);
-
-        if (res1.ok) {
-            const data1 = await res1.json();
-            console.log(`[fetchRainforest] asin=${asin} offers response keys: ${Object.keys(data1 ?? {}).join(',')}`);
-            const days1 = extractRainforestDays(data1, 'type=offers+MX', asin);
-            if (days1 !== null) return days1;
-            // Log raw offers snippet for debugging
-            const offersSnippet = JSON.stringify(data1?.offers_results?.offers?.[0] ?? data1?.offers?.[0] ?? {}).slice(0, 500);
-            console.log(`[fetchRainforest] asin=${asin} offers[0] raw: ${offersSnippet}`);
-        } else {
-            const errBody = await res1.text().catch(() => '');
-            console.log(`[fetchRainforest] asin=${asin} offers HTTP ${res1.status}: ${errBody.slice(0, 200)}`);
-        }
-    } catch (e) {
-        clearTimeout(timer1);
-        console.log(`[fetchRainforest] asin=${asin} offers error: ${e}`);
-    }
-
-    // Strategy 2: type=product + customer_location=MX (original, with location header)
-    const ctrl2 = new AbortController();
-    const timer2 = setTimeout(() => ctrl2.abort(), 30000);
-    try {
-        const params2 = new URLSearchParams({
-            api_key: apiKey,
-            type: 'product',
-            asin: asin,
-            amazon_domain: 'amazon.com.mx',
-            customer_location: 'mx',
-        });
-        if (postalCode) params2.set('customer_zipcode', postalCode);
-
-        const res2 = await fetch(`https://api.rainforestapi.com/request?${params2.toString()}`, { signal: ctrl2.signal });
-        clearTimeout(timer2);
-
-        if (res2.ok) {
-            const data2 = await res2.json();
-            const days2 = extractRainforestDays(data2, 'type=product+MX', asin);
-            if (days2 !== null) return days2;
-            const deliverySnippet = JSON.stringify(data2?.product?.delivery ?? data2?.product?.buybox_winner?.shipping ?? null).slice(0, 300);
-            console.log(`[fetchRainforest] asin=${asin} product delivery/shipping: ${deliverySnippet}`);
-        } else {
-            const errBody = await res2.text().catch(() => '');
-            console.log(`[fetchRainforest] asin=${asin} product HTTP ${res2.status}: ${errBody.slice(0, 200)}`);
-        }
-    } catch (e) {
-        clearTimeout(timer2);
-        console.log(`[fetchRainforest] asin=${asin} product error: ${e}`);
-    }
-
-    console.log(`[fetchRainforest] asin=${asin} all strategies returned null`);
-    return null;
-}
-
 async function fetchOxylabsStructuredDelivery(asin: string, postalCode: string | null, auth: string): Promise<number | null> {
     // Oxylabs E-commerce Scraper API with parse:true returns a structured `delivery`
     // object. Unlike the render:html proxy we use elsewhere, the amazon_product source
@@ -909,6 +784,120 @@ async function fetchOxylabsStructuredDelivery(asin: string, postalCode: string |
     }
 }
 
+function extractRainforestDays(data: any, label: string, asin: string): number | null {
+    const now = new Date();
+    const candidates: number[] = [];
+
+    // product.delivery[] (type=product)
+    const productDeliveries: any[] = data?.product?.delivery ?? [];
+    for (const d of productDeliveries) {
+        if (d.date_utc) {
+            const dt = new Date(d.date_utc);
+            if (!isNaN(dt.getTime())) {
+                const days = Math.ceil((dt.getTime() - now.getTime()) / (24 * 60 * 60 * 1000));
+                if (days >= 0 && days <= 60) candidates.push(days);
+            }
+        }
+        const text = [d.date_raw, d.tagline, d.raw, d.comment, d.comments, d.date, d.price?.raw].filter(Boolean).join(' ');
+        if (text) { const d2 = parseDeliveryDays(text); if (d2 !== null) candidates.push(d2); }
+        if (d.countdown) { const d2 = parseDeliveryDays(d.countdown); if (d2 !== null) candidates.push(d2); }
+    }
+
+    // offers[].delivery (type=offers)
+    // del.comments (plural) = "el lunes, 15 de junio"
+    // del.price.raw = "Entrega GRATIS el lunes. 15 de junio. Ver detalles"
+    const offersList: any[] = data?.offers_results?.offers ?? data?.offers ?? [];
+    for (const offer of offersList) {
+        const del = offer?.delivery;
+        if (!del) continue;
+        if (del.date_utc) {
+            const dt = new Date(del.date_utc);
+            if (!isNaN(dt.getTime())) {
+                const days = Math.ceil((dt.getTime() - now.getTime()) / (24 * 60 * 60 * 1000));
+                if (days >= 0 && days <= 60) candidates.push(days);
+            }
+        }
+        const text = [del.date_raw, del.tagline, del.raw, del.comment, del.comments, del.date, del.price?.raw].filter(Boolean).join(' ');
+        if (text) { const d2 = parseDeliveryDays(text); if (d2 !== null) candidates.push(d2); }
+        if (del.countdown) { const d2 = parseDeliveryDays(del.countdown); if (d2 !== null) candidates.push(d2); }
+    }
+
+    // buybox_winner.shipping.raw (type=product fallback)
+    const shippingRaw = data?.product?.buybox_winner?.shipping?.raw ?? '';
+    if (shippingRaw) { const d2 = parseDeliveryDays(shippingRaw); if (d2 !== null) candidates.push(d2); }
+
+    // Full JSON scan as last resort
+    if (candidates.length === 0) {
+        const fullText = JSON.stringify(data);
+        candidates.push(...findAllSpanishDates(fullText), ...findAllEnglishDates(fullText));
+    }
+
+    if (candidates.length > 0) {
+        const min = Math.min(...candidates);
+        console.log(`[fetchRainforest] asin=${asin} ${label} → ${min} días (candidates=${JSON.stringify(candidates)})`);
+        return min;
+    }
+    return null;
+}
+
+async function fetchRainforestDelivery(asin: string, postalCode: string | null, apiKey: string): Promise<number | null> {
+    // Strategy 1: type=offers+customer_location=MX — scrapes the AOD popup.
+    // Rainforest routes through a Mexican residential exit node when customer_location=mx,
+    // so Amazon shows the cross-border delivery date that is Prime-gated for anonymous scrapers.
+    // The date lives in delivery.comments (plural) and delivery.price.raw on each offer.
+    try {
+        const p1 = new URLSearchParams({
+            api_key: apiKey, type: 'offers',
+            amazon_domain: 'amazon.com.mx', asin,
+            customer_location: 'mx',
+        });
+        if (postalCode) p1.set('customer_zipcode', postalCode);
+        console.log(`[fetchRainforest] asin=${asin} type=offers+MX fetching`);
+        const ctrl1 = new AbortController();
+        const t1 = setTimeout(() => ctrl1.abort(), 30000);
+        const res1 = await fetch(`https://api.rainforestapi.com/request?${p1.toString()}`, { signal: ctrl1.signal });
+        clearTimeout(t1);
+        if (res1.ok) {
+            const data1 = await res1.json();
+            if (data1?.request_info?.success !== false) {
+                const days = extractRainforestDays(data1, 'offers+MX', asin);
+                if (days !== null) return days;
+            } else {
+                console.log(`[fetchRainforest] asin=${asin} offers+MX failed: ${data1?.request_info?.message}`);
+            }
+        } else {
+            console.log(`[fetchRainforest] asin=${asin} offers+MX HTTP ${res1.status}`);
+        }
+    } catch (e) { console.log(`[fetchRainforest] asin=${asin} offers+MX error: ${e}`); }
+
+    // Strategy 2: type=product+customer_location=MX
+    try {
+        const p2 = new URLSearchParams({
+            api_key: apiKey, type: 'product',
+            amazon_domain: 'amazon.com.mx', asin,
+            customer_location: 'mx',
+        });
+        if (postalCode) p2.set('customer_zipcode', postalCode);
+        console.log(`[fetchRainforest] asin=${asin} type=product+MX fetching`);
+        const ctrl2 = new AbortController();
+        const t2 = setTimeout(() => ctrl2.abort(), 30000);
+        const res2 = await fetch(`https://api.rainforestapi.com/request?${p2.toString()}`, { signal: ctrl2.signal });
+        clearTimeout(t2);
+        if (res2.ok) {
+            const data2 = await res2.json();
+            if (data2?.request_info?.success !== false) {
+                return extractRainforestDays(data2, 'product+MX', asin);
+            } else {
+                console.log(`[fetchRainforest] asin=${asin} product+MX failed: ${data2?.request_info?.message}`);
+            }
+        } else {
+            console.log(`[fetchRainforest] asin=${asin} product+MX HTTP ${res2.status}`);
+        }
+    } catch (e) { console.log(`[fetchRainforest] asin=${asin} product+MX error: ${e}`); }
+
+    return null;
+}
+
 async function fetchAmazonShippingDays(asin: string, postalCode?: string | null, soldByAmazon?: boolean | null): Promise<ShippingResult> {
     try {
         // Scrape.do (residential IP + JS render) is the primary source for ALL products.
@@ -926,40 +915,6 @@ async function fetchAmazonShippingDays(asin: string, postalCode?: string | null,
             console.log(`[fetchAmazonShippingDays] asin=${asin} hasBuyBox=${scrapedoResult.hasBuyBox} → ${scrapedoResult.days} días`);
             return { days: scrapedoResult.days, available: true, hasBuyBox: scrapedoResult.hasBuyBox ?? null };
         }
-
-        // Scrape.do loaded the page but found no delivery dates — try AOD as fallback.
-        // The AOD endpoint (/gp/aod/ajax) sometimes exposes dates not visible on the main page.
-        const oxylabsUser = Deno.env.get("OXYLABS_USERNAME");
-        const oxylabsPass = Deno.env.get("OXYLABS_PASSWORD");
-        const auth = (oxylabsUser && oxylabsPass) ? `Basic ${btoa(`${oxylabsUser}:${oxylabsPass}`)}` : null;
-
-        if (auth) {
-            // Oxylabs structured parse (parse:true) sets the delivery location natively
-            // and can surface cross-border delivery dates the anonymous scrape misses.
-            const oxyStructuredDays = await fetchOxylabsStructuredDelivery(asin, postalCode ?? null, auth);
-            if (oxyStructuredDays !== null) {
-                console.log(`[fetchAmazonShippingDays] asin=${asin} Oxylabs structured → ${oxyStructuredDays} días`);
-                return { days: oxyStructuredDays, available: true, hasBuyBox: scrapedoResult.hasBuyBox ?? null };
-            }
-        }
-
-        const rainforestKey = Deno.env.get("RAINFOREST_API_KEY");
-        if (rainforestKey) {
-            const rfDays = await fetchRainforestDelivery(asin, postalCode ?? null, rainforestKey);
-            if (rfDays !== null) {
-                console.log(`[fetchAmazonShippingDays] asin=${asin} Rainforest → ${rfDays} días`);
-                return { days: rfDays, available: true, hasBuyBox: scrapedoResult.hasBuyBox ?? null };
-            }
-        }
-
-        if (postalCode && auth) {
-            const aodDays = await fetchAodDeliveryDays(asin, postalCode, auth);
-            if (aodDays !== null) {
-                console.log(`[fetchAmazonShippingDays] asin=${asin} AOD fallback → ${aodDays} días`);
-                return { days: aodDays, available: true, hasBuyBox: scrapedoResult.hasBuyBox ?? null };
-            }
-        }
-
 
         return { days: null, available: null };
     } catch (e) {
@@ -1021,6 +976,34 @@ async function fetchAmazonOffers(
     }
 }
 
+async function fetchAmazonImages(
+    endpoint: string,
+    accessToken: string,
+    asinList: Array<{ asin: string; marketplaceId: string }>
+): Promise<Record<string, string[]>> {
+    const results: Record<string, string[]> = {};
+    const CONCURRENCY = 4; // Catalog Items API: 5 TPS — keep well under limit
+    for (let i = 0; i < asinList.length; i += CONCURRENCY) {
+        const chunk = asinList.slice(i, i + CONCURRENCY);
+        await Promise.allSettled(chunk.map(async ({ asin, marketplaceId }) => {
+            try {
+                const url = `${endpoint}/catalog/2022-04-01/items/${asin}?marketplaceIds=${marketplaceId}&includedData=images`;
+                const res = await fetch(url, { headers: { "x-amz-access-token": accessToken } });
+                if (!res.ok) { console.log(`[fetchAmazonImages] asin=${asin} HTTP ${res.status}`); return; }
+                const data = await res.json();
+                const imgs: any[] = data?.images?.[0]?.images ?? [];
+                const urls = imgs
+                    .filter((img: any) => img.variant === 'MAIN' || /^PT\d/.test(img.variant ?? ''))
+                    .sort((a: any, b: any) => (b.height ?? 0) - (a.height ?? 0))
+                    .map((img: any) => img.link)
+                    .filter(Boolean);
+                if (urls.length > 0) results[asin] = urls.slice(0, 10);
+            } catch (e) { console.log(`[fetchAmazonImages] asin=${asin} error: ${e}`); }
+        }));
+    }
+    return results;
+}
+
 async function fetchOffersBatch(
     endpoint: string,
     accessToken: string,
@@ -1028,17 +1011,72 @@ async function fetchOffersBatch(
     marketplaceId: string,
     amazonSellerId: string
 ): Promise<Record<string, AmazonOffers>> {
+    // Use the batch pricing endpoint: 20 ASINs per request, sequential chunks.
+    // Individual endpoint: 1-2 TPS limit → 20 concurrent calls = ~90% 429 errors.
+    // Batch endpoint: 0.5 TPS but processes 20 ASINs per call → 10× more efficient,
+    // 200 ASINs = 10 calls = ~20s total with no rate-limit failures.
     const offers: Record<string, AmazonOffers> = {};
-    for (let i = 0; i < asins.length; i += PRICE_CONCURRENCY) {
-        const chunk   = asins.slice(i, i + PRICE_CONCURRENCY);
-        const results = await Promise.allSettled(
-            chunk.map(asin => fetchAmazonOffers(endpoint, asin, accessToken, marketplaceId, amazonSellerId))
-        );
-        results.forEach((r, idx) => {
-            if (r.status === "fulfilled") {
-                offers[chunk[idx]] = r.value;
+    const BATCH = 20;
+    for (let i = 0; i < asins.length; i += BATCH) {
+        const chunk = asins.slice(i, i + BATCH);
+        try {
+            const res = await fetch(`${endpoint}/batches/products/pricing/v0/itemOffers`, {
+                method: "POST",
+                headers: { "x-amz-access-token": accessToken, "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    requests: chunk.map(asin => ({
+                        uri: `/products/pricing/v0/items/${asin}/offers`,
+                        method: "GET",
+                        queryParams: { MarketplaceId: marketplaceId, ItemCondition: "New" },
+                    })),
+                }),
+            });
+
+            if (!res.ok) {
+                console.log(`[fetchOffersBatch] batch HTTP ${res.status} — falling back to individual calls`);
+                const fallback = await Promise.allSettled(
+                    chunk.map(asin => fetchAmazonOffers(endpoint, asin, accessToken, marketplaceId, amazonSellerId))
+                );
+                fallback.forEach((r, idx) => { if (r.status === "fulfilled") offers[chunk[idx]] = r.value; });
+                continue;
             }
-        });
+
+            const data = await res.json();
+            (data?.responses ?? []).forEach((resp: any, idx: number) => {
+                const asin = chunk[idx];
+                if (!asin) return;
+                const statusCode = resp?.status?.statusCode ?? 0;
+                if (statusCode === 404 || statusCode === 400) {
+                    offers[asin] = { price: null, sellerCount: 0, soldByAmazon: false, amazonStock: 0, shippingDays: null };
+                    return;
+                }
+                if (statusCode !== 200) return;
+                const payload = resp?.body?.payload;
+                if (!payload) return;
+                const summary     = payload.Summary;
+                const allOffs     = payload.Offers ?? [];
+                const lowestNew   = summary?.LowestPrices?.find(
+                    (p: any) => p.condition === "new" && p.fulfillmentChannel === "Amazon"
+                ) ?? summary?.LowestPrices?.[0];
+                const amazonOff   = allOffs.find((o: any) => o.SellerId === amazonSellerId);
+                const soldByAmazon = !!amazonOff;
+                const amazonStock  = amazonOff?.QuantityOnHand ?? null;
+                const sellerCount  = (summary?.NumberOfOffers ?? [])
+                    .reduce((sum: number, o: any) => sum + (o.offerCount ?? 0), 0) || allOffs.length;
+                const price        = lowestNew?.ListingPrice?.Amount
+                    ?? amazonOff?.ListingPrice?.Amount
+                    ?? amazonOff?.BuyingPrice?.ListingPrice?.Amount
+                    ?? null;
+                const shippingOff  = amazonOff ?? allOffs[0] ?? null;
+                const maxHours     = shippingOff?.ShippingTime?.maximumHours;
+                const shippingDays = (maxHours !== undefined && maxHours !== null && maxHours > 0)
+                    ? Math.ceil(maxHours / 24) : null;
+                console.log(`[fetchOffersBatch] asin=${asin} price=${price} sellers=${sellerCount} soldByAmazon=${soldByAmazon} stock=${amazonStock}`);
+                offers[asin] = { price, sellerCount, soldByAmazon, amazonStock, shippingDays };
+            });
+        } catch (e) {
+            console.error(`[fetchOffersBatch] chunk error:`, e);
+        }
     }
     return offers;
 }
@@ -1173,8 +1211,6 @@ serve(async (req) => {
             const dates = deliverySection ? findAllSpanishDates(deliverySection) : findAllSpanishDates(html);
             const isCrossBorder = detectCrossBorder(html);
 
-            // Also probe Oxylabs structured parse so the debug modal can show whether the
-            // paid E-commerce API surfaces a cross-border delivery date Scrape.do can't.
             let oxylabsDays: number | null = null;
             let oxylabsError: string | null = null;
             const oxyUser = Deno.env.get("OXYLABS_USERNAME");
@@ -1190,84 +1226,55 @@ serve(async (req) => {
                 oxylabsError = "OXYLABS credentials not set";
             }
 
-            // Probe Rainforest API — capture raw response for debug inspection
-            // Runs both type=offers+MX and type=product+MX to show exactly what each returns
+            // Probe Rainforest API (offers+MX then product+MX)
             let rainforestDays: number | null = null;
             let rainforestError: string | null = null;
             let rainforestRaw: any = null;
-            const rfKey = Deno.env.get("RAINFOREST_API_KEY");
-            if (rfKey) {
+            const rfApiKey = Deno.env.get("RAINFOREST_API_KEY");
+            if (rfApiKey) {
                 try {
-                    // Probe 1: type=offers + customer_location=MX
-                    const rfOffersParams = new URLSearchParams({
-                        api_key: rfKey, type: 'offers', asin: debugHtmlAsin,
-                        amazon_domain: 'amazon.com.mx', customer_location: 'mx',
+                    const rfP1 = new URLSearchParams({
+                        api_key: rfApiKey, type: 'offers',
+                        amazon_domain: 'amazon.com.mx', asin: debugHtmlAsin,
+                        customer_location: 'mx',
                     });
-                    if (debugHtmlZip) rfOffersParams.set('customer_zipcode', debugHtmlZip);
-                    const rfOffersCtrl = new AbortController();
-                    const rfOffersTimer = setTimeout(() => rfOffersCtrl.abort(), 30000);
-                    let offersRaw: any = null;
-                    try {
-                        const rfOffersRes = await fetch(`https://api.rainforestapi.com/request?${rfOffersParams.toString()}`, { signal: rfOffersCtrl.signal });
-                        clearTimeout(rfOffersTimer);
-                        if (rfOffersRes.ok) {
-                            const rfOffersData = await rfOffersRes.json();
-                            const offersList: any[] = rfOffersData?.offers_results?.offers ?? rfOffersData?.offers ?? [];
-                            offersRaw = {
-                                offers_count: offersList.length,
-                                first_offer: offersList[0] ? {
-                                    seller_name: offersList[0].seller?.name,
-                                    price: offersList[0].price,
-                                    delivery: offersList[0].delivery ?? null,
-                                    fulfillment: offersList[0].fulfillment ?? null,
-                                } : null,
-                                response_keys: Object.keys(rfOffersData ?? {}),
+                    if (debugHtmlZip) rfP1.set('customer_zipcode', debugHtmlZip);
+                    const rfCtrl1 = new AbortController();
+                    const rfT1 = setTimeout(() => rfCtrl1.abort(), 30000);
+                    const rfRes1 = await fetch(`https://api.rainforestapi.com/request?${rfP1.toString()}`, { signal: rfCtrl1.signal });
+                    clearTimeout(rfT1);
+                    if (rfRes1.ok) {
+                        const rfData1 = await rfRes1.json();
+                        const offersSlice = (rfData1?.offers_results?.offers ?? rfData1?.offers ?? []).slice(0, 3).map((o: any) => ({ delivery: o?.delivery }));
+                        rainforestRaw = { type: 'offers+MX', offers: offersSlice, request_info: rfData1?.request_info };
+                        if (rfData1?.request_info?.success !== false) {
+                            rainforestDays = extractRainforestDays(rfData1, 'offers+MX', debugHtmlAsin);
+                        }
+                    }
+                    if (rainforestDays === null) {
+                        const rfP2 = new URLSearchParams({
+                            api_key: rfApiKey, type: 'product',
+                            amazon_domain: 'amazon.com.mx', asin: debugHtmlAsin,
+                            customer_location: 'mx',
+                        });
+                        if (debugHtmlZip) rfP2.set('customer_zipcode', debugHtmlZip);
+                        const rfCtrl2 = new AbortController();
+                        const rfT2 = setTimeout(() => rfCtrl2.abort(), 30000);
+                        const rfRes2 = await fetch(`https://api.rainforestapi.com/request?${rfP2.toString()}`, { signal: rfCtrl2.signal });
+                        clearTimeout(rfT2);
+                        if (rfRes2.ok) {
+                            const rfData2 = await rfRes2.json();
+                            rainforestRaw = {
+                                type: 'product+MX',
+                                product_delivery: rfData2?.product?.delivery?.slice(0, 3) ?? null,
+                                buybox_shipping: rfData2?.product?.buybox_winner?.shipping ?? null,
+                                request_info: rfData2?.request_info,
                             };
-                        } else {
-                            const errText = await rfOffersRes.text().catch(() => '');
-                            offersRaw = { error: `HTTP ${rfOffersRes.status}: ${errText.slice(0, 200)}` };
+                            if (rfData2?.request_info?.success !== false) {
+                                rainforestDays = extractRainforestDays(rfData2, 'product+MX', debugHtmlAsin);
+                            }
                         }
-                    } catch (e2: any) {
-                        clearTimeout(rfOffersTimer);
-                        offersRaw = { error: e2?.message ?? String(e2) };
                     }
-
-                    // Probe 2: type=product + customer_location=MX
-                    const rfProductParams = new URLSearchParams({
-                        api_key: rfKey, type: 'product', asin: debugHtmlAsin,
-                        amazon_domain: 'amazon.com.mx', customer_location: 'mx',
-                    });
-                    if (debugHtmlZip) rfProductParams.set('customer_zipcode', debugHtmlZip);
-                    const rfProdCtrl = new AbortController();
-                    const rfProdTimer = setTimeout(() => rfProdCtrl.abort(), 30000);
-                    let productRaw: any = null;
-                    try {
-                        const rfProdRes = await fetch(`https://api.rainforestapi.com/request?${rfProductParams.toString()}`, { signal: rfProdCtrl.signal });
-                        clearTimeout(rfProdTimer);
-                        if (rfProdRes.ok) {
-                            const rfProdData = await rfProdRes.json();
-                            const rfProduct = rfProdData?.product;
-                            productRaw = rfProduct ? {
-                                title: rfProduct.title?.slice(0, 80),
-                                delivery: rfProduct.delivery ?? null,
-                                buybox_winner: rfProduct.buybox_winner ? {
-                                    shipping: rfProduct.buybox_winner.shipping,
-                                    fulfillment: rfProduct.buybox_winner.fulfillment,
-                                    price: rfProduct.buybox_winner.price,
-                                } : null,
-                                shipping: rfProduct.shipping ?? null,
-                            } : { raw_keys: Object.keys(rfProdData ?? {}) };
-                        } else {
-                            const errText = await rfProdRes.text().catch(() => '');
-                            productRaw = { error: `HTTP ${rfProdRes.status}: ${errText.slice(0, 200)}` };
-                        }
-                    } catch (e2: any) {
-                        clearTimeout(rfProdTimer);
-                        productRaw = { error: e2?.message ?? String(e2) };
-                    }
-
-                    rainforestRaw = { offers: offersRaw, product: productRaw };
-                    rainforestDays = await fetchRainforestDelivery(debugHtmlAsin, debugHtmlZip, rfKey);
                 } catch (e: any) {
                     rainforestError = e?.message ?? String(e);
                 }
@@ -1275,23 +1282,22 @@ serve(async (req) => {
                 rainforestError = "RAINFOREST_API_KEY not set";
             }
 
-            // Probe AOD endpoint (All Offers Display) — best fallback for cross-border products
+            // Probe AOD (All Offers Display)
             let aodDays: number | null = null;
             let aodError: string | null = null;
-            const aodUser = Deno.env.get("OXYLABS_USERNAME");
-            const aodPass = Deno.env.get("OXYLABS_PASSWORD");
-            if (aodUser && aodPass && debugHtmlZip) {
+            if (oxyUser && oxyPass && debugHtmlZip) {
                 try {
-                    const aodAuth = `Basic ${btoa(`${aodUser}:${aodPass}`)}`;
-                    aodDays = await fetchAodDeliveryDays(debugHtmlAsin, debugHtmlZip, aodAuth);
+                    const oxyAuth2 = `Basic ${btoa(`${oxyUser}:${oxyPass}`)}`;
+                    aodDays = await fetchAodDeliveryDays(debugHtmlAsin, debugHtmlZip, oxyAuth2);
                 } catch (e: any) {
                     aodError = e?.message ?? String(e);
                 }
-            } else if (!aodUser || !aodPass) {
-                aodError = "OXYLABS credentials not set";
+            } else if (!debugHtmlZip) {
+                aodError = "CP no configurado";
             } else {
-                aodError = "zipcode required for AOD probe";
+                aodError = "OXYLABS credentials not set";
             }
+
 
             return new Response(JSON.stringify({
                 asin: debugHtmlAsin,
@@ -1340,7 +1346,7 @@ serve(async (req) => {
             const meliCreds     = conn.meli_credentials as any;
             const amazonCreds   = conn.amazon_credentials as any;
             const settings      = (conn.margin_rules ?? {}) as any;
-            const syncParams       = settings.sync_params   ?? { price: true, stock: true };
+            const syncParams       = settings.sync_params   ?? { price: true, stock: true, description: true, shipping: true, photos: true };
             const allowDecrease   = settings.allow_price_decrease ?? false;
             const defaultStock    = settings.default_stock ?? 3;
             const exchangeRate    = conn.exchange_rate      ?? settings.exchange_rate ?? 18.5;
@@ -1446,6 +1452,16 @@ serve(async (req) => {
             ]);
             const asinOffers: Record<string, AmazonOffers> = { ...usdOffers, ...mxnOffers };
 
+            const asinImages: Record<string, string[]> = {};
+            if (syncParams.photos) {
+                const imageRequests = (products as any[]).map(p => ({
+                    asin: p.sku,
+                    marketplaceId: (p.currency ?? 'USD') !== 'MXN' ? MARKETPLACE_USA : MARKETPLACE_MXN,
+                }));
+                Object.assign(asinImages, await fetchAmazonImages(endpoint, accessToken, imageRequests));
+                console.log(`[amazon-ml-updater] fetched images for ${Object.keys(asinImages).length}/${products.length} products`);
+            }
+
             let mlToken: string;
             try {
                 mlToken = await getValidMeliToken(meliCreds);
@@ -1455,15 +1471,19 @@ serve(async (req) => {
 
             let updated = 0, errors = 0, firstError: string | undefined;
             const debugItems: any[] = [];
-            // The Amazon plugin endpoint has a concurrency limit of 1 request per token.
-            // Process sequentially to avoid 429 errors. 3 × ~30 s = ~90 s, leaving budget
-            // for offers API + ML updates within the 150 s function limit.
-            const MAX_SCRAPES_PER_RUN = 3;
-
-            const STALE_MS = 7 * 24 * 60 * 60 * 1000;
+            // Scrape.do only (residential IP) — ~30 s each → 5 × 30 s = 150 s within edge function limit.
+            const MAX_SCRAPES_PER_RUN = 5;
+            // Delivery time is stable — re-scrape domestic MXN products every 14 days.
+            const STALE_MS = 14 * 24 * 60 * 60 * 1000;
             const staleForScraping = (products as any[]).filter(p => {
                 const ua = p.shipping_days_updated_at;
-                return p.shipping_days === null || !ua || (Date.now() - new Date(ua).getTime()) > STALE_MS;
+                // First time (never scraped before) → scrape ALL products regardless of currency.
+                // If Scrape.do can't determine delivery, the fallback default kicks in afterward.
+                if (!ua) return true;
+                // Subsequent refreshes: only re-scrape domestic MXN. Cross-border keeps its
+                // cached value (or uses the configured default when cached value is null).
+                if ((p.currency ?? 'USD') !== 'MXN') return false;
+                return (Date.now() - new Date(ua).getTime()) > STALE_MS;
             }).slice(0, MAX_SCRAPES_PER_RUN);
 
             const scrapeResultMap = new Map<string, ShippingResult>();
@@ -1534,6 +1554,11 @@ serve(async (req) => {
                     }
                 } else {
                     noBuyBox = (existingPauseReason === 'sin_buybox');
+                    // Cross-border (USD) products skip Scrape.do — apply configured default when no cached value.
+                    if (cachedShippingDays === null && currency !== 'MXN') {
+                        cachedShippingDays = (settings as any).amazon_delivery_cross_border ?? (settings as any).amazon_delivery_usa ?? 17;
+                        console.log(`[amazon-ml-updater] meliId=${meliId} cross-border default → ${cachedShippingDays} días`);
+                    }
                 }
 
                 const currentStatus = (product as any).status ?? 'active';
@@ -1541,7 +1566,7 @@ serve(async (req) => {
                 if (amazonStock === 0 || isUnavailableOnAmazon || scrapedUnavailable || noBuyBox) {
                     updatePayload.status = "paused";
                     const pauseMsg = noBuyBox ? 'no buybox (Scrape.do)'
-                        : scrapedUnavailable ? 'Oxylabs confirms product unavailable on Amazon.com.mx'
+                        : scrapedUnavailable ? 'product confirmed unavailable on Amazon.com.mx'
                         : isUnavailableOnAmazon ? 'product unavailable on Amazon (SP-API 404/400)'
                         : 'Amazon stock = 0';
                     console.log(`[amazon-ml-updater] meliId=${meliId} pausing — ${pauseMsg}`);
@@ -1594,6 +1619,15 @@ serve(async (req) => {
                         console.log(`[amazon-ml-updater] meliId=${meliId} shipping=${cachedShippingDays} + prep=${prepDays} = ${totalHandlingTime}`);
                     }
                 }
+
+                if (syncParams.photos) {
+                    const images = asinImages[sku];
+                    if (images?.length > 0) {
+                        updatePayload.pictures = images.map((url: string) => ({ source: url }));
+                        debug.photosCount = images.length;
+                    }
+                }
+
                 debug.payloadKeys = Object.keys(updatePayload);
 
                 if (Object.keys(updatePayload).length > 0) {

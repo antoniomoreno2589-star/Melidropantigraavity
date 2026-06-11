@@ -1057,7 +1057,7 @@ export const UpdaterPage: React.FC = () => {
                                     ))}
                                 </div>
 
-                                {/* Veredicto cross-border / Oxylabs */}
+                                {/* Veredicto cross-border */}
                                 {scrapeDebug.result.isCrossBorder && (
                                     <div className="p-3 rounded-lg bg-amber-50 dark:bg-amber-900/20 text-amber-800 dark:text-amber-300 text-xs leading-relaxed">
                                         <span className="font-semibold">Producto importado (Amazon Estados Unidos).</span>{' '}
@@ -1067,20 +1067,7 @@ export const UpdaterPage: React.FC = () => {
                                                 ? `Oxylabs (parse:true) obtuvo la fecha: ${scrapeDebug.result.oxylabsDays} días. ✓`
                                                 : scrapeDebug.result.aodDays !== null && scrapeDebug.result.aodDays !== undefined
                                                     ? `AOD (All Offers Display) obtuvo la fecha: ${scrapeDebug.result.aodDays} días. ✓`
-                                                    : `Ningún scraper obtiene la fecha (gated por Prime). El actualizador usará el valor default configurado en Ajustes → "Días de entrega Amazon USA".${scrapeDebug.result.aodError ? ` AOD: ${scrapeDebug.result.aodError}` : ''}`}
-                                    </div>
-                                )}
-
-                                {/* Rainforest raw response */}
-                                {scrapeDebug.result.rainforestRaw !== undefined && scrapeDebug.result.rainforestRaw !== null && (
-                                    <div>
-                                        <p className="text-xs font-semibold text-violet-600 uppercase mb-2">Rainforest — respuesta raw (delivery + buybox)</p>
-                                        <pre className="text-[11px] font-mono bg-slate-900 text-violet-300 p-4 rounded-xl overflow-x-auto whitespace-pre-wrap break-all leading-relaxed">{JSON.stringify(scrapeDebug.result.rainforestRaw, null, 2)}</pre>
-                                    </div>
-                                )}
-                                {scrapeDebug.result.rainforestError && scrapeDebug.result.rainforestError !== 'RAINFOREST_API_KEY not set' && (
-                                    <div className="p-3 rounded-lg bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-300 text-xs font-mono">
-                                        <span className="font-bold">Rainforest error:</span> {scrapeDebug.result.rainforestError}
+                                                    : `Ningún scraper obtiene la fecha (gated por Prime). Rainforest${scrapeDebug.result.rainforestError ? ` (${scrapeDebug.result.rainforestError})` : ''}, Oxylabs${scrapeDebug.result.oxylabsError ? ` (${scrapeDebug.result.oxylabsError})` : ''}, AOD${scrapeDebug.result.aodError ? ` (${scrapeDebug.result.aodError})` : ''} — todos fallaron.`}
                                     </div>
                                 )}
 
@@ -1113,6 +1100,14 @@ export const UpdaterPage: React.FC = () => {
                                     <div>
                                         <p className="text-xs font-semibold text-slate-500 uppercase mb-2">Sección de entrega (HTML raw · primeros 2000 chars)</p>
                                         <pre className="text-[11px] font-mono bg-slate-900 text-green-400 p-4 rounded-xl overflow-x-auto whitespace-pre-wrap break-all leading-relaxed">{scrapeDebug.result.deliverySection}</pre>
+                                    </div>
+                                )}
+
+                                {/* Rainforest raw response */}
+                                {scrapeDebug.result.rainforestRaw !== undefined && scrapeDebug.result.rainforestRaw !== null && (
+                                    <div>
+                                        <p className="text-xs font-semibold text-violet-600 uppercase mb-2">Rainforest — respuesta raw (delivery + buybox)</p>
+                                        <pre className="text-[11px] font-mono bg-slate-900 text-violet-300 p-4 rounded-xl overflow-x-auto whitespace-pre-wrap break-all leading-relaxed">{JSON.stringify(scrapeDebug.result.rainforestRaw, null, 2)}</pre>
                                     </div>
                                 )}
 
