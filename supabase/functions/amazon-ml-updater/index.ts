@@ -1048,36 +1048,6 @@ async function fetchAmazonShippingDays(asin: string, postalCode?: string | null,
             return { days: scrapedoResult.days, available: true, hasBuyBox: scrapedoResult.hasBuyBox ?? null };
         }
 
-        // Scrape.do loaded the page but found no delivery dates.
-        const oxylabsUser = Deno.env.get("OXYLABS_USERNAME");
-        const oxylabsPass = Deno.env.get("OXYLABS_PASSWORD");
-        const auth = (oxylabsUser && oxylabsPass) ? `Basic ${btoa(`${oxylabsUser}:${oxylabsPass}`)}` : null;
-
-        if (auth) {
-            const oxyStructuredDays = await fetchOxylabsStructuredDelivery(asin, postalCode ?? null, auth);
-            if (oxyStructuredDays !== null) {
-                console.log(`[fetchAmazonShippingDays] asin=${asin} Oxylabs structured → ${oxyStructuredDays} días`);
-                return { days: oxyStructuredDays, available: true, hasBuyBox: scrapedoResult.hasBuyBox ?? null };
-            }
-        }
-
-        const rfKey = Deno.env.get("RAINFOREST_API_KEY");
-        if (rfKey) {
-            const rfDays = await fetchRainforestDelivery(asin, postalCode ?? null, rfKey);
-            if (rfDays !== null) {
-                console.log(`[fetchAmazonShippingDays] asin=${asin} Rainforest → ${rfDays} días`);
-                return { days: rfDays, available: true, hasBuyBox: scrapedoResult.hasBuyBox ?? null };
-            }
-        }
-
-        if (postalCode && auth) {
-            const aodDays = await fetchAodDeliveryDays(asin, postalCode, auth);
-            if (aodDays !== null) {
-                console.log(`[fetchAmazonShippingDays] asin=${asin} AOD fallback → ${aodDays} días`);
-                return { days: aodDays, available: true, hasBuyBox: scrapedoResult.hasBuyBox ?? null };
-            }
-        }
-
         return { days: null, available: null };
     } catch (e) {
         console.error(`[fetchAmazonShippingDays] asin=${asin}:`, e);
@@ -1540,13 +1510,13 @@ serve(async (req) => {
 
             let updated = 0, errors = 0, firstError: string | undefined;
             const debugItems: any[] = [];
-            // The Amazon plugin endpoint has a concurrency limit of 1 request per token.
-            // Process sequentially to avoid 429 errors. 3 × ~30 s = ~90 s, leaving budget
-            // for offers API + ML updates within the 150 s function limit.
-            const MAX_SCRAPES_PER_RUN = 3;
-
-            const STALE_MS = 7 * 24 * 60 * 60 * 1000;
+            // Scrape.do only (residential IP) — ~30 s each → 5 × 30 s = 150 s within edge function limit.
+            // Cross-border (USD) products skip scraping entirely and receive the configured default.
+            const MAX_SCRAPES_PER_RUN = 5;
+            // Delivery time is stable — refresh every 14 days to halve Scrape.do credit usage.
+            const STALE_MS = 14 * 24 * 60 * 60 * 1000;
             const staleForScraping = (products as any[]).filter(p => {
+                if ((p.currency ?? 'USD') !== 'MXN') return false;
                 const ua = p.shipping_days_updated_at;
                 return p.shipping_days === null || !ua || (Date.now() - new Date(ua).getTime()) > STALE_MS;
             }).slice(0, MAX_SCRAPES_PER_RUN);
@@ -1619,6 +1589,11 @@ serve(async (req) => {
                     }
                 } else {
                     noBuyBox = (existingPauseReason === 'sin_buybox');
+                    // Cross-border (USD) products skip Scrape.do — apply configured default when no cached value.
+                    if (cachedShippingDays === null && currency !== 'MXN') {
+                        cachedShippingDays = (settings as any).amazon_delivery_cross_border ?? (settings as any).amazon_delivery_usa ?? 17;
+                        console.log(`[amazon-ml-updater] meliId=${meliId} cross-border default → ${cachedShippingDays} días`);
+                    }
                 }
 
                 const currentStatus = (product as any).status ?? 'active';
@@ -1626,7 +1601,7 @@ serve(async (req) => {
                 if (amazonStock === 0 || isUnavailableOnAmazon || scrapedUnavailable || noBuyBox) {
                     updatePayload.status = "paused";
                     const pauseMsg = noBuyBox ? 'no buybox (Scrape.do)'
-                        : scrapedUnavailable ? 'Oxylabs confirms product unavailable on Amazon.com.mx'
+                        : scrapedUnavailable ? 'product confirmed unavailable on Amazon.com.mx'
                         : isUnavailableOnAmazon ? 'product unavailable on Amazon (SP-API 404/400)'
                         : 'Amazon stock = 0';
                     console.log(`[amazon-ml-updater] meliId=${meliId} pausing — ${pauseMsg}`);
