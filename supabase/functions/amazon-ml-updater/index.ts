@@ -982,7 +982,7 @@ async function fetchAmazonImages(
     asinList: Array<{ asin: string; marketplaceId: string }>
 ): Promise<Record<string, string[]>> {
     const results: Record<string, string[]> = {};
-    const CONCURRENCY = 8;
+    const CONCURRENCY = 4; // Catalog Items API: 5 TPS — keep well under limit
     for (let i = 0; i < asinList.length; i += CONCURRENCY) {
         const chunk = asinList.slice(i, i + CONCURRENCY);
         await Promise.allSettled(chunk.map(async ({ asin, marketplaceId }) => {
@@ -1011,17 +1011,72 @@ async function fetchOffersBatch(
     marketplaceId: string,
     amazonSellerId: string
 ): Promise<Record<string, AmazonOffers>> {
+    // Use the batch pricing endpoint: 20 ASINs per request, sequential chunks.
+    // Individual endpoint: 1-2 TPS limit → 20 concurrent calls = ~90% 429 errors.
+    // Batch endpoint: 0.5 TPS but processes 20 ASINs per call → 10× more efficient,
+    // 200 ASINs = 10 calls = ~20s total with no rate-limit failures.
     const offers: Record<string, AmazonOffers> = {};
-    for (let i = 0; i < asins.length; i += PRICE_CONCURRENCY) {
-        const chunk   = asins.slice(i, i + PRICE_CONCURRENCY);
-        const results = await Promise.allSettled(
-            chunk.map(asin => fetchAmazonOffers(endpoint, asin, accessToken, marketplaceId, amazonSellerId))
-        );
-        results.forEach((r, idx) => {
-            if (r.status === "fulfilled") {
-                offers[chunk[idx]] = r.value;
+    const BATCH = 20;
+    for (let i = 0; i < asins.length; i += BATCH) {
+        const chunk = asins.slice(i, i + BATCH);
+        try {
+            const res = await fetch(`${endpoint}/batches/products/pricing/v0/itemOffers`, {
+                method: "POST",
+                headers: { "x-amz-access-token": accessToken, "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    requests: chunk.map(asin => ({
+                        uri: `/products/pricing/v0/items/${asin}/offers`,
+                        method: "GET",
+                        queryParams: { MarketplaceId: marketplaceId, ItemCondition: "New" },
+                    })),
+                }),
+            });
+
+            if (!res.ok) {
+                console.log(`[fetchOffersBatch] batch HTTP ${res.status} — falling back to individual calls`);
+                const fallback = await Promise.allSettled(
+                    chunk.map(asin => fetchAmazonOffers(endpoint, asin, accessToken, marketplaceId, amazonSellerId))
+                );
+                fallback.forEach((r, idx) => { if (r.status === "fulfilled") offers[chunk[idx]] = r.value; });
+                continue;
             }
-        });
+
+            const data = await res.json();
+            (data?.responses ?? []).forEach((resp: any, idx: number) => {
+                const asin = chunk[idx];
+                if (!asin) return;
+                const statusCode = resp?.status?.statusCode ?? 0;
+                if (statusCode === 404 || statusCode === 400) {
+                    offers[asin] = { price: null, sellerCount: 0, soldByAmazon: false, amazonStock: 0, shippingDays: null };
+                    return;
+                }
+                if (statusCode !== 200) return;
+                const payload = resp?.body?.payload;
+                if (!payload) return;
+                const summary     = payload.Summary;
+                const allOffs     = payload.Offers ?? [];
+                const lowestNew   = summary?.LowestPrices?.find(
+                    (p: any) => p.condition === "new" && p.fulfillmentChannel === "Amazon"
+                ) ?? summary?.LowestPrices?.[0];
+                const amazonOff   = allOffs.find((o: any) => o.SellerId === amazonSellerId);
+                const soldByAmazon = !!amazonOff;
+                const amazonStock  = amazonOff?.QuantityOnHand ?? null;
+                const sellerCount  = (summary?.NumberOfOffers ?? [])
+                    .reduce((sum: number, o: any) => sum + (o.offerCount ?? 0), 0) || allOffs.length;
+                const price        = lowestNew?.ListingPrice?.Amount
+                    ?? amazonOff?.ListingPrice?.Amount
+                    ?? amazonOff?.BuyingPrice?.ListingPrice?.Amount
+                    ?? null;
+                const shippingOff  = amazonOff ?? allOffs[0] ?? null;
+                const maxHours     = shippingOff?.ShippingTime?.maximumHours;
+                const shippingDays = (maxHours !== undefined && maxHours !== null && maxHours > 0)
+                    ? Math.ceil(maxHours / 24) : null;
+                console.log(`[fetchOffersBatch] asin=${asin} price=${price} sellers=${sellerCount} soldByAmazon=${soldByAmazon} stock=${amazonStock}`);
+                offers[asin] = { price, sellerCount, soldByAmazon, amazonStock, shippingDays };
+            });
+        } catch (e) {
+            console.error(`[fetchOffersBatch] chunk error:`, e);
+        }
     }
     return offers;
 }
