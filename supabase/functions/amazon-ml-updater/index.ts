@@ -1473,8 +1473,8 @@ serve(async (req) => {
             const debugItems: any[] = [];
             // Scrape.do only (residential IP) — ~30 s each → 5 × 30 s = 150 s within edge function limit.
             const MAX_SCRAPES_PER_RUN = 5;
-            // Delivery time is stable — re-scrape domestic MXN products every 14 days.
-            const STALE_MS = 14 * 24 * 60 * 60 * 1000;
+            // Delivery time is stable — re-scrape domestic MXN products every 7 days.
+            const STALE_MS = 7 * 24 * 60 * 60 * 1000;
             const staleForScraping = (products as any[]).filter(p => {
                 const ua = p.shipping_days_updated_at;
                 // First time (never scraped before) → scrape ALL products regardless of currency.
