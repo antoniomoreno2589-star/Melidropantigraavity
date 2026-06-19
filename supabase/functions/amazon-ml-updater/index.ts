@@ -1613,9 +1613,7 @@ serve(async (req) => {
                 if (syncParams.shipping) {
                     if (cachedShippingDays !== null) {
                         const totalHandlingTime = cachedShippingDays + prepDays;
-                        updatePayload.sale_terms = [
-                            { id: "MANUFACTURING_TIME", value_name: `${totalHandlingTime} días` }
-                        ];
+                        updatePayload.shipping = { handling_time: totalHandlingTime };
                         console.log(`[amazon-ml-updater] meliId=${meliId} shipping=${cachedShippingDays} + prep=${prepDays} = ${totalHandlingTime}`);
                     }
                 }
