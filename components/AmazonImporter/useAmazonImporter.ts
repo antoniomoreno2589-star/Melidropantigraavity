@@ -376,6 +376,9 @@ export function useAmazonImporter() {
 
         const userAttrIds = new Set(Object.keys(attrs).filter(k => attrs[k]?.toString().trim()));
 
+        // Only inject defaults for attributes the category actually declares
+        const catAttrIds = new Set((categoryAttributes[processed.asin] || []).map((a: any) => a.id));
+
         const finalAttributes = [
             ...Object.entries(attrs)
                 .filter(([id, v]) => {
@@ -388,10 +391,9 @@ export function useAmazonImporter() {
                 .map(([id, value_name]) => ({ id, value_name: sanitizeAttrValue(id, value_name.toString().trim()) })),
             { id: 'SELLER_SKU', value_name: processed.asin },
             ...(barcode && !userHasBarcode ? [{ id: 'UPC', value_name: barcode }] : []),
-            // Required by ML for most categories — default to 1 unit per pack
-            ...(!userAttrIds.has('UNITS_PER_PACK') ? [{ id: 'UNITS_PER_PACK', value_name: '1' }] : []),
-            // MODEL is often required — default to brand or product code
-            ...(!userAttrIds.has('MODEL') ? [{ id: 'MODEL', value_name: product.brand || processed.asin }] : []),
+            // Only add UNITS_PER_PACK / MODEL defaults if the category supports them
+            ...(!userAttrIds.has('UNITS_PER_PACK') && catAttrIds.has('UNITS_PER_PACK') ? [{ id: 'UNITS_PER_PACK', value_name: '1' }] : []),
+            ...(!userAttrIds.has('MODEL') && catAttrIds.has('MODEL') ? [{ id: 'MODEL', value_name: product.brand || processed.asin }] : []),
         ];
 
         const currency = product.currency || 'USD';
@@ -401,19 +403,6 @@ export function useAmazonImporter() {
         // For sandbox test products: multiply price by 10 to prevent accidental purchases
         if (isSandbox) {
             priceMXN = priceMXN * 10;
-        }
-
-        // handling_time = días que Amazon tarda en entregar a tu bodega + días de preparación
-        // ML sandbox accepts max 60 days; production uses actual configured times
-        let handlingTime: number;
-        if (isSandbox) {
-            handlingTime = 60;
-        } else {
-            const prepKey     = isUSD ? 'melidrop_handling_time_usa'     : 'melidrop_handling_time_mx';
-            const deliveryKey = isUSD ? 'melidrop_amazon_delivery_usa'   : 'melidrop_amazon_delivery_mx';
-            const prepDays     = parseInt(localStorage.getItem(prepKey)     || (isUSD ? '7' : '3'));
-            const deliveryDays = parseInt(localStorage.getItem(deliveryKey) || (isUSD ? '5' : '3'));
-            handlingTime = prepDays + deliveryDays;
         }
 
         const availableQty = parseInt(localStorage.getItem('melidrop_default_stock') || '3');
@@ -427,10 +416,6 @@ export function useAmazonImporter() {
             .replace(/[,;:\-]+$/, '')
             .substring(0, 60)
             .trim();
-
-        // family_name required for real ML accounts. Use specific attr if available, else title
-        const withHoodAttr = finalAttributes.find(a => a.id === 'WITH_HOOD')?.value_name;
-        const familyName = withHoodAttr === 'Sí' ? 'Toalla con Capucha' : safeTitle;
 
         const configDescription = localStorage.getItem('melidrop_description_suffix') ||
             `==========================================
@@ -488,11 +473,9 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
             seller_custom_field: processed.asin,
             pictures: pictureUrls.map(url => ({ source: url })),
             attributes: finalAttributes,
-            ...(familyName && { family_name: familyName }),
             sale_terms: [
                 { id: 'WARRANTY_TYPE', value_name: 'Garantía del vendedor' },
                 { id: 'WARRANTY_TIME', value_name: warrantyLabel },
-                { id: 'MANUFACTURING_TIME', value_name: `${handlingTime} días` }
             ],
             shipping: isSandbox
                 ? {
@@ -837,10 +820,14 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
                 const causes: string[] = [];
                 if (result.cause && Array.isArray(result.cause)) {
                     result.cause.forEach((c: any) => {
-                        const field = c.field ? `[${c.field}] ` : '';
-                        if (c.message) causes.push(`${field}${c.message}`);
-                        else if (c.code || c.description) causes.push(`${field}${c.code ? `[${c.code}] ` : ''}${c.description || ''}`);
-                        else causes.push(field + JSON.stringify(c));
+                        if (typeof c === 'string') {
+                            causes.push(c);
+                        } else {
+                            const field = c.field ? `[${c.field}] ` : '';
+                            if (c.message) causes.push(`${field}${c.message}`);
+                            else if (c.code || c.description) causes.push(`${field}${c.code ? `[${c.code}] ` : ''}${c.description || ''}`);
+                            else causes.push(field + JSON.stringify(c));
+                        }
                     });
                 }
 
