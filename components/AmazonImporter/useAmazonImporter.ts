@@ -451,7 +451,8 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
 
             if (!seenAmazonIds.has(dedupeKey)) {
                 seenAmazonIds.add(dedupeKey);
-                pictureUrls.push(img.url);
+                // Strip size modifiers so ML receives the full-resolution image
+                pictureUrls.push(normalizeAmazonImageUrl(img.url));
             }
         }
         pictureUrls.splice(10);
@@ -552,13 +553,12 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
                             if (img.cleanedUrl) {
                                 id = await meliService.uploadImageBinary(img.cleanedUrl, testToken);
                             } else {
-                                // Resize if needed, then upload
-                                const resizedUrl = await resizeImageIfNeeded(img.url);
+                                // Normalize to full-resolution Amazon URL, then resize if still < 500x250
+                                const fullUrl = normalizeAmazonImageUrl(img.url);
+                                const resizedUrl = await resizeImageIfNeeded(fullUrl);
                                 if (resizedUrl.startsWith('data:')) {
-                                    // dataURL from resize — upload as binary
                                     id = await meliService.uploadImageBinary(resizedUrl, testToken);
                                 } else {
-                                    // Original URL (didn't need resize) — upload as source
                                     id = await meliService.uploadImage(resizedUrl, testToken);
                                 }
                             }
@@ -647,6 +647,13 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
             setPublishResults(prev => ({ ...prev, [asin]: { error: `Error en prueba: ${err.message}` } }));
             setPublishingStatus(prev => ({ ...prev, [asin]: 'error' }));
         }
+    };
+
+    // Force full-resolution Amazon CDN image: strip size/crop modifiers from URL.
+    // "71XxxxxL._AC_SL75_.jpg" → "71XxxxxL.jpg" (Amazon returns full size when no modifier).
+    const normalizeAmazonImageUrl = (url: string): string => {
+        if (!/media-amazon\.com|images-amazon\.com/i.test(url)) return url;
+        return url.replace(/\._[A-Z0-9_]+_\.(jpg|jpeg|png|gif|webp)$/i, '.$1');
     };
 
     // ML requires minimum 500x250px; upscale smaller images
@@ -771,8 +778,9 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
                 if (img.cleanedUrl) {
                     id = await meliService.uploadImageBinary(img.cleanedUrl, publishToken);
                 } else {
-                    // Resize if needed, then upload
-                    const resizedUrl = await resizeImageIfNeeded(img.url);
+                    // Normalize to full-resolution Amazon URL, then resize if still < 500x250
+                    const fullUrl = normalizeAmazonImageUrl(img.url);
+                    const resizedUrl = await resizeImageIfNeeded(fullUrl);
                     if (resizedUrl.startsWith('data:')) {
                         id = await meliService.uploadImageBinary(resizedUrl, publishToken);
                     } else {
