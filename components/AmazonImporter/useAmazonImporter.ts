@@ -408,6 +408,15 @@ export function useAmazonImporter() {
         const availableQty = parseInt(localStorage.getItem('melidrop_default_stock') || '3');
         const warrantyMonths = parseInt(localStorage.getItem('melidrop_warranty_months') || '1');
 
+        // handling_time = días preparación del vendedor + días de entrega Amazon
+        // Reads the same keys that SettingsPage writes
+        const prepDaysStored = parseInt(localStorage.getItem('melidrop_prep_days') || '3');
+        const deliveryDaysStored = isUSD
+            ? parseInt(localStorage.getItem('melidrop_delivery_days_usa') || '10')
+            : parseInt(localStorage.getItem('melidrop_delivery_days_mx') || '3');
+        // Sandbox: ML caps at 30 days for test listings
+        const handlingTime = isSandbox ? 30 : (prepDaysStored + deliveryDaysStored);
+
         // Sanitize title: remove ML-forbidden chars, strip trailing punctuation from truncation
         const safeTitle = title
             .replace(/[<>|\\]/g, '')
@@ -482,13 +491,15 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
                 ? {
                     mode: 'me2',
                     free_shipping: true,
-                    local_pick_up: false
+                    local_pick_up: false,
+                    handling_time: handlingTime,
                   }
                 : {
                     mode: 'me2',
                     free_shipping: true,
                     local_pick_up: false,
-                    logistic_type: 'drop_off'
+                    logistic_type: 'drop_off',
+                    handling_time: handlingTime,
                   }
         };
 
