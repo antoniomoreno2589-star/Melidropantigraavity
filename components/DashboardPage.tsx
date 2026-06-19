@@ -29,7 +29,8 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ user, stats, meliD
         const { data: orders, error } = await supabase
           .from('orders')
           .select('date, total, amazon_purchase_price')
-          .gte('date', isoDate);
+          .gte('date', isoDate)
+          .limit(2000);
 
         if (error) throw error;
 

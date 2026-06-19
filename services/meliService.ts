@@ -770,37 +770,27 @@ class MeliService {
             return this.statsCache;
         }
         try {
-            console.log("MeliService: Iniciando descarga secuencial para evitar bloqueos...");
-
-            const user = await this.getUserData().catch((e) => { console.error("MeliService: Error fetching user data:", e); return null; });
-            await new Promise(r => setTimeout(r, 1000));
-
-            const balance = await this.getBalance().catch((e) => { console.error("MeliService: Error fetching balance:", e); return null; });
-            await new Promise(r => setTimeout(r, 1000));
+            console.log("MeliService: Iniciando descarga paralela de métricas...");
 
             const permissionErrors: string[] = [];
 
-            const orders = await this.getOrders(20).catch((e) => {
-                console.error("MeliService: Error fetching orders:", e);
-                if (e.message === 'forbidden') permissionErrors.push('orders');
-                return [];
-            });
-            await new Promise(r => setTimeout(r, 1000));
-
-            const unreadCount = await this.getQuestionsCount().catch((e) => {
-                console.error("MeliService: Error fetching unread questions count:", e);
-                if (e.message === 'forbidden') permissionErrors.push('questions');
-                return 0;
-            });
-            await new Promise(r => setTimeout(r, 1000));
-
-            const unreadMessages = await this.getUnreadMessagesCount().catch((e) => { console.error("MeliService: Error fetching unread messages count:", e); return 0; });
-            await new Promise(r => setTimeout(r, 200));
-
-            const itemsBreakdown = await this.getItemsBreakdown().catch((e) => { console.error("MeliService: Error fetching items breakdown:", e); return null; });
-            await new Promise(r => setTimeout(r, 200));
-
-            const answeredQuestions = await this.getAnsweredQuestions().catch((e) => { console.error("MeliService: Error fetching answered questions:", e); return []; });
+            const [user, balance, orders, unreadCount, unreadMessages, itemsBreakdown, answeredQuestions] = await Promise.all([
+                this.getUserData().catch((e) => { console.error("MeliService: Error fetching user data:", e); return null; }),
+                this.getBalance().catch((e) => { console.error("MeliService: Error fetching balance:", e); return null; }),
+                this.getOrders(20).catch((e) => {
+                    console.error("MeliService: Error fetching orders:", e);
+                    if (e.message === 'forbidden') permissionErrors.push('orders');
+                    return [];
+                }),
+                this.getQuestionsCount().catch((e) => {
+                    console.error("MeliService: Error fetching unread questions count:", e);
+                    if (e.message === 'forbidden') permissionErrors.push('questions');
+                    return 0;
+                }),
+                this.getUnreadMessagesCount().catch((e) => { console.error("MeliService: Error fetching unread messages count:", e); return 0; }),
+                this.getItemsBreakdown().catch((e) => { console.error("MeliService: Error fetching items breakdown:", e); return null; }),
+                this.getAnsweredQuestions().catch((e) => { console.error("MeliService: Error fetching answered questions:", e); return []; }),
+            ]);
 
             const now = new Date();
             const todayISO = now.toISOString().split('T')[0];
