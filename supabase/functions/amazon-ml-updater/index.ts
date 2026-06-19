@@ -1180,12 +1180,14 @@ serve(async (req) => {
 
     let forceRun = false;
     let targetUserId: string | null = null;
+    let targetAsin: string | null = null;
     let debugHtmlAsin: string | null = null;
     let debugHtmlZip: string | null = null;
     try {
         const body = await req.json().catch(() => ({}));
         forceRun = body.force === true;
         targetUserId = body.userId ?? null;
+        targetAsin = body.asin ?? null;
         debugHtmlAsin = body.debugHtml ?? null;
         debugHtmlZip = body.zipcode ?? null;
     } catch {
@@ -1416,15 +1418,20 @@ serve(async (req) => {
 
             const offset = job.next_offset as number;
 
-            const { data: products } = await supabase
+            let productQuery = supabase
                 .from("products")
                 .select("id, meli_id, sku, price_mxn, stock_meli, status, currency, description_text, shipping_days, shipping_days_updated_at, pause_reason")
                 .eq("user_id", userId)
                 .eq("in_updater", true)
                 .not("meli_id", "is", null)
                 .not("sku", "is", null)
-                .neq("sku", "")
-                .range(offset, offset + BATCH_SIZE - 1);
+                .neq("sku", "");
+            if (targetAsin) {
+                productQuery = productQuery.eq("sku", targetAsin);
+            } else {
+                productQuery = productQuery.range(offset, offset + BATCH_SIZE - 1);
+            }
+            const { data: products } = await productQuery;
 
             if (!products?.length) {
                 await supabase

@@ -900,6 +900,14 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
                             published_by_app: true,
                         }, { onConflict: 'meli_id' });
                         if (sbErr) console.warn('[Melidrop] Supabase upsert error:', sbErr.message);
+
+                        // Fire-and-forget: trigger updater to scrape real Amazon delivery days
+                        // and update shipping.handling_time immediately after publish
+                        if (!isDraft && !sbErr) {
+                            supabase.functions.invoke('amazon-ml-updater', {
+                                body: { force: true, userId: user.id, asin }
+                            }).catch(err => console.warn('[Melidrop] Post-publish updater trigger failed:', err));
+                        }
                     }
                 }
             }
