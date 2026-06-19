@@ -5,59 +5,41 @@ import { meliService } from '../services/meliService';
 import { api } from '../services/api';
 import { SyncStatus } from './SyncStatus';
 
-interface CatalogTableProps {
-  products: Product[];
-  onUpdateProduct: (product: Product) => void;
-  onBulkUpdate: (products: Product[]) => void;
-}
-
-// Helper to calculate price based on rules
 const calculatePrice = (costUSD: number, settings: any) => {
   const { exchangeRate, usaRules, usaDefaultMargin } = settings;
-
-  // 1. Convert to MXN Cost
   const costMXN = costUSD * exchangeRate;
-
-  // 2. Find matching rule
   const rule = usaRules.find((r: any) => {
     if (r.max === null) return costUSD >= r.min;
     return costUSD >= r.min && costUSD <= r.max;
   });
-
-  // 3. Determine Margin
   const margin = rule ? rule.margin : usaDefaultMargin;
-
-  // 4. Final Price
-  const finalPrice = costMXN * (1 + margin / 100);
-
-  return {
-    costMXN,
-    finalPrice,
-    marginUsed: margin
-  };
+  return { costMXN, finalPrice: costMXN * (1 + margin / 100), marginUsed: margin };
 };
 
-export const CatalogTable: React.FC<CatalogTableProps> = ({ products, onUpdateProduct, onBulkUpdate }) => {
+export const CatalogTable: React.FC = () => {
   const navigate = useNavigate();
+
+  // Server-side data
+  const [products, setProducts] = useState<Product[]>([]);
+  const [totalCount, setTotalCount] = useState(0);
+  const [statusCounts, setStatusCounts] = useState<{ active: number; paused: number; under_review: number; inactive: number; closed: number }>({
+    active: 0, paused: 0, under_review: 0, inactive: 0, closed: 0,
+  });
+  const [isLoading, setIsLoading] = useState(true);
+  const [refreshKey, setRefreshKey] = useState(0);
+
+  // Filter State
   const [filter, setFilter] = useState('all');
+  const [searchInput, setSearchInput] = useState('');
   const [search, setSearch] = useState('');
+  const [searchCategory, setSearchCategory] = useState<'title' | 'sku' | 'meliId'>('title');
+  const [dateType, setDateType] = useState<'updated' | 'created'>('updated');
+  const [dateValue, setDateValue] = useState('');
 
-  useEffect(() => {
-    fetchLastSync();
-  }, []);
-
-  const fetchLastSync = async () => {
-    try {
-      const data = await api.sync.getLastSync();
-      setLastSyncData(data);
-    } catch (err) {
-      console.error("Failed to fetch last sync:", err);
-    }
-  };
-
-  // Pagination State
+  // Pagination
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 50;
+  const totalPages = Math.ceil(totalCount / itemsPerPage);
 
   // Selection
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
@@ -77,9 +59,7 @@ export const CatalogTable: React.FC<CatalogTableProps> = ({ products, onUpdatePr
 
   // Massive Actions State
   const [massiveModal, setMassiveModal] = useState<{ isOpen: boolean; action: string; value: string }>({
-    isOpen: false,
-    action: '',
-    value: ''
+    isOpen: false, action: '', value: '',
   });
 
   // Sync State
@@ -87,98 +67,102 @@ export const CatalogTable: React.FC<CatalogTableProps> = ({ products, onUpdatePr
   const [syncProgress, setSyncProgress] = useState({ phase: 'idle', current: 0, total: 0 });
   const [lastSyncData, setLastSyncData] = useState<{ finished_at: string; items_synced: number } | null>(null);
 
-  // Filter Logic
-  const [viewMode, setViewMode] = useState<'family' | 'publication'>('publication');
-  const [searchCategory, setSearchCategory] = useState<'title' | 'sku' | 'meliId'>('title');
-  const [dateType, setDateType] = useState<'updated' | 'created'>('updated');
-  const [dateValue, setDateValue] = useState('');
+  // Debounce search input → triggers fetch
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setSearch(searchInput);
+      setCurrentPage(1);
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [searchInput]);
 
-  const filteredProducts = products.filter(p => {
-    // 1. Status Tab Filter
-    const matchesStatus = filter === 'all' || p.status === filter;
+  // Fetch products + status counts whenever page/filter/search/refreshKey changes
+  useEffect(() => {
+    let cancelled = false;
+    const fetchData = async () => {
+      setIsLoading(true);
+      try {
+        const [result, counts] = await Promise.all([
+          api.products.listPaginated(currentPage, itemsPerPage, { status: filter, search, searchCategory }),
+          api.products.getStatusCounts(),
+        ]);
+        if (cancelled) return;
+        setProducts(result.products);
+        setTotalCount(result.total);
+        setStatusCounts(counts);
+      } catch (err) {
+        if (!cancelled) console.error('Error fetching products:', err);
+      } finally {
+        if (!cancelled) setIsLoading(false);
+      }
+    };
+    fetchData();
+    return () => { cancelled = true; };
+  }, [currentPage, filter, search, searchCategory, refreshKey]);
 
-    // 2. Search Box Filter
-    let matchesSearch = true;
-    if (search) {
-      const s = search.toLowerCase();
-      if (searchCategory === 'title') matchesSearch = p.title.toLowerCase().includes(s);
-      else if (searchCategory === 'sku') matchesSearch = p.sku.toLowerCase().includes(s);
-      else if (searchCategory === 'meliId') matchesSearch = p.meliId?.toLowerCase().includes(s) || false;
-    }
+  // Fetch last sync info on mount
+  useEffect(() => {
+    api.sync.getLastSync().then(setLastSyncData).catch(console.error);
+  }, []);
 
-    // 3. Date Filter (simulated)
-    const matchesDate = !dateValue || true; // Implementation depends on date storage format
-
-    return matchesStatus && matchesSearch && matchesDate;
-  });
-
-  // Status counts for tabs
-  const counts = {
-    active: products.filter(p => p.status === 'active').length,
-    paused: products.filter(p => p.status === 'paused').length,
-    under_review: products.filter(p => p.status === 'under_review' || p.status === 'not_yet_active' || p.status === 'payment_required').length,
-    inactive: products.filter(p => p.status === 'inactive').length,
-    closed: products.filter(p => p.status === 'closed').length,
+  const refresh = () => {
+    setSelectedIds([]);
+    setRefreshKey(k => k + 1);
   };
 
-  // Pagination Logic
-  const totalCount = filteredProducts.length;
-  const totalPages = Math.ceil(totalCount / itemsPerPage);
-  const paginatedProducts = filteredProducts.slice(
-    (currentPage - 1) * itemsPerPage,
-    currentPage * itemsPerPage
-  );
-
-  // Reset page when filter or search changes
-  React.useEffect(() => {
-    setCurrentPage(1);
-  }, [filter, search]);
-
-  // Handle Selection
+  // Selection
   const toggleSelectAll = () => {
-    if (selectedIds.length === filteredProducts.length) {
+    if (selectedIds.length === products.length && products.length > 0) {
       setSelectedIds([]);
     } else {
-      setSelectedIds(filteredProducts.map(p => p.id));
+      setSelectedIds(products.map(p => p.id));
     }
   };
 
   const toggleSelectOne = (id: string) => {
-    if (selectedIds.includes(id)) {
-      setSelectedIds(selectedIds.filter(sid => sid !== id));
-    } else {
-      setSelectedIds([...selectedIds, id]);
-    }
+    setSelectedIds(prev => prev.includes(id) ? prev.filter(sid => sid !== id) : [...prev, id]);
   };
 
   // Bulk Actions
-  const handleBulkAction = (action: string) => {
+  const handleBulkAction = async (action: string) => {
     if (action === 'delete') {
-      if (confirm(`¿Estás seguro de eliminar ${selectedIds.length} productos?`)) {
-        onBulkUpdate(products.filter(p => !selectedIds.includes(p.id)));
+      if (!confirm(`¿Estás seguro de eliminar ${selectedIds.length} productos?`)) return;
+      try {
+        await api.products.bulkDelete(selectedIds);
+        refresh();
+      } catch (err) {
+        console.error('Error deleting products:', err);
+        alert('Error al eliminar productos');
       }
     } else if (action === 'activate' || action === 'pause') {
       const status = action === 'activate' ? 'active' : 'paused';
-      onBulkUpdate(products.map(p => selectedIds.includes(p.id) ? { ...p, status } : p));
+      try {
+        await api.products.bulkUpdateStatus(selectedIds, status);
+        refresh();
+      } catch (err) {
+        console.error('Error updating status:', err);
+        alert('Error al actualizar estado');
+      }
     } else {
       setMassiveModal({ isOpen: true, action, value: '' });
     }
   };
 
-  const applyMassiveUpdate = () => {
+  const applyMassiveUpdate = async () => {
     const { action, value } = massiveModal;
     if (!value) return;
-
-    // Simulate batch update
-    alert(`Actualizando ${action} a "${value}" para ${selectedIds.length} productos.`);
-
-    // For demo/sim, update local state if applicable
     if (action === 'quantity') {
-      onBulkUpdate(products.map(p => selectedIds.includes(p.id) ? { ...p, stockMeli: parseInt(value) } : p));
+      try {
+        await api.products.bulkUpdateStock(selectedIds, parseInt(value));
+        refresh();
+      } catch (err) {
+        console.error('Error updating stock:', err);
+        alert('Error al actualizar cantidad');
+      }
+    } else {
+      alert(`Actualizando ${action} a "${value}" para ${selectedIds.length} productos.`);
     }
-
     setMassiveModal({ isOpen: false, action: '', value: '' });
-    setSelectedIds([]);
   };
 
   // Sync Logic
@@ -191,36 +175,29 @@ export const CatalogTable: React.FC<CatalogTableProps> = ({ products, onUpdatePr
       const count = await meliService.syncItemsToSupabase((phase, current, total) => {
         setSyncProgress({ phase, current, total });
       });
-
       await api.sync.finishSync(syncLogId, count);
-      await fetchLastSync(); // Refresh status bar
-
+      const lastSync = await api.sync.getLastSync();
+      setLastSyncData(lastSync);
       alert(`Sincronización terminada. Se procesaron ${count} publicaciones.`);
-      const updatedProducts = await api.products.list();
-      onBulkUpdate(updatedProducts);
+      refresh();
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error);
-      console.error("Sync error:", error);
-      if (syncLogId) {
-        await api.sync.finishSync(syncLogId, 0, errorMsg);
-      }
+      console.error('Sync error:', error);
+      if (syncLogId) await api.sync.finishSync(syncLogId, 0, errorMsg);
       alert(`Error al sincronizar publicaciones:\n${errorMsg}`);
     } finally {
       setIsSyncing(false);
     }
   };
+
   // Wizard Logic
   const openWizard = (product: Product) => {
     setSelectedProduct(product);
-
-    // Load settings from local storage to perform calculation
     const settings = {
       exchangeRate: parseFloat(localStorage.getItem('melidrop_exchange_rate') || '18.24'),
       usaRules: JSON.parse(localStorage.getItem('melidrop_usa_rules') || '[]'),
-      usaDefaultMargin: parseFloat(localStorage.getItem('melidrop_usa_default_margin') || '30.0')
+      usaDefaultMargin: parseFloat(localStorage.getItem('melidrop_usa_default_margin') || '30.0'),
     };
-
-    // If no rules found, use defaults mock
     if (settings.usaRules.length === 0) {
       settings.usaRules = [
         { id: 1, min: 0, max: 20, margin: 200 },
@@ -228,10 +205,7 @@ export const CatalogTable: React.FC<CatalogTableProps> = ({ products, onUpdatePr
         { id: 3, min: 51, max: null, margin: 50 },
       ];
     }
-
-    const calc = calculatePrice(product.costUSD, settings);
-    setWizardCalculations(calc);
-
+    setWizardCalculations(calculatePrice(product.costUSD, settings));
     setWizardStep(1);
     setIsWizardOpen(true);
   };
@@ -242,21 +216,23 @@ export const CatalogTable: React.FC<CatalogTableProps> = ({ products, onUpdatePr
     setWizardCalculations(null);
   };
 
-  const handlePublish = () => {
-    if (selectedProduct && wizardCalculations) {
-      // Simulate API Call
-      setTimeout(() => {
-        const updated = {
-          ...selectedProduct,
-          status: 'active' as const,
-          meliId: `MLM${Math.floor(Math.random() * 10000000)}`,
-          stockMeli: selectedProduct.stockProvider,
-          priceMXN: wizardCalculations.finalPrice // Update price with calculated one
-        };
-        onUpdateProduct(updated);
-        alert('¡Publicación simulada en Mercado Libre exitosa!');
-        closeWizard();
-      }, 1000);
+  const handlePublish = async () => {
+    if (!selectedProduct || !wizardCalculations) return;
+    const updated: Product = {
+      ...selectedProduct,
+      status: 'active',
+      meliId: `MLM${Math.floor(Math.random() * 10000000)}`,
+      stockMeli: selectedProduct.stockProvider,
+      priceMXN: wizardCalculations.finalPrice,
+    };
+    try {
+      await api.products.update(updated);
+      alert('¡Publicación simulada en Mercado Libre exitosa!');
+      closeWizard();
+      refresh();
+    } catch (err) {
+      console.error('Error publishing:', err);
+      alert('Error al publicar el producto');
     }
   };
 
@@ -267,15 +243,20 @@ export const CatalogTable: React.FC<CatalogTableProps> = ({ products, onUpdatePr
     setIsEditOpen(true);
   };
 
-  const saveEdit = () => {
-    if (selectedProduct && editForm) {
-      onUpdateProduct({ ...selectedProduct, ...editForm } as Product);
+  const saveEdit = async () => {
+    if (!selectedProduct || !editForm) return;
+    const updated = { ...selectedProduct, ...editForm } as Product;
+    try {
+      await api.products.update(updated);
+      setProducts(prev => prev.map(p => p.id === updated.id ? updated : p));
       setIsEditOpen(false);
       setEditForm({});
       setSelectedProduct(null);
+    } catch (err) {
+      console.error('Error saving edit:', err);
+      alert('Error al guardar los cambios');
     }
   };
-
 
   return (
     <div className="flex-1 overflow-y-auto p-4 md:p-8 scroll-smooth">
@@ -314,16 +295,14 @@ export const CatalogTable: React.FC<CatalogTableProps> = ({ products, onUpdatePr
           </div>
         </div>
 
-        {/* Advanced Filters Block (Matching Image) */}
+        {/* Advanced Filters Block */}
         <div className="bg-white dark:bg-slate-900 rounded-xl shadow-sm border border-slate-200 dark:border-slate-800 p-6 space-y-6">
-          {/* Row 1: Mode + Search */}
+          {/* Row 1: Search */}
           <div className="flex flex-wrap items-center gap-4">
-            {/* Toggles removed as requested */}
-
             <div className="flex flex-1 min-w-[300px] items-center">
               <select
                 value={searchCategory}
-                onChange={(e) => setSearchCategory(e.target.value as any)}
+                onChange={(e) => { setSearchCategory(e.target.value as any); setCurrentPage(1); }}
                 className="h-10 border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 rounded-l-lg px-3 text-sm focus:ring-0 focus:border-primary border-r-0"
               >
                 <option value="title">Título</option>
@@ -333,8 +312,8 @@ export const CatalogTable: React.FC<CatalogTableProps> = ({ products, onUpdatePr
               <div className="relative flex-1">
                 <input
                   type="text"
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
+                  value={searchInput}
+                  onChange={(e) => setSearchInput(e.target.value)}
                   className="w-full h-10 border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 px-4 text-sm focus:ring-0 focus:border-primary"
                   placeholder="Escribir..."
                 />
@@ -378,16 +357,16 @@ export const CatalogTable: React.FC<CatalogTableProps> = ({ products, onUpdatePr
               { id: 'paused', label: 'Pausada' },
               { id: 'under_review', label: 'Revisando' },
               { id: 'inactive', label: 'Inactiva' },
-              { id: 'closed', label: 'Eliminada por Mercado Libre', icon: true }
+              { id: 'closed', label: 'Eliminada por Mercado Libre', icon: true },
             ].map(tab => (
               <button
                 key={tab.id}
-                onClick={() => setFilter(tab.id === filter ? 'all' : tab.id)}
+                onClick={() => { setFilter(tab.id === filter ? 'all' : tab.id); setCurrentPage(1); }}
                 className={`pb-3 px-1 text-sm font-bold flex items-center gap-1.5 border-b-2 transition-all ${filter === tab.id ? 'border-primary text-primary' : 'border-transparent text-slate-500 hover:text-slate-700'}`}
               >
                 {tab.label}
                 {tab.icon && <span className="material-symbols-outlined text-slate-400 text-xs">help</span>}
-                <span className={`text-[11px] ${filter === tab.id ? 'text-primary/60' : 'text-slate-400'}`}>{(counts as any)[tab.id] || 0}</span>
+                <span className={`text-[11px] ${filter === tab.id ? 'text-primary/60' : 'text-slate-400'}`}>{(statusCounts as any)[tab.id] || 0}</span>
               </button>
             ))}
           </div>
@@ -439,7 +418,7 @@ export const CatalogTable: React.FC<CatalogTableProps> = ({ products, onUpdatePr
                   <th className="px-6 py-4 text-left text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider w-12">
                     <input
                       onChange={toggleSelectAll}
-                      checked={selectedIds.length === filteredProducts.length && filteredProducts.length > 0}
+                      checked={selectedIds.length === products.length && products.length > 0}
                       className="h-4 w-4 text-primary focus:ring-primary border-gray-300 rounded dark:bg-gray-700 dark:border-gray-600" type="checkbox"
                     />
                   </th>
@@ -453,7 +432,20 @@ export const CatalogTable: React.FC<CatalogTableProps> = ({ products, onUpdatePr
                 </tr>
               </thead>
               <tbody className="bg-surface-light dark:bg-surface-dark divide-y divide-gray-200 dark:divide-gray-700">
-                {paginatedProducts.map(product => (
+                {isLoading ? (
+                  <tr>
+                    <td colSpan={8} className="px-6 py-16 text-center text-slate-400">
+                      <span className="material-symbols-outlined animate-spin text-3xl block mx-auto mb-2">sync</span>
+                      Cargando productos...
+                    </td>
+                  </tr>
+                ) : products.length === 0 ? (
+                  <tr>
+                    <td colSpan={8} className="px-6 py-16 text-center text-slate-400">
+                      No se encontraron productos
+                    </td>
+                  </tr>
+                ) : products.map(product => (
                   <tr key={product.id} className={`hover:bg-gray-50 dark:hover:bg-gray-800/50 transition-colors group ${selectedIds.includes(product.id) ? 'bg-blue-50/50 dark:bg-blue-900/10' : ''}`}>
                     <td className="px-6 py-4 whitespace-nowrap">
                       <input
@@ -504,7 +496,6 @@ export const CatalogTable: React.FC<CatalogTableProps> = ({ products, onUpdatePr
                       </a>
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-right">
-                      {/* STOCK MONITOR LOGIC */}
                       <div className="flex flex-col items-end">
                         {product.stockProvider < product.stockMeli && (
                           <div className="flex items-center text-red-500 text-xs font-bold mb-1" title="Stock proveedor insuficiente">
@@ -516,7 +507,9 @@ export const CatalogTable: React.FC<CatalogTableProps> = ({ products, onUpdatePr
                         <span className="text-xs text-gray-400">({product.stockProvider} Prov)</span>
                       </div>
                     </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-right"><div className="text-sm font-bold text-gray-900 dark:text-white">${product.priceMXN.toLocaleString()}</div></td>
+                    <td className="px-6 py-4 whitespace-nowrap text-right">
+                      <div className="text-sm font-bold text-gray-900 dark:text-white">${product.priceMXN.toLocaleString()}</div>
+                    </td>
                     <td className="px-6 py-4 whitespace-nowrap text-center">
                       {product.status === 'active' && (
                         <span className="inline-flex items-center rounded-full bg-green-50 dark:bg-green-900/30 px-2.5 py-0.5 text-xs font-medium text-green-700 dark:text-green-400 ring-1 ring-inset ring-green-600/20">
@@ -570,7 +563,7 @@ export const CatalogTable: React.FC<CatalogTableProps> = ({ products, onUpdatePr
               <div className="flex gap-2">
                 <button
                   onClick={() => setCurrentPage(prev => Math.max(prev - 1, 1))}
-                  disabled={currentPage === 1}
+                  disabled={currentPage === 1 || isLoading}
                   className="flex items-center justify-center rounded-lg h-9 px-3 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-white text-sm font-bold shadow-sm transition-all hover:bg-slate-50 dark:hover:bg-slate-700 disabled:opacity-50">
                   <span className="material-symbols-outlined text-[18px]">chevron_left</span>
                   Anterior
@@ -580,7 +573,7 @@ export const CatalogTable: React.FC<CatalogTableProps> = ({ products, onUpdatePr
                 </div>
                 <button
                   onClick={() => setCurrentPage(prev => Math.min(prev + 1, totalPages))}
-                  disabled={currentPage === totalPages}
+                  disabled={currentPage === totalPages || isLoading}
                   className="flex items-center justify-center rounded-lg h-9 px-3 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-white text-sm font-bold shadow-sm transition-all hover:bg-slate-50 dark:hover:bg-slate-700 disabled:opacity-50">
                   Siguiente
                   <span className="material-symbols-outlined text-[18px]">chevron_right</span>
@@ -759,7 +752,6 @@ export const CatalogTable: React.FC<CatalogTableProps> = ({ products, onUpdatePr
               {wizardStep === 2 && wizardCalculations && (
                 <div className="space-y-6">
                   <h4 className="font-bold text-lg">Cálculo de Precios (Inteligente)</h4>
-
                   <div className="grid grid-cols-2 gap-4">
                     <div className="p-4 border border-slate-200 dark:border-slate-700 rounded-lg bg-slate-50 dark:bg-slate-800/50">
                       <p className="text-xs text-slate-500 uppercase font-bold mb-1">Costo Origen</p>
@@ -771,7 +763,6 @@ export const CatalogTable: React.FC<CatalogTableProps> = ({ products, onUpdatePr
                       <p className="text-2xl font-black text-primary">${wizardCalculations.finalPrice.toFixed(2)} MXN</p>
                     </div>
                   </div>
-
                   <div className="bg-slate-100 dark:bg-slate-900 rounded p-4 text-sm space-y-2">
                     <div className="flex justify-between">
                       <span className="text-slate-500">Regla aplicada:</span>
@@ -792,7 +783,6 @@ export const CatalogTable: React.FC<CatalogTableProps> = ({ products, onUpdatePr
                   </div>
                   <h4 className="font-bold text-xl mb-2 text-slate-900 dark:text-white">¡Listo para publicar!</h4>
                   <p className="text-slate-500 mb-6">El producto se creará en tu cuenta de Mercado Libre con los precios calculados.</p>
-
                   <div className="bg-yellow-50 dark:bg-yellow-900/10 border border-yellow-200 dark:border-yellow-700/30 p-4 rounded-lg text-sm text-yellow-800 dark:text-yellow-200 text-left">
                     <p className="font-bold flex items-center gap-2"><span className="material-symbols-outlined text-sm">warning</span> Nota:</p>
                     Recuerda que la sincronización de stock comenzará automáticamente en 5 minutos.

@@ -1,6 +1,5 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from './services/supabase';
-import { api } from './services/api';
 import { Routes, Route, Navigate } from 'react-router-dom';
 import { Layout } from './components/Layout';
 import { LoginPage } from './components/LoginPage';
@@ -17,15 +16,13 @@ import { SecurityHistoryPage } from './components/SecurityHistoryPage';
 import { AnalyticsPage } from './components/AnalyticsPage';
 import { TestProductsPage } from './components/TestProductsPage';
 import { UpdaterPage } from './components/UpdaterPage';
-import { Product, User } from './types';
+import { User } from './types';
 import { getDashboardStats } from './services/mockService';
 import { meliService } from './services/meliService';
-import { amazonService } from './services/amazonService';
 
 const App = () => {
   const [session, setSession] = useState<any>(null);
   const [loading, setLoading] = useState(true);
-  const [products, setProducts] = useState<Product[]>([]);
   const [user, setUser] = useState<User | null>(null);
   const [meliMetrics, setMeliMetrics] = useState<any>(null);
 
@@ -74,22 +71,12 @@ const App = () => {
     return () => subscription.unsubscribe();
   }, []);
 
-  // Sync from Supabase THEN load ML metrics sequentially (fixes mobile sync issue)
+  // Sync credentials from Supabase THEN load ML metrics
   useEffect(() => {
     if (!session?.user) return;
 
     const init = async () => {
-      // 1. Load products in parallel (doesn't depend on credentials)
-      try {
-        console.log('App: Starting product load...');
-        const loadedProducts = await api.products.list();
-        console.log(`App: Loaded ${loadedProducts.length} products`);
-        setProducts(loadedProducts);
-      } catch (err: any) {
-        console.error('App: Error fetching products:', err.message || err);
-      }
-
-      // 2. Sync credentials and settings from Supabase FIRST
+      // 1. Sync credentials and settings from Supabase FIRST
       try {
         const { data: rows } = await supabase
           .from('user_connections')
@@ -120,7 +107,7 @@ const App = () => {
         console.error('App: Error sincronizando configuraciones:', err);
       }
 
-      // 3. NOW read localStorage (already populated) and fetch ML metrics
+      // 2. NOW read localStorage (already populated) and fetch ML metrics
       const credsRaw = localStorage.getItem('melidrop_meli_credentials');
       console.log('App: melidrop_meli_credentials present?', !!credsRaw);
       if (credsRaw) {
@@ -141,7 +128,7 @@ const App = () => {
         }
       }
 
-      // 4. Auto-refresh test user token on startup
+      // 3. Auto-refresh test user token on startup
       meliService.autoRefreshTestUserToken().catch(() => {});
     };
 
@@ -153,62 +140,10 @@ const App = () => {
     }, 3 * 60 * 60 * 1000);
 
     return () => clearInterval(testTokenInterval);
-  }, [session]); // Only re-runs on session change, not on meliMetrics change
+  }, [session]);
 
   const handleLogout = async () => {
     await supabase.auth.signOut();
-  };
-
-  const handleImportProducts = async (newProducts: Product[]) => {
-    // We need to create these products in Supabase
-    // This is a bulk insert. We can loop or create a bulk insert method in API.
-    // For now, let's just loop sequentially to keep it simple or Promise.all
-    try {
-      const createdProducts = await Promise.all(
-        newProducts.map(p => api.products.create(p))
-      );
-      setProducts(prev => [...createdProducts, ...prev]);
-    } catch (e) {
-      console.error("Error importing products", e);
-    }
-  };
-
-  const handleUpdateProduct = async (updatedProduct: Product) => {
-    try {
-      await api.products.update(updatedProduct);
-      setProducts(prev => prev.map(p => p.id === updatedProduct.id ? updatedProduct : p));
-
-      if (updatedProduct.meliId) {
-        const result = await meliService.updateItem(updatedProduct.meliId, {
-          title: updatedProduct.title,
-          price: updatedProduct.priceMXN,
-          available_quantity: updatedProduct.stockMeli,
-        });
-        if (!result.ok) {
-          alert(`Guardado localmente, pero falló la actualización en Mercado Libre: ${result.error}`);
-        }
-      }
-    } catch (e) {
-      console.error("Error updating product", e);
-    }
-  }
-
-  const handleBulkUpdate = async (updatedProducts: Product[]) => {
-    try {
-      await Promise.all(updatedProducts.map(p => api.products.update(p)));
-
-      // Create a map for faster lookup of updated items
-      const updatesMap = new Map(updatedProducts.map(p => [p.id, p]));
-
-      setProducts(prev => prev.map(p => {
-        if (updatesMap.has(p.id)) {
-          return updatesMap.get(p.id)!;
-        }
-        return p;
-      }));
-    } catch (e) {
-      console.error("Error bulk updating", e);
-    }
   };
 
   if (loading) {
@@ -230,7 +165,7 @@ const App = () => {
         <Route path="/" element={<DashboardPage user={user} stats={meliMetrics?.stats || getDashboardStats()} meliData={meliMetrics} />} />
         <Route path="/importar" element={<AmazonImporter />} />
         <Route path="/productos-prueba" element={<TestProductsPage />} />
-        <Route path="/publicaciones" element={<CatalogTable products={products} onUpdateProduct={handleUpdateProduct} onBulkUpdate={handleBulkUpdate} />} />
+        <Route path="/publicaciones" element={<CatalogTable />} />
         <Route path="/ordenes" element={<OrdersPage />} />
         <Route path="/actualizacion" element={<UpdaterPage />} />
         <Route path="/analitica" element={<AnalyticsPage />} />

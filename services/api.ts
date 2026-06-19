@@ -185,6 +185,89 @@ export const api = {
                 .upsert(payloads, { onConflict: 'meli_id' });
 
             if (error) throw error;
+        },
+
+        async listPaginated(
+            page: number,
+            pageSize: number,
+            filters: { status?: string; search?: string; searchCategory?: 'title' | 'sku' | 'meliId' }
+        ): Promise<{ products: Product[]; total: number }> {
+            let query = supabase
+                .from('products')
+                .select('id, title, sku, asin, meli_id, price_mxn, cost_usd, stock_provider, stock_meli, status, image_url, last_updated, in_updater, amazon_seller_count, sold_by_amazon', { count: 'exact' })
+                .order('last_updated', { ascending: false });
+
+            if (filters.status && filters.status !== 'all') {
+                if (filters.status === 'under_review') {
+                    query = query.in('status', ['under_review', 'not_yet_active', 'payment_required']);
+                } else {
+                    query = query.eq('status', filters.status);
+                }
+            }
+
+            if (filters.search) {
+                const s = `%${filters.search}%`;
+                if (filters.searchCategory === 'sku') query = query.ilike('sku', s);
+                else if (filters.searchCategory === 'meliId') query = query.ilike('meli_id', s);
+                else query = query.ilike('title', s);
+            }
+
+            const { data, error, count } = await query.range((page - 1) * pageSize, page * pageSize - 1);
+            if (error) throw error;
+
+            return {
+                products: (data ?? []).map(p => ({
+                    id: p.id,
+                    title: p.title,
+                    sku: p.sku,
+                    asin: p.asin,
+                    meliId: p.meli_id,
+                    priceMXN: p.price_mxn,
+                    costUSD: p.cost_usd,
+                    stockProvider: p.stock_provider,
+                    stockMeli: p.stock_meli,
+                    status: p.status,
+                    imageUrl: p.image_url,
+                    lastUpdated: new Date(p.last_updated),
+                    inUpdater: p.in_updater ?? false,
+                    amazonSellerCount: p.amazon_seller_count ?? null,
+                    soldByAmazon: p.sold_by_amazon ?? null,
+                    amazonStock: null,
+                })),
+                total: count ?? 0,
+            };
+        },
+
+        async getStatusCounts(): Promise<{ active: number; paused: number; under_review: number; inactive: number; closed: number }> {
+            const [activeR, pausedR, reviewR, inactiveR, closedR] = await Promise.all([
+                supabase.from('products').select('*', { count: 'exact', head: true }).eq('status', 'active'),
+                supabase.from('products').select('*', { count: 'exact', head: true }).eq('status', 'paused'),
+                supabase.from('products').select('*', { count: 'exact', head: true }).in('status', ['under_review', 'not_yet_active', 'payment_required']),
+                supabase.from('products').select('*', { count: 'exact', head: true }).eq('status', 'inactive'),
+                supabase.from('products').select('*', { count: 'exact', head: true }).eq('status', 'closed'),
+            ]);
+            return {
+                active: activeR.count ?? 0,
+                paused: pausedR.count ?? 0,
+                under_review: reviewR.count ?? 0,
+                inactive: inactiveR.count ?? 0,
+                closed: closedR.count ?? 0,
+            };
+        },
+
+        async bulkDelete(ids: string[]): Promise<void> {
+            const { error } = await supabase.from('products').delete().in('id', ids);
+            if (error) throw error;
+        },
+
+        async bulkUpdateStatus(ids: string[], status: string): Promise<void> {
+            const { error } = await supabase.from('products').update({ status }).in('id', ids);
+            if (error) throw error;
+        },
+
+        async bulkUpdateStock(ids: string[], stockMeli: number): Promise<void> {
+            const { error } = await supabase.from('products').update({ stock_meli: stockMeli }).in('id', ids);
+            if (error) throw error;
         }
     },
 
