@@ -431,13 +431,18 @@ class MeliService {
                 const ordersToSync = results.map((o: any) => {
                     const pmt = o.payments?.[0];
                     const totalAmt    = o.total_amount ?? 0;
-                    const netReceived = pmt?.net_received_amount ?? null;
-                    const fee         = pmt?.marketplace_fee ?? null;
+                    // ML selling commission: order_items[].sale_fee is the reliable source.
+                    const saleFeeSum  = (o.order_items ?? [])
+                        .reduce((s: number, it: any) => s + (Number(it?.sale_fee) || 0), 0);
+                    const feeFromPmt  = pmt?.marketplace_fee
+                        ?? (Array.isArray(pmt?.fee_details)
+                            ? pmt.fee_details.reduce((s: number, f: any) => s + (Number(f?.amount) || 0), 0)
+                            : null);
+                    const fee         = saleFeeSum > 0 ? saleFeeSum : (feeFromPmt ?? 0);
                     const shipping    = (pmt?.shipping_cost > 0 ? pmt.shipping_cost : null)
                                         ?? (o.shipping?.base_cost > 0 ? o.shipping.base_cost : null)
                                         ?? 0;
-                    const netIncome   = netReceived != null ? netReceived
-                        : totalAmt - (fee ?? 0) - shipping;
+                    const netIncome   = totalAmt - fee - shipping;
                     return {
                         id: o.id.toString(),
                         user_id: supabaseUserId,

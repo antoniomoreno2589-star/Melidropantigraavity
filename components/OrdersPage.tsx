@@ -123,16 +123,22 @@ export const OrdersPage = () => {
                         || '';
                     const pmt = o.payments?.[0];
                     const totalAmt = o.total_amount ?? 0;
-                    const netReceived = pmt?.net_received_amount
-                        ?? pmt?.amount_received
-                        ?? pmt?.net_amount
-                        ?? null;
-                    const fee = pmt?.marketplace_fee ?? pmt?.commission_amount ?? null;
+                    // ML selling commission: order_items[].sale_fee is the reliable source.
+                    // payments.marketplace_fee is frequently omitted from the order payload.
+                    const saleFeeSum = (o.order_items ?? [])
+                        .reduce((s: number, it: any) => s + (Number(it?.sale_fee) || 0), 0);
+                    const feeFromPmt = pmt?.marketplace_fee
+                        ?? pmt?.commission_amount
+                        ?? (Array.isArray(pmt?.fee_details)
+                            ? pmt.fee_details.reduce((s: number, f: any) => s + (Number(f?.amount) || 0), 0)
+                            : null);
+                    const fee = saleFeeSum > 0 ? saleFeeSum : (feeFromPmt ?? 0);
                     const shippingFromPmt = pmt?.shipping_cost > 0 ? pmt.shipping_cost : null;
                     const shippingFromOrder = o.shipping?.base_cost > 0 ? o.shipping.base_cost : null;
                     const shipping = shippingFromPmt ?? shippingFromOrder ?? 0;
-                    const netIncome = netReceived != null ? netReceived
-                        : totalAmt - (fee ?? 0) - shipping;
+                    // Net to seller = sale price − ML commission − seller-paid shipping.
+                    // Computed (not net_received_amount) so the ML breakdown always reconciles.
+                    const netIncome = totalAmt - fee - shipping;
                     // amazon_status intentionally excluded so existing 'purchased' marks
                     // are never overwritten on re-sync (DB DEFAULT 'pending' covers new rows)
                     return {
