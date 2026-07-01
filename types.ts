@@ -26,7 +26,7 @@ export interface Order {
   buyerName: string;
   total: number;          // Gross ML sale amount
   netIncome: number;      // After ML commission + shipping (net_received_amount)
-  mlCommission: number;   // ML marketplace fee
+  mlCommission: number;   // ML marketplace fee (order_items[].sale_fee)
   shippingCost: number;   // Shipping cost charged to seller by ML
   meliItemId: string;     // ML item ID (for catalog cross-reference)
   quantity: number;       // Units sold in this order = Amazon pieces to buy

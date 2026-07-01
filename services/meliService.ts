@@ -577,27 +577,55 @@ class MeliService {
                 }
             }
 
-            // Flag orders with a return/claim so the return shipping ML charges the
-            // seller can be reflected against profit. Best-effort: if claims aren't
-            // accessible the sync still succeeds and returns are entered manually.
+            // Return shipping ML charges the seller on a devolución. For a return
+            // shipment the seller is the RECEIVER, so receiver.cost (when receiver == seller)
+            // is what ML charged. Sum across every return leg of each return claim where
+            // this seller is the respondent (the buyer returned the product to us).
             try {
-                const claimsRes = await this.fetchWithAuth(`/claims/search?seller_id=${creds.id}&limit=200`);
-                if (claimsRes.ok) {
-                    const claimsData = await claimsRes.json();
-                    const claimed = new Set<string>();
-                    for (const c of (claimsData?.results ?? claimsData?.data ?? [])) {
-                        const rid = c?.resource_id ?? c?.order_id ?? c?.resource?.id;
-                        if (rid) claimed.add(String(rid));
-                        for (const rel of (c?.related_entities ?? [])) {
-                            if (rel?.id) claimed.add(String(rel.id));
-                        }
+                const sellerId = Number(creds.id);
+                const returnClaims: any[] = [];
+                for (const st of ['opened', 'closed']) {
+                    let offset = 0;
+                    while (offset < 500) {
+                        const cr = await this.fetchWithAuth(`/post-purchase/v1/claims/search?type=returns&status=${st}&limit=50&offset=${offset}`);
+                        if (!cr.ok) break;
+                        const cd = await cr.json();
+                        const data: any[] = cd?.data ?? [];
+                        returnClaims.push(...data);
+                        if (data.length < 50) break;
+                        offset += 50;
                     }
-                    for (const o of enriched) {
-                        const pack = o.pack_id ? String(o.pack_id) : null;
-                        if (claimed.has(String(o.id)) || (pack && claimed.has(pack))) {
-                            o._hasReturn = true;
-                        }
-                    }
+                }
+                const myClaims = returnClaims.filter((c: any) =>
+                    (c?.players ?? []).some((p: any) => p.role === 'respondent' && Number(p.user_id) === sellerId));
+
+                const returnCostByOrder: Record<string, number> = {};
+                await Promise.all(myClaims.map(async (c: any) => {
+                    try {
+                        const rr = await this.fetchWithAuth(`/post-purchase/v2/claims/${c.id}/returns`);
+                        if (!rr.ok) return;
+                        const rd = await rr.json();
+                        let cost = 0;
+                        await Promise.all((rd?.shipments ?? []).map(async (s: any) => {
+                            if (!s?.shipment_id) return;
+                            const sc = await this.fetchWithAuth(`/shipments/${s.shipment_id}/costs`);
+                            if (!sc.ok) return;
+                            const scd = await sc.json();
+                            if (Number(scd?.receiver?.user_id) === sellerId && Number(scd?.receiver?.cost) > 0) {
+                                cost += Number(scd.receiver.cost);
+                            }
+                        }));
+                        if (cost <= 0) return;
+                        const ids = new Set<string>([String(c.resource_id)]);
+                        for (const oo of (rd?.orders ?? [])) if (oo?.order_id) ids.add(String(oo.order_id));
+                        for (const oid of ids) returnCostByOrder[oid] = Math.max(returnCostByOrder[oid] ?? 0, cost);
+                    } catch { /* skip this claim */ }
+                }));
+
+                for (const o of enriched) {
+                    const cost = returnCostByOrder[String(o.id)]
+                        ?? (o.pack_id ? returnCostByOrder[String(o.pack_id)] : undefined);
+                    if (cost != null && cost > 0) { o._returnShippingCost = cost; o._hasReturn = true; }
                 }
             } catch { /* claims not accessible — returns handled manually */ }
 

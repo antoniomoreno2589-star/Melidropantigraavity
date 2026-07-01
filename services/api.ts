@@ -366,6 +366,16 @@ export const api = {
             if (error) throw error;
         },
 
+        // Auto-detected return shipping (from ML claims). Applied outside bulkUpsert so it
+        // never clobbers a manual entry on orders where ML hasn't finalized the charge.
+        async setReturnInfo(updates: { id: string; cost: number }[]): Promise<void> {
+            await Promise.all(updates.map(u =>
+                supabase.from('orders')
+                    .update({ return_shipping_cost: u.cost, has_return: true })
+                    .eq('id', u.id)
+            ));
+        },
+
         async bulkUpsert(orders: any[]): Promise<void> {
             const { data: { user } } = await supabase.auth.getUser();
             if (!user) throw new Error("User not authenticated");

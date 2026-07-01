@@ -152,7 +152,6 @@ export const OrdersPage = () => {
                         shipping_cost: shipping,
                         meli_item_id:  o.order_items?.[0]?.item?.id ?? null,
                         quantity,
-                        has_return: o._hasReturn ?? false,
                         status: mapMlStatus(o),
                         date: dateCreated,
                         shipping_deadline: o.pack_deadline?.split('T')[0] ?? addDays(dateCreated, 3),
@@ -161,6 +160,14 @@ export const OrdersPage = () => {
                     };
                 });
                 await api.orders.bulkUpsert(payloads);
+
+                // Return shipping is auto-detected from ML claims. Apply it as a targeted
+                // update (not part of the bulk upsert) so a manually-entered return cost on
+                // an order ML hasn't finalized yet is never overwritten with 0.
+                const returnUpdates = raw
+                    .filter((o: any) => (o._returnShippingCost ?? 0) > 0)
+                    .map((o: any) => ({ id: o.id.toString(), cost: o._returnShippingCost as number }));
+                if (returnUpdates.length) await api.orders.setReturnInfo(returnUpdates);
             }
             await loadOrders();
         } catch (e: any) {
@@ -531,7 +538,9 @@ export const OrdersPage = () => {
                                 ) : filteredOrders.map(order => {
                                     const cost      = costMXN(order);
                                     const returnCost = order.returnShippingCost ?? 0;
-                                    const ganancia  = order.status !== 'cancelled' && order.amazonPurchasePrice != null ? order.netIncome - cost - returnCost : null;
+                                    // Return shipping is a real loss, so show profit even on cancelled/returned orders.
+                                    const showProfit = returnCost > 0 || (order.status !== 'cancelled' && order.amazonPurchasePrice != null);
+                                    const ganancia  = showProfit ? order.netIncome - cost - returnCost : null;
                                     const isUS     = currencyMap[order.amazonAsin] === 'USD';
                                     const sb       = statusBadge[order.status] ?? { label: order.status, cls: 'bg-slate-100 text-slate-500' };
 
