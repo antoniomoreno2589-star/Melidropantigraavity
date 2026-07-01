@@ -431,20 +431,30 @@ class MeliService {
                 const ordersToSync = results.map((o: any) => {
                     const pmt = o.payments?.[0];
                     const totalAmt    = o.total_amount ?? 0;
-                    // ML selling commission: order_items[].sale_fee is the reliable source.
-                    const saleFeeSum  = (o.order_items ?? [])
-                        .reduce((s: number, it: any) => s + (Number(it?.sale_fee) || 0), 0);
-                    const feeFromPmt  = pmt?.marketplace_fee
-                        ?? (Array.isArray(pmt?.fee_details)
-                            ? pmt.fee_details.reduce((s: number, f: any) => s + (Number(f?.amount) || 0), 0)
-                            : null);
-                    const fee         = saleFeeSum > 0 ? saleFeeSum : (feeFromPmt ?? 0);
-                    const shipping    = (pmt?.shipping_cost > 0 ? pmt.shipping_cost : null)
-                                        ?? (o.shipping?.base_cost > 0 ? o.shipping.base_cost : null)
-                                        ?? 0;
+                    // Refund from a return, mediation, or cancellation, whatever the cause.
                     const refundAmount = (o.payments ?? [])
                         .reduce((s: number, p: any) => s + (Number(p?.transaction_amount_refunded) || 0), 0);
-                    const netIncome   = totalAmt - fee - shipping - refundAmount;
+                    // If refunded WITHOUT ever being delivered, the sale never really
+                    // completed — no real commission/shipping was charged, no real cost.
+                    const wasDelivered = Array.isArray(o.tags) && o.tags.includes('delivered');
+                    const voidedBeforeDelivery = refundAmount > 0 && !wasDelivered;
+
+                    let fee = 0, shipping = 0, netIncome = 0;
+                    if (!voidedBeforeDelivery) {
+                        // ML selling commission: order_items[].sale_fee is the reliable source.
+                        const saleFeeSum = (o.order_items ?? [])
+                            .reduce((s: number, it: any) => s + (Number(it?.sale_fee) || 0), 0);
+                        const feeFromPmt = pmt?.marketplace_fee
+                            ?? (Array.isArray(pmt?.fee_details)
+                                ? pmt.fee_details.reduce((s: number, f: any) => s + (Number(f?.amount) || 0), 0)
+                                : null);
+                        fee = saleFeeSum > 0 ? saleFeeSum : (feeFromPmt ?? 0);
+                        shipping = (pmt?.shipping_cost > 0 ? pmt.shipping_cost : null)
+                            ?? (o.shipping?.base_cost > 0 ? o.shipping.base_cost : null)
+                            ?? 0;
+                        netIncome = totalAmt - fee - shipping - refundAmount;
+                    }
+                    const effectiveRefund = voidedBeforeDelivery ? 0 : refundAmount;
                     return {
                         id: o.id.toString(),
                         user_id: supabaseUserId,
@@ -454,7 +464,7 @@ class MeliService {
                         net_income:    netIncome,
                         ml_commission: fee,
                         shipping_cost: shipping,
-                        refund_amount: refundAmount,
+                        refund_amount: effectiveRefund,
                         meli_item_id:  o.order_items?.[0]?.item?.id ?? null,
                         quantity: (o.order_items ?? [])
                             .filter((it: any) => !o.order_items?.[0]?.item?.id || it?.item?.id === o.order_items[0].item.id)
