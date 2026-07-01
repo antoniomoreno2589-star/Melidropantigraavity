@@ -442,7 +442,9 @@ class MeliService {
                     const shipping    = (pmt?.shipping_cost > 0 ? pmt.shipping_cost : null)
                                         ?? (o.shipping?.base_cost > 0 ? o.shipping.base_cost : null)
                                         ?? 0;
-                    const netIncome   = totalAmt - fee - shipping;
+                    const refundAmount = (o.payments ?? [])
+                        .reduce((s: number, p: any) => s + (Number(p?.transaction_amount_refunded) || 0), 0);
+                    const netIncome   = totalAmt - fee - shipping - refundAmount;
                     return {
                         id: o.id.toString(),
                         user_id: supabaseUserId,
@@ -452,6 +454,7 @@ class MeliService {
                         net_income:    netIncome,
                         ml_commission: fee,
                         shipping_cost: shipping,
+                        refund_amount: refundAmount,
                         meli_item_id:  o.order_items?.[0]?.item?.id ?? null,
                         quantity: (o.order_items ?? [])
                             .filter((it: any) => !o.order_items?.[0]?.item?.id || it?.item?.id === o.order_items[0].item.id)

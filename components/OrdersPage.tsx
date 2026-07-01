@@ -136,9 +136,13 @@ export const OrdersPage = () => {
                     const shippingFromPmt = pmt?.shipping_cost > 0 ? pmt.shipping_cost : null;
                     const shippingFromOrder = o.shipping?.base_cost > 0 ? o.shipping.base_cost : null;
                     const shipping = shippingFromPmt ?? shippingFromOrder ?? 0;
-                    // Net to seller = sale price − ML commission − seller-paid shipping.
+                    // Money ML gave back to the buyer (full or partial refund) on a return,
+                    // mediation, or cancellation — regardless of cause, it always shows here.
+                    const refundAmount = (o.payments ?? [])
+                        .reduce((s: number, p: any) => s + (Number(p?.transaction_amount_refunded) || 0), 0);
+                    // Net to seller = sale price − ML commission − seller-paid shipping − refund.
                     // Computed (not net_received_amount) so the ML breakdown always reconciles.
-                    const netIncome = totalAmt - fee - shipping;
+                    const netIncome = totalAmt - fee - shipping - refundAmount;
                     // amazon_status intentionally excluded so existing 'purchased' marks
                     // are never overwritten on re-sync (DB DEFAULT 'pending' covers new rows)
                     return {
@@ -150,6 +154,7 @@ export const OrdersPage = () => {
                         net_income:    netIncome,
                         ml_commission: fee,
                         shipping_cost: shipping,
+                        refund_amount: refundAmount,
                         meli_item_id:  o.order_items?.[0]?.item?.id ?? null,
                         quantity,
                         status: mapMlStatus(o),
@@ -280,13 +285,15 @@ export const OrdersPage = () => {
 
     // ── export csv ─────────────────────────────────────────────────────
     const handleExport = () => {
-        const header = 'ID,Comprador,Producto,ASIN,Fecha,Entrega,Estado ML,Total MXN,Neto MXN,Comisión,Estado Amazon,Piezas,Costo Unitario,Costo Total,Envío Devolución,Moneda,Ganancia MXN\n';
+        const header = 'ID,Comprador,Producto,ASIN,Fecha,Entrega,Estado ML,Total MXN,Neto MXN,Comisión,Estado Amazon,Piezas,Costo Unitario,Costo Total,Envío Devolución,Reembolso,Moneda,Ganancia MXN\n';
         const rows = filteredOrders.map(o => {
-            const currency   = currencyMap[o.amazonAsin] ?? 'USD';
-            const returnCost = o.returnShippingCost ?? 0;
-            const costTotal  = o.amazonPurchasePrice != null ? costMXN(o).toFixed(2) : '';
-            const gan        = o.amazonPurchasePrice != null ? (o.netIncome - costMXN(o) - returnCost).toFixed(2) : '';
-            return `${o.id},"${o.buyerName}","${o.productTitle}",${o.amazonAsin},${o.date},${o.shippingDeadline ?? ''},${o.status},${o.total},${o.netIncome},${o.mlCommission},${o.amazonStatus},${o.quantity ?? 1},${o.amazonPurchasePrice ?? ''},${costTotal},${returnCost},${currency},${gan}`;
+            const currency    = currencyMap[o.amazonAsin] ?? 'USD';
+            const returnCost  = o.returnShippingCost ?? 0;
+            const refundAmt   = o.refundAmount ?? 0;
+            const costTotal   = o.amazonPurchasePrice != null ? costMXN(o).toFixed(2) : '';
+            const showProfit  = returnCost > 0 || refundAmt > 0 || (o.status !== 'cancelled' && o.amazonPurchasePrice != null);
+            const gan         = showProfit ? (o.netIncome - costMXN(o) - returnCost).toFixed(2) : '';
+            return `${o.id},"${o.buyerName}","${o.productTitle}",${o.amazonAsin},${o.date},${o.shippingDeadline ?? ''},${o.status},${o.total},${o.netIncome},${o.mlCommission},${o.amazonStatus},${o.quantity ?? 1},${o.amazonPurchasePrice ?? ''},${costTotal},${returnCost},${refundAmt},${currency},${gan}`;
         }).join('\n');
         const blob = new Blob([header + rows], { type: 'text/csv;charset=utf-8;' });
         const url  = URL.createObjectURL(blob);
@@ -538,8 +545,11 @@ export const OrdersPage = () => {
                                 ) : filteredOrders.map(order => {
                                     const cost      = costMXN(order);
                                     const returnCost = order.returnShippingCost ?? 0;
-                                    // Return shipping is a real loss, so show profit even on cancelled/returned orders.
-                                    const showProfit = returnCost > 0 || (order.status !== 'cancelled' && order.amazonPurchasePrice != null);
+                                    const refundAmt  = order.refundAmount ?? 0;
+                                    // netIncome already nets out any refund. Return shipping and refunds
+                                    // are real losses, so show profit even on cancelled/returned orders.
+                                    const showProfit = returnCost > 0 || refundAmt > 0
+                                        || (order.status !== 'cancelled' && order.amazonPurchasePrice != null);
                                     const ganancia  = showProfit ? order.netIncome - cost - returnCost : null;
                                     const isUS     = currencyMap[order.amazonAsin] === 'USD';
                                     const sb       = statusBadge[order.status] ?? { label: order.status, cls: 'bg-slate-100 text-slate-500' };
@@ -599,6 +609,9 @@ export const OrdersPage = () => {
                                                 {order.hasReturn && (
                                                     <span className="inline-block mt-1 ml-1 text-[9px] font-black px-1.5 py-0.5 rounded bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400">DEVOLUCIÓN</span>
                                                 )}
+                                                {(order.refundAmount ?? 0) > 0 && (
+                                                    <span className="inline-block mt-1 ml-1 text-[9px] font-black px-1.5 py-0.5 rounded bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400">REEMBOLSADO</span>
+                                                )}
                                                 <span className={`inline-block mt-1 ml-1 text-[9px] font-black px-1.5 py-0.5 rounded ${sb.cls}`}>{sb.label}</span>
                                             </td>
 
@@ -649,9 +662,15 @@ export const OrdersPage = () => {
                                                             <span className="text-slate-600 dark:text-slate-300">Costo de envío</span>
                                                             <span className="font-bold text-red-500">-${fmt(shipping)}</span>
                                                         </div>
+                                                        {refundAmt > 0 && (
+                                                            <div className="flex justify-between text-xs py-1 border-b border-slate-100 dark:border-slate-700">
+                                                                <span className="text-slate-600 dark:text-slate-300">Reembolso a comprador</span>
+                                                                <span className="font-bold text-red-500">-${fmt(refundAmt)}</span>
+                                                            </div>
+                                                        )}
                                                         <div className="flex justify-between text-xs pt-2 mt-1">
                                                             <span className="font-black text-slate-800 dark:text-white">Te queda</span>
-                                                            <span className="font-black text-green-600 dark:text-green-400">${fmt(order.netIncome)}</span>
+                                                            <span className={`font-black ${order.netIncome >= 0 ? 'text-green-600 dark:text-green-400' : 'text-red-500'}`}>${fmt(order.netIncome)}</span>
                                                         </div>
                                                         {(order.hasReturn || returnCost > 0) && (
                                                             <div className="mt-2 pt-2 border-t border-red-100 dark:border-red-900/40">

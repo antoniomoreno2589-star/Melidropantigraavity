@@ -39,6 +39,7 @@ export interface Order {
   amazonMarketplace: 'US' | 'MX';
   hasReturn: boolean;           // Buyer opened a return/claim on this order
   returnShippingCost: number;   // Return shipping ML charged the seller (subtracts from profit)
+  refundAmount: number;         // Amount ML refunded back to the buyer (payments[].transaction_amount_refunded)
 }
 
 export interface User {

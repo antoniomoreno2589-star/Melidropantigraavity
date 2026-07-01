@@ -317,6 +317,7 @@ export const api = {
                 amazonMarketplace: o.amazon_marketplace ?? 'MX',
                 hasReturn: o.has_return ?? false,
                 returnShippingCost: o.return_shipping_cost ?? 0,
+                refundAmount: o.refund_amount ?? 0,
             }));
         },
 
@@ -349,6 +350,7 @@ export const api = {
                 amazonMarketplace: o.amazon_marketplace ?? 'MX',
                 hasReturn: o.has_return ?? false,
                 returnShippingCost: o.return_shipping_cost ?? 0,
+                refundAmount: o.refund_amount ?? 0,
             }));
         },
 
