@@ -29,6 +29,7 @@ export interface Order {
   mlCommission: number;   // ML marketplace fee
   shippingCost: number;   // Shipping cost charged to seller by ML
   meliItemId: string;     // ML item ID (for catalog cross-reference)
+  quantity: number;       // Units sold in this order = Amazon pieces to buy
   status: 'pending' | 'paid' | 'shipped' | 'delivered' | 'cancelled';
   date: string;           // YYYY-MM-DD
   shippingDeadline: string;

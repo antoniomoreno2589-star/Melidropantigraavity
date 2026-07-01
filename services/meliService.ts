@@ -448,6 +448,9 @@ class MeliService {
                         ml_commission: fee,
                         shipping_cost: shipping,
                         meli_item_id:  o.order_items?.[0]?.item?.id ?? null,
+                        quantity: (o.order_items ?? [])
+                            .filter((it: any) => !o.order_items?.[0]?.item?.id || it?.item?.id === o.order_items[0].item.id)
+                            .reduce((sum: number, it: any) => sum + (it?.quantity ?? 0), 0) || 1,
                         status: mapMlStatus(o),
                         date: o.date_created ? o.date_created.split('T')[0] : null,
                         amazon_asin: o.order_items?.[0]?.item?.seller_custom_field

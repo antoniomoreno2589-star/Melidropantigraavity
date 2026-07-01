@@ -111,6 +111,12 @@ export const OrdersPage = () => {
                 const payloads = raw.map((o: any) => {
                     const dateCreated = o.date_created?.split('T')[0] ?? todayStr;
                     const firstItem = o.order_items?.[0]?.item;
+                    // Units of the tracked product = pieces to buy on Amazon. Sum only the
+                    // rows for this item id (ML may split it) — not other products in the order.
+                    const firstItemId = firstItem?.id;
+                    const quantity = (o.order_items ?? [])
+                        .filter((it: any) => !firstItemId || it?.item?.id === firstItemId)
+                        .reduce((sum: number, it: any) => sum + (it?.quantity ?? 0), 0) || 1;
                     const asin = firstItem?.seller_custom_field
                         || firstItem?.seller_sku
                         || (firstItem?.id ? meliIdToAsin[String(firstItem.id)] : '')
@@ -139,6 +145,7 @@ export const OrdersPage = () => {
                         ml_commission: fee,
                         shipping_cost: shipping,
                         meli_item_id:  o.order_items?.[0]?.item?.id ?? null,
+                        quantity,
                         status: mapMlStatus(o),
                         date: dateCreated,
                         shipping_deadline: o.pack_deadline?.split('T')[0] ?? addDays(dateCreated, 3),
@@ -202,7 +209,8 @@ export const OrdersPage = () => {
     };
 
     // amazonPurchasePrice is always stored in MXN (auto-filled or typed by user)
-    const costMXN = (order: Order) => order.amazonPurchasePrice ?? 0;
+    // Real Amazon cost = unit price entered by the user × units ordered (pieces to buy).
+    const costMXN = (order: Order) => (order.amazonPurchasePrice ?? 0) * (order.quantity ?? 1);
 
     const shippingCost = (order: Order) => order.shippingCost ?? 0;
 
@@ -247,11 +255,12 @@ export const OrdersPage = () => {
 
     // ── export csv ─────────────────────────────────────────────────────
     const handleExport = () => {
-        const header = 'ID,Comprador,Producto,ASIN,Fecha,Entrega,Estado ML,Total MXN,Neto MXN,Comisión,Estado Amazon,Costo Real,Moneda,Ganancia MXN\n';
+        const header = 'ID,Comprador,Producto,ASIN,Fecha,Entrega,Estado ML,Total MXN,Neto MXN,Comisión,Estado Amazon,Piezas,Costo Unitario,Costo Total,Moneda,Ganancia MXN\n';
         const rows = filteredOrders.map(o => {
-            const currency = currencyMap[o.amazonAsin] ?? 'USD';
-            const gan      = o.amazonPurchasePrice != null ? (o.netIncome - costMXN(o)).toFixed(2) : '';
-            return `${o.id},"${o.buyerName}","${o.productTitle}",${o.amazonAsin},${o.date},${o.shippingDeadline ?? ''},${o.status},${o.total},${o.netIncome},${o.mlCommission},${o.amazonStatus},${o.amazonPurchasePrice ?? ''},${currency},${gan}`;
+            const currency  = currencyMap[o.amazonAsin] ?? 'USD';
+            const costTotal = o.amazonPurchasePrice != null ? costMXN(o).toFixed(2) : '';
+            const gan       = o.amazonPurchasePrice != null ? (o.netIncome - costMXN(o)).toFixed(2) : '';
+            return `${o.id},"${o.buyerName}","${o.productTitle}",${o.amazonAsin},${o.date},${o.shippingDeadline ?? ''},${o.status},${o.total},${o.netIncome},${o.mlCommission},${o.amazonStatus},${o.quantity ?? 1},${o.amazonPurchasePrice ?? ''},${costTotal},${currency},${gan}`;
         }).join('\n');
         const blob = new Blob([header + rows], { type: 'text/csv;charset=utf-8;' });
         const url  = URL.createObjectURL(blob);
@@ -555,6 +564,9 @@ export const OrdersPage = () => {
                                                 {order.amazonAsin && (
                                                     <span className="inline-block mt-1 text-xs font-mono font-bold text-primary bg-primary/10 px-2 py-0.5 rounded tracking-wider">{order.amazonAsin}</span>
                                                 )}
+                                                {(order.quantity ?? 1) > 1 && (
+                                                    <span className="inline-block mt-1 ml-1 text-[9px] font-black px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400">{order.quantity} pzas</span>
+                                                )}
                                                 <span className={`inline-block mt-1 ml-1 text-[9px] font-black px-1.5 py-0.5 rounded ${sb.cls}`}>{sb.label}</span>
                                             </td>
 
@@ -654,7 +666,13 @@ export const OrdersPage = () => {
                                                                 className="w-24 pr-1 py-1 text-xs text-right border border-slate-200 dark:border-slate-600 rounded-lg bg-slate-50 dark:bg-slate-900 text-slate-800 dark:text-slate-200 focus:border-primary outline-none font-bold"
                                                             />
                                                         </div>
-                                                        <span className="text-[9px] text-slate-400 font-bold uppercase tracking-wide">MXN</span>
+                                                        {(order.quantity ?? 1) > 1 ? (
+                                                            <span className="text-[9px] font-bold text-amber-600 dark:text-amber-400 whitespace-nowrap">
+                                                                × {order.quantity} pzas = ${fmt(costMXN(order))}
+                                                            </span>
+                                                        ) : (
+                                                            <span className="text-[9px] text-slate-400 font-bold uppercase tracking-wide">MXN</span>
+                                                        )}
                                                     </div>
                                                 ) : (
                                                     <span className="text-xs text-slate-300 dark:text-slate-600">—</span>
