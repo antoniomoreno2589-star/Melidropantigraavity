@@ -536,6 +536,19 @@ class MeliService {
                     const batch = needsShipment.slice(i, i + BATCH);
                     const results = await Promise.allSettled(
                         batch.map(async o => {
+                            // /shipments/{id}/costs is the canonical seller-cost endpoint:
+                            // senders[].cost is what ML actually charges the seller (net of
+                            // discounts). Prefer it; fall back to the shipment record.
+                            try {
+                                const rc = await this.fetchWithAuth(`/shipments/${o.shipping.id}/costs`);
+                                if (rc.ok) {
+                                    const c = await rc.json();
+                                    const sellerCost = Array.isArray(c?.senders)
+                                        ? c.senders.reduce((s: number, x: any) => s + (Number(x?.cost) || 0), 0)
+                                        : 0;
+                                    if (sellerCost > 0) return { id: o.id, cost: sellerCost };
+                                }
+                            } catch { /* fall through to shipment record */ }
                             const r = await this.fetchWithAuth(`/shipments/${o.shipping.id}`);
                             if (!r.ok) return null;
                             const d = await r.json();
@@ -563,6 +576,30 @@ class MeliService {
                     }
                 }
             }
+
+            // Flag orders with a return/claim so the return shipping ML charges the
+            // seller can be reflected against profit. Best-effort: if claims aren't
+            // accessible the sync still succeeds and returns are entered manually.
+            try {
+                const claimsRes = await this.fetchWithAuth(`/claims/search?seller_id=${creds.id}&limit=200`);
+                if (claimsRes.ok) {
+                    const claimsData = await claimsRes.json();
+                    const claimed = new Set<string>();
+                    for (const c of (claimsData?.results ?? claimsData?.data ?? [])) {
+                        const rid = c?.resource_id ?? c?.order_id ?? c?.resource?.id;
+                        if (rid) claimed.add(String(rid));
+                        for (const rel of (c?.related_entities ?? [])) {
+                            if (rel?.id) claimed.add(String(rel.id));
+                        }
+                    }
+                    for (const o of enriched) {
+                        const pack = o.pack_id ? String(o.pack_id) : null;
+                        if (claimed.has(String(o.id)) || (pack && claimed.has(pack))) {
+                            o._hasReturn = true;
+                        }
+                    }
+                }
+            } catch { /* claims not accessible — returns handled manually */ }
 
             return enriched;
         } catch (e) {

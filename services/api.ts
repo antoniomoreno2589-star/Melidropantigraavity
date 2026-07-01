@@ -315,6 +315,8 @@ export const api = {
                 amazonPurchasePrice: o.amazon_purchase_price,
                 amazonAsin: o.amazon_asin ?? '',
                 amazonMarketplace: o.amazon_marketplace ?? 'MX',
+                hasReturn: o.has_return ?? false,
+                returnShippingCost: o.return_shipping_cost ?? 0,
             }));
         },
 
@@ -345,6 +347,8 @@ export const api = {
                 amazonPurchasePrice: o.amazon_purchase_price,
                 amazonAsin: o.amazon_asin ?? '',
                 amazonMarketplace: o.amazon_marketplace ?? 'MX',
+                hasReturn: o.has_return ?? false,
+                returnShippingCost: o.return_shipping_cost ?? 0,
             }));
         },
 
@@ -354,6 +358,7 @@ export const api = {
                 .update({
                     amazon_status: order.amazonStatus,
                     amazon_purchase_price: order.amazonPurchasePrice,
+                    return_shipping_cost: order.returnShippingCost,
                     status: order.status
                 })
                 .eq('id', order.id);

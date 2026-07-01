@@ -152,6 +152,7 @@ export const OrdersPage = () => {
                         shipping_cost: shipping,
                         meli_item_id:  o.order_items?.[0]?.item?.id ?? null,
                         quantity,
+                        has_return: o._hasReturn ?? false,
                         status: mapMlStatus(o),
                         date: dateCreated,
                         shipping_deadline: o.pack_deadline?.split('T')[0] ?? addDays(dateCreated, 3),
@@ -214,6 +215,17 @@ export const OrdersPage = () => {
         catch (e) { console.error('Error saving cost', e); }
     };
 
+    // Return shipping ML charges the seller on a devolución — subtracts from profit.
+    const handleReturnCostBlur = async (order: Order, rawValue: string) => {
+        const cost = parseFloat(rawValue);
+        const value = isNaN(cost) || cost < 0 ? 0 : cost;
+        if (value === (order.returnShippingCost ?? 0)) return;
+        const updated = { ...order, returnShippingCost: value };
+        setOrders(prev => prev.map(o => o.id === order.id ? updated : o));
+        try { await api.orders.update(updated); }
+        catch (e) { console.error('Error saving return cost', e); }
+    };
+
     // amazonPurchasePrice is always stored in MXN (auto-filled or typed by user)
     // Real Amazon cost = unit price entered by the user × units ordered (pieces to buy).
     const costMXN = (order: Order) => (order.amazonPurchasePrice ?? 0) * (order.quantity ?? 1);
@@ -261,12 +273,13 @@ export const OrdersPage = () => {
 
     // ── export csv ─────────────────────────────────────────────────────
     const handleExport = () => {
-        const header = 'ID,Comprador,Producto,ASIN,Fecha,Entrega,Estado ML,Total MXN,Neto MXN,Comisión,Estado Amazon,Piezas,Costo Unitario,Costo Total,Moneda,Ganancia MXN\n';
+        const header = 'ID,Comprador,Producto,ASIN,Fecha,Entrega,Estado ML,Total MXN,Neto MXN,Comisión,Estado Amazon,Piezas,Costo Unitario,Costo Total,Envío Devolución,Moneda,Ganancia MXN\n';
         const rows = filteredOrders.map(o => {
-            const currency  = currencyMap[o.amazonAsin] ?? 'USD';
-            const costTotal = o.amazonPurchasePrice != null ? costMXN(o).toFixed(2) : '';
-            const gan       = o.amazonPurchasePrice != null ? (o.netIncome - costMXN(o)).toFixed(2) : '';
-            return `${o.id},"${o.buyerName}","${o.productTitle}",${o.amazonAsin},${o.date},${o.shippingDeadline ?? ''},${o.status},${o.total},${o.netIncome},${o.mlCommission},${o.amazonStatus},${o.quantity ?? 1},${o.amazonPurchasePrice ?? ''},${costTotal},${currency},${gan}`;
+            const currency   = currencyMap[o.amazonAsin] ?? 'USD';
+            const returnCost = o.returnShippingCost ?? 0;
+            const costTotal  = o.amazonPurchasePrice != null ? costMXN(o).toFixed(2) : '';
+            const gan        = o.amazonPurchasePrice != null ? (o.netIncome - costMXN(o) - returnCost).toFixed(2) : '';
+            return `${o.id},"${o.buyerName}","${o.productTitle}",${o.amazonAsin},${o.date},${o.shippingDeadline ?? ''},${o.status},${o.total},${o.netIncome},${o.mlCommission},${o.amazonStatus},${o.quantity ?? 1},${o.amazonPurchasePrice ?? ''},${costTotal},${returnCost},${currency},${gan}`;
         }).join('\n');
         const blob = new Blob([header + rows], { type: 'text/csv;charset=utf-8;' });
         const url  = URL.createObjectURL(blob);
@@ -516,8 +529,9 @@ export const OrdersPage = () => {
                                         </td>
                                     </tr>
                                 ) : filteredOrders.map(order => {
-                                    const cost     = costMXN(order);
-                                    const ganancia = order.status !== 'cancelled' && order.amazonPurchasePrice != null ? order.netIncome - cost : null;
+                                    const cost      = costMXN(order);
+                                    const returnCost = order.returnShippingCost ?? 0;
+                                    const ganancia  = order.status !== 'cancelled' && order.amazonPurchasePrice != null ? order.netIncome - cost - returnCost : null;
                                     const isUS     = currencyMap[order.amazonAsin] === 'USD';
                                     const sb       = statusBadge[order.status] ?? { label: order.status, cls: 'bg-slate-100 text-slate-500' };
 
@@ -573,6 +587,9 @@ export const OrdersPage = () => {
                                                 {(order.quantity ?? 1) > 1 && (
                                                     <span className="inline-block mt-1 ml-1 text-[9px] font-black px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400">{order.quantity} pzas</span>
                                                 )}
+                                                {order.hasReturn && (
+                                                    <span className="inline-block mt-1 ml-1 text-[9px] font-black px-1.5 py-0.5 rounded bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400">DEVOLUCIÓN</span>
+                                                )}
                                                 <span className={`inline-block mt-1 ml-1 text-[9px] font-black px-1.5 py-0.5 rounded ${sb.cls}`}>{sb.label}</span>
                                             </td>
 
@@ -627,6 +644,28 @@ export const OrdersPage = () => {
                                                             <span className="font-black text-slate-800 dark:text-white">Te queda</span>
                                                             <span className="font-black text-green-600 dark:text-green-400">${fmt(order.netIncome)}</span>
                                                         </div>
+                                                        {(order.hasReturn || returnCost > 0) && (
+                                                            <div className="mt-2 pt-2 border-t border-red-100 dark:border-red-900/40">
+                                                                <p className="text-[9px] font-black text-red-500 uppercase tracking-widest mb-1">Devolución</p>
+                                                                <div className="flex justify-between items-center text-xs">
+                                                                    <span className="text-slate-600 dark:text-slate-300">Envío de regreso</span>
+                                                                    <div className="flex items-center gap-0.5">
+                                                                        <span className="text-[10px] text-red-500">-$</span>
+                                                                        <input
+                                                                            type="number"
+                                                                            min="0"
+                                                                            step="0.01"
+                                                                            defaultValue={order.returnShippingCost || ''}
+                                                                            key={`ret-${order.id}-${order.returnShippingCost ?? 0}`}
+                                                                            onBlur={e => handleReturnCostBlur(order, e.target.value)}
+                                                                            placeholder="0.00"
+                                                                            className="w-16 pr-1 py-0.5 text-[11px] text-right border border-slate-200 dark:border-slate-600 rounded bg-slate-50 dark:bg-slate-900 text-slate-800 dark:text-slate-200 focus:border-primary outline-none font-bold"
+                                                                        />
+                                                                    </div>
+                                                                </div>
+                                                                <p className="text-[9px] text-slate-400 mt-1">Se resta de la ganancia final</p>
+                                                            </div>
+                                                        )}
                                                     </div>
                                                 )}
                                             </td>

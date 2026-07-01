@@ -37,6 +37,8 @@ export interface Order {
   amazonPurchasePrice?: number; // Amazon cost at time of purchase
   amazonAsin: string;
   amazonMarketplace: 'US' | 'MX';
+  hasReturn: boolean;           // Buyer opened a return/claim on this order
+  returnShippingCost: number;   // Return shipping ML charged the seller (subtracts from profit)
 }
 
 export interface User {
