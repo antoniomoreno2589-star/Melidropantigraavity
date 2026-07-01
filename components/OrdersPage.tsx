@@ -104,9 +104,17 @@ export const OrdersPage = () => {
 
             if (raw.length > 0) {
                 const { data: { user } } = await supabase.auth.getUser();
+                // Fallback ASIN source: ML order payloads don't always include
+                // seller_custom_field (items with variations, older listings). Resolve
+                // from our own products table via meli_id.
+                const meliIdToAsin = await api.products.getMeliIdToAsinMap().catch(() => ({}));
                 const payloads = raw.map((o: any) => {
                     const dateCreated = o.date_created?.split('T')[0] ?? todayStr;
-                    const asin = o.order_items?.[0]?.item?.seller_custom_field ?? '';
+                    const firstItem = o.order_items?.[0]?.item;
+                    const asin = firstItem?.seller_custom_field
+                        || firstItem?.seller_sku
+                        || (firstItem?.id ? meliIdToAsin[String(firstItem.id)] : '')
+                        || '';
                     const pmt = o.payments?.[0];
                     const totalAmt = o.total_amount ?? 0;
                     const netReceived = pmt?.net_received_amount

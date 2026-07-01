@@ -426,6 +426,8 @@ class MeliService {
 
             // Sync orders to Supabase for persistence and analytics
             if (results.length > 0) {
+                // Fallback ASIN source when ML order payload omits seller_custom_field.
+                const meliIdToAsin = await api.products.getMeliIdToAsinMap().catch(() => ({} as Record<string, string>));
                 const ordersToSync = results.map((o: any) => {
                     const pmt = o.payments?.[0];
                     const totalAmt    = o.total_amount ?? 0;
@@ -448,7 +450,10 @@ class MeliService {
                         meli_item_id:  o.order_items?.[0]?.item?.id ?? null,
                         status: mapMlStatus(o),
                         date: o.date_created ? o.date_created.split('T')[0] : null,
-                        amazon_asin: o.order_items?.[0]?.item?.seller_custom_field || '',
+                        amazon_asin: o.order_items?.[0]?.item?.seller_custom_field
+                            || o.order_items?.[0]?.item?.seller_sku
+                            || (o.order_items?.[0]?.item?.id ? meliIdToAsin[String(o.order_items[0].item.id)] : '')
+                            || '',
                         amazon_marketplace: 'MX'
                     };
                 });

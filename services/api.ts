@@ -143,6 +143,24 @@ export const api = {
             return map;
         },
 
+        // Maps a ML listing id (meli_id) to its ASIN/SKU. Used to resolve the ASIN of an
+        // order when ML's order payload doesn't include seller_custom_field (e.g. items
+        // with variations, or listings where the field wasn't returned).
+        async getMeliIdToAsinMap(): Promise<Record<string, string>> {
+            const { data, error } = await supabase
+                .from('products')
+                .select('meli_id, asin, sku');
+
+            if (error) throw error;
+
+            const map: Record<string, string> = {};
+            for (const row of data ?? []) {
+                const asin = row.asin || row.sku;
+                if (row.meli_id && asin) map[String(row.meli_id)] = asin;
+            }
+            return map;
+        },
+
         async toggleUpdater(id: string, inUpdater: boolean): Promise<void> {
             const { error } = await supabase
                 .from('products')
