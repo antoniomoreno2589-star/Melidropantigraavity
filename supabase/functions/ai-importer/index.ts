@@ -94,18 +94,19 @@ async function optimizeTitle(title: string, description: string, brand: string):
   const prompt = `Eres experto en SEO para MercadoLibre México. Tu tarea es generar un título optimizado.
 
 REGLAS ESTRICTAS:
-1. El título debe tener entre 55 y 60 caracteres EXACTOS (cuenta cada letra, espacio y símbolo).
+1. El título debe tener MÁXIMO 60 caracteres. Lo ideal es entre 45 y 60, pero NUNCA excedas 60.
 2. Escribe en español natural y fluido, NO traduzcas palabra por palabra.
 3. NO incluyas la marca "${brand}" en el título.
 4. NO inventes características que no estén en el título o descripción original.
-5. Si el título queda corto, añade especificaciones del producto original: material, color, tamaño, uso, cantidad, tipo.
-6. Prioriza las palabras más buscadas: tipo de producto + características principales + uso.
-7. Responde ÚNICAMENTE con el título, sin comillas, sin explicaciones, sin puntuación al final.
+5. Si el título queda corto, es preferible dejarlo corto y natural antes que rellenar. Solo puedes añadir especificaciones REALES del producto (material, color, tamaño, uso, cantidad, tipo) si aportan valor de búsqueda.
+6. PROHIBIDO rellenar para alcanzar caracteres: NO separes letras con guiones (ej. "P-a-r-c"), NO añadas etiquetas como "Conteo:" o "Pieza:", NO repitas palabras, NO agregues texto sin sentido. El título debe leerse como algo que un humano escribiría.
+7. Prioriza las palabras más buscadas: tipo de producto + características principales + uso.
+8. Responde ÚNICAMENTE con el título, sin comillas, sin explicaciones, sin puntuación al final.
 
 Título original: "${title}"
 Descripción/características: "${description.substring(0, 400)}"
 
-IMPORTANTE: Antes de responder, cuenta los caracteres. Si son menos de 55, agrega más detalles del producto. Si son más de 60, recorta. Objetivo: entre 55-60 caracteres.`;
+Un título corto y natural SIEMPRE es mejor que uno largo con relleno artificial.`;
 
   const result = await callClaude(prompt);
   return result.replace(/^["']|["']$/g, '').replace(/^[\s\-–—,.:;|]+/, '').substring(0, 60).trim();
