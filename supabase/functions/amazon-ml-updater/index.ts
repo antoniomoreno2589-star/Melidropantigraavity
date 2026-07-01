@@ -2,7 +2,6 @@
 //
 // Processes ONE batch of products per invocation (150 s limit).
 
-import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const MELI_API  = "https://api.mercadolibre.com";
@@ -1168,7 +1167,7 @@ const corsHeaders = {
     "Content-Type": "application/json",
 };
 
-serve(async (req) => {
+Deno.serve(async (req) => {
     if (req.method === "OPTIONS") {
         return new Response("ok", { headers: corsHeaders });
     }
