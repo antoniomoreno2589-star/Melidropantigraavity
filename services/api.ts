@@ -381,6 +381,28 @@ export const api = {
             ));
         },
 
+        // Auto-detected ISR/IVA withholding (from Mercado Pago's payment resource).
+        // Applied outside bulkUpsert so a fetch failure on one order never zeroes out
+        // a value fetched (or manually entered) on a previous sync.
+        async setTaxInfo(updates: { id: string; tax: number }[]): Promise<void> {
+            await Promise.all(updates.map(u =>
+                supabase.from('orders')
+                    .update({ tax_amount: u.tax })
+                    .eq('id', u.id)
+            ));
+        },
+
+        // Auto-detected shipping cost (from /shipments/{id}/costs). Applied outside
+        // bulkUpsert so a transient lookup failure on one order never overwrites a
+        // previously-known cost with a false $0.
+        async setShippingInfo(updates: { id: string; shipping: number }[]): Promise<void> {
+            await Promise.all(updates.map(u =>
+                supabase.from('orders')
+                    .update({ shipping_cost: u.shipping })
+                    .eq('id', u.id)
+            ));
+        },
+
         async bulkUpsert(orders: any[]): Promise<void> {
             const { data: { user } } = await supabase.auth.getUser();
             if (!user) throw new Error("User not authenticated");

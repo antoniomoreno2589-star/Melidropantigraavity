@@ -202,6 +202,33 @@ class MeliService {
         return response;
     }
 
+    // Mercado Pago's payment resource (api.mercadopago.com, not api.mercadolibre.com)
+    // has the itemized charges_details ML's own Orders API omits — including
+    // tax_withholding-isr / tax_withholding-iva, the exact ISR/IVA the seller's app shows.
+    private async fetchMpPaymentTax(paymentId: number | string): Promise<number> {
+        try {
+            const token = await this.getValidToken();
+            if (!token) return 0;
+            const res = await fetch('/api/proxy', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    url: `https://api.mercadopago.com/v1/payments/${paymentId}`,
+                    method: 'GET',
+                    headers: { 'Authorization': `Bearer ${token}` },
+                })
+            });
+            if (!res.ok) return 0;
+            const data = await res.json();
+            const charges: any[] = data?.charges_details ?? [];
+            return charges
+                .filter(c => c?.type === 'tax')
+                .reduce((s, c) => s + ((Number(c?.amounts?.original) || 0) - (Number(c?.amounts?.refunded) || 0)), 0);
+        } catch {
+            return 0;
+        }
+    }
+
     async getUserData() {
         const creds = this.getCredentials();
         if (!creds) return null;
@@ -641,6 +668,31 @@ class MeliService {
                     if (cost != null && cost > 0) { o._returnShippingCost = cost; o._hasReturn = true; }
                 }
             } catch { /* claims not accessible — returns handled manually */ }
+
+            // ISR/IVA withholding: the ML Orders API never exposes this (payments[].taxes_amount
+            // is always 0), but Mercado Pago's own payment resource has the itemized
+            // charges_details the seller's app shows. Fetch per payment, batched.
+            const paymentIds = enriched
+                .map(o => o.payments?.[0]?.id)
+                .filter((id: any) => id != null);
+            if (paymentIds.length > 0) {
+                const taxByPayment: Record<string, number> = {};
+                for (let i = 0; i < paymentIds.length; i += BATCH) {
+                    const batch = paymentIds.slice(i, i + BATCH);
+                    const results = await Promise.allSettled(
+                        batch.map(async (pid: any) => ({ pid, tax: await this.fetchMpPaymentTax(pid) }))
+                    );
+                    for (const r of results) {
+                        if (r.status === 'fulfilled') taxByPayment[String(r.value.pid)] = r.value.tax;
+                    }
+                }
+                for (const o of enriched) {
+                    const pid = o.payments?.[0]?.id;
+                    if (pid != null && taxByPayment[String(pid)] != null) {
+                        o._taxAmount = taxByPayment[String(pid)];
+                    }
+                }
+            }
 
             return enriched;
         } catch (e) {

@@ -138,7 +138,9 @@ export const OrdersPage = () => {
 
                     let fee = 0, shipping = 0, netIncome = 0;
                     if (voidedBeforeDelivery) {
-                        // No real transaction ever happened — zero everything out.
+                        // No real transaction ever happened — zero everything out. $0 is the
+                        // confidently-correct shipping value here, not a fetch failure.
+                        o._shippingKnownValue = 0;
                     } else {
                         // ML selling commission: order_items[].sale_fee is the reliable source.
                         // payments.marketplace_fee is frequently omitted from the order payload.
@@ -156,6 +158,13 @@ export const OrdersPage = () => {
                         // Net to seller = sale price − ML commission − seller-paid shipping − refund.
                         // Computed (not net_received_amount) so the ML breakdown always reconciles.
                         netIncome = totalAmt - fee - shipping - refundAmount;
+                        // A shipment record exists but neither source priced it — the enrichment
+                        // fetch for this order likely failed transiently. Leave _shippingKnownValue
+                        // unset so the stored shipping_cost isn't clobbered with a false $0.
+                        const hasShippingRecord = !!o.shipping?.id;
+                        if (shippingFromPmt != null || shippingFromOrder != null || !hasShippingRecord) {
+                            o._shippingKnownValue = shipping;
+                        }
                     }
                     const effectiveRefund = voidedBeforeDelivery ? 0 : refundAmount;
                     // amazon_status intentionally excluded so existing 'purchased' marks
@@ -168,7 +177,6 @@ export const OrdersPage = () => {
                         total:         totalAmt,
                         net_income:    netIncome,
                         ml_commission: fee,
-                        shipping_cost: shipping,
                         refund_amount: effectiveRefund,
                         meli_item_id:  o.order_items?.[0]?.item?.id ?? null,
                         quantity,
@@ -188,6 +196,22 @@ export const OrdersPage = () => {
                     .filter((o: any) => (o._returnShippingCost ?? 0) > 0)
                     .map((o: any) => ({ id: o.id.toString(), cost: o._returnShippingCost as number }));
                 if (returnUpdates.length) await api.orders.setReturnInfo(returnUpdates);
+
+                // ISR/IVA withholding is auto-detected from Mercado Pago's payment resource.
+                // Only apply when the fetch actually succeeded for that order (_taxAmount set),
+                // so a transient fetch failure never overwrites a previously known value.
+                const taxUpdates = raw
+                    .filter((o: any) => o._taxAmount != null)
+                    .map((o: any) => ({ id: o.id.toString(), tax: o._taxAmount as number }));
+                if (taxUpdates.length) await api.orders.setTaxInfo(taxUpdates);
+
+                // Shipping cost is applied as a targeted update too — not part of the bulk
+                // upsert — so a transient shipment-cost lookup failure on one order never
+                // clobbers a previously-known value with a false $0.
+                const shippingUpdates = raw
+                    .filter((o: any) => o._shippingKnownValue != null)
+                    .map((o: any) => ({ id: o.id.toString(), shipping: o._shippingKnownValue as number }));
+                if (shippingUpdates.length) await api.orders.setShippingInfo(shippingUpdates);
             }
             await loadOrders();
         } catch (e: any) {
@@ -714,7 +738,7 @@ export const OrdersPage = () => {
                                                                 />
                                                             </div>
                                                         </div>
-                                                        <p className="text-[9px] text-slate-400 mt-1">ML no expone el impuesto por API — cópialo de tu app de ML</p>
+                                                        <p className="text-[9px] text-slate-400 mt-1">Detectado automático (ISR + IVA) — editable si necesitas corregirlo</p>
                                                         <div className="flex justify-between text-xs pt-2 mt-1">
                                                             <span className="font-black text-slate-800 dark:text-white">Te queda</span>
                                                             <span className={`font-black ${(order.netIncome - taxAmt) >= 0 ? 'text-green-600 dark:text-green-400' : 'text-red-500'}`}>${fmt(order.netIncome - taxAmt)}</span>
