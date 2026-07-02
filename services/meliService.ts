@@ -246,41 +246,66 @@ class MeliService {
             console.log("MeliService: Fetching balance for user", creds.id);
             const response = await this.fetchWithAuth(`/users/${creds.id}/mercadopago_account/balance`);
 
-            if (!response.ok) {
-                console.warn(`MeliService: Balance Primary API failed (${response.status}). Trying variant 2...`);
-                // Variante 2: Sin el prefijo /users/ID
-                const response2 = await this.fetchWithAuth(`/mercadopago_account/balance`);
-                if (response2.ok) {
-                    return await response2.json();
-                }
-
-                if (response.status === 403 || response2.status === 403) {
-                    console.error("MeliService: Forbidden 403 on balance endpoints.");
-                    return { total_amount: null, error: 'forbidden' };
-                }
-
-                // Fallback redundante: intentar sacar del perfil de usuario
-                const userData = await this.getUserData();
-                const mpInfo = userData?.mercadopago_account || userData?.mercadopago_info || userData?.credit || userData;
-                if (mpInfo && (mpInfo.balance !== undefined || mpInfo.consumed !== undefined)) {
-                    console.log("MeliService: Fallback balance found in user profile");
-                    return {
-                        total_amount: mpInfo.balance || mpInfo.consumed || 0,
-                        balance: mpInfo.balance || mpInfo.consumed || 0,
-                        available_balance: mpInfo.available_balance || mpInfo.balance || 0,
-                        unavailable_balance: 0
-                    };
-                }
-                return { total_amount: null, error: 'unavailable' };
+            if (response.ok) {
+                const raw = await response.json();
+                console.log("MeliService: Balance raw response:", JSON.stringify(raw));
+                // Normalize field names — API may return 'total' or 'total_amount'
+                return {
+                    total_amount: raw.total_amount ?? raw.total ?? raw.balance ?? null,
+                    available_balance: raw.available_balance ?? raw.available ?? raw.available_amount ?? null,
+                    unavailable_balance: raw.unavailable_balance ?? raw.unavailable ?? raw.blocked ?? null,
+                };
             }
 
-            const raw = await response.json();
-            console.log("MeliService: Balance raw response:", JSON.stringify(raw));
-            // Normalize field names — API may return 'total' or 'total_amount'
+            // The balance endpoint is restricted to first-party apps (403 for ours).
+            // Compute "a liquidar" from Mercado Pago's payment search instead — same
+            // token, different host. Each approved payment carries money_release_status
+            // and the exact net the seller will receive, so the pending-release sum is
+            // exact. "Disponible" (withdrawable) is NOT derivable — ML exposes no
+            // withdrawal data — so it stays null and the UI labels it as such.
+            console.warn(`MeliService: Balance API blocked (${response.status}). Computing from MP payments...`);
+            const token = await this.getValidToken();
+            if (!token) return { total_amount: null, error: 'unavailable' };
+
+            let pending = 0;
+            let nextReleaseDate: string | null = null;
+            let offset = 0;
+            const limit = 50;
+            // Release holds run ~1-2 months after approval; 90 days covers them.
+            while (offset < 300) {
+                const url = `https://api.mercadopago.com/v1/payments/search?status=approved&sort=date_approved&criteria=desc&range=date_approved&begin_date=NOW-90DAYS&end_date=NOW&limit=${limit}&offset=${offset}`;
+                const res = await fetch('/api/proxy', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ url, method: 'GET', headers: { 'Authorization': `Bearer ${token}` } })
+                });
+                if (!res.ok) break;
+                const data = await res.json();
+                const results: any[] = data.results ?? [];
+                for (const p of results) {
+                    if (p?.money_release_status !== 'pending') continue;
+                    const net = Number(p?.transaction_details?.net_received_amount)
+                        || Number(p?.amounts?.collector?.net_received) || 0;
+                    pending += net;
+                    // Some pending payments have a past release date (held by a claim or
+                    // reserve) — they still count as pending money, but only a FUTURE date
+                    // is meaningful as "next release".
+                    const rd = p?.money_release_date;
+                    if (rd && new Date(rd).getTime() > Date.now() && (!nextReleaseDate || rd < nextReleaseDate)) {
+                        nextReleaseDate = rd;
+                    }
+                }
+                if (results.length < limit) break;
+                offset += limit;
+            }
+
+            console.log(`MeliService: Computed pending release = ${pending.toFixed(2)}, next release: ${nextReleaseDate}`);
             return {
-                total_amount: raw.total_amount ?? raw.total ?? raw.balance ?? null,
-                available_balance: raw.available_balance ?? raw.available ?? raw.available_amount ?? null,
-                unavailable_balance: raw.unavailable_balance ?? raw.unavailable ?? raw.blocked ?? null,
+                total_amount: pending,
+                available_balance: null,
+                unavailable_balance: pending,
+                next_release_date: nextReleaseDate,
+                computed: true,
             };
         } catch (e: any) {
             console.error("MeliService: Exception in getBalance:", e.message || e);
@@ -961,8 +986,10 @@ class MeliService {
                 },
                 balance: {
                     total: balance?.total_amount ?? balance?.balance ?? user?.mercadopago_account?.balance ?? 0,
-                    available: balance?.available_balance ?? balance?.available ?? user?.mercadopago_account?.available_balance ?? 0,
+                    available: (balance as any)?.computed ? null : (balance?.available_balance ?? balance?.available ?? user?.mercadopago_account?.available_balance ?? 0),
                     unavailable: balance?.unavailable_balance ?? balance?.unavailable ?? 0,
+                    nextReleaseDate: (balance as any)?.next_release_date ?? null,
+                    computed: (balance as any)?.computed ?? false,
                     error: (balance as any)?.error || null
                 },
                 itemsCount: itemsBreakdown?.total || 0,
