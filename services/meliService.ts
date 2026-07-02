@@ -1325,7 +1325,7 @@ class MeliService {
         }
     }
 
-    async autoRefreshTestUserToken(): Promise<string | null> {
+    async autoRefreshTestUserToken(force = false): Promise<string | null> {
         try {
             const { data: { user } } = await supabase.auth.getUser();
             if (!user) return null;
@@ -1337,24 +1337,69 @@ class MeliService {
                 .maybeSingle();
 
             const testUser = data?.meli_test_user;
-            if (!testUser?.email || !testUser?.password) return null;
+            if (!testUser?.access_token && !testUser?.refresh_token && !testUser?.password) return null;
 
-            // Check if token is still fresh (has more than 1 hour left)
-            if (testUser.token_expires_at) {
+            // Check if token is still fresh (has more than 1 hour left).
+            // force=true skips this (e.g. ML revoked the token before its expiry).
+            if (!force && testUser.token_expires_at) {
                 const expiresAt = new Date(testUser.token_expires_at).getTime();
                 if (Date.now() + 3600000 < expiresAt) {
                     return testUser.access_token || null;
                 }
             }
 
-            // Re-login with saved credentials
-            const newToken = await this.loginTestUser(testUser.email, testUser.password);
+            let newToken: string | null = null;
+            let newRefreshToken: string | null = null;
+            let expiresInMs = 6 * 3600 * 1000;
+
+            // Preferred: silent renewal with the OAuth refresh_token (no popup, no password).
+            // ML rotates refresh tokens on every use — the new one MUST be saved.
+            if (testUser.refresh_token) {
+                const creds = this.getCredentials();
+                if (creds) {
+                    try {
+                        const body = new URLSearchParams({
+                            grant_type: 'refresh_token',
+                            client_id: creds.appId,
+                            client_secret: creds.secret,
+                            refresh_token: testUser.refresh_token,
+                        });
+                        const res = await fetch('/api/proxy', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                url: `${this.baseUrl}/oauth/token`,
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Accept': 'application/json' },
+                                body: body.toString()
+                            })
+                        });
+                        if (res.ok) {
+                            const tok = await res.json();
+                            newToken = tok.access_token ?? null;
+                            newRefreshToken = tok.refresh_token ?? null;
+                            if (tok.expires_in) expiresInMs = tok.expires_in * 1000;
+                        } else {
+                            console.warn('[Melidrop] Test user refresh_token grant failed:', res.status);
+                        }
+                    } catch (e) {
+                        console.warn('[Melidrop] Test user refresh_token grant error:', e);
+                    }
+                }
+            }
+
+            // Legacy fallback: re-login with saved email+password (password grant).
+            if (!newToken && testUser.email && testUser.password) {
+                newToken = await this.loginTestUser(testUser.email, testUser.password);
+            }
+
             if (!newToken) return null;
 
             const updatedTestUser = {
                 ...testUser,
                 access_token: newToken,
-                token_expires_at: new Date(Date.now() + 6 * 3600 * 1000).toISOString()
+                ...(newRefreshToken ? { refresh_token: newRefreshToken } : {}),
+                token_expires_at: new Date(Date.now() + expiresInMs).toISOString()
             };
 
             await supabase

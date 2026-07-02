@@ -242,7 +242,16 @@ export const SettingsPage = () => {
                     if (userRes.ok) { const info = await userRes.json(); email = info.email || info.nickname || email; }
                 } catch { /* use default */ }
 
-                const testUserData = { email, access_token: data.access_token, connected_at: new Date().toISOString() };
+                // Keep refresh_token + expiry so autoRefreshTestUserToken can renew
+                // silently forever — without them the token dies in 6h and the only
+                // recovery is redoing this OAuth popup by hand.
+                const testUserData = {
+                    email,
+                    access_token: data.access_token,
+                    refresh_token: data.refresh_token ?? null,
+                    token_expires_at: new Date(Date.now() + (data.expires_in ?? 21600) * 1000).toISOString(),
+                    connected_at: new Date().toISOString()
+                };
                 const { data: { user } } = await supabase.auth.getUser();
                 if (user) await supabase.from('user_connections').upsert({ user_id: user.id, meli_test_user: testUserData }, { onConflict: 'user_id' });
                 setTestUser(testUserData);
@@ -328,6 +337,32 @@ export const SettingsPage = () => {
         } catch (e: any) {
             setTestUserStatus(`❌ Error al verificar: ${e.message}`);
         }
+    };
+
+    // Silent renewal first (refresh_token grant — no popup). Falls back to the
+    // OAuth popup only when the account was connected before refresh tokens were
+    // saved, or ML rejects the stored one.
+    const handleRenewTestUser = async () => {
+        setTestUserLoading(true);
+        setTestUserStatus('Renovando token en segundo plano...');
+        try {
+            // force=true: the user clicks this because the token failed, so skip the
+            // freshness window and mint a new one unconditionally.
+            const token = await meliService.autoRefreshTestUserToken(true);
+            if (token) {
+                const { data: { user } } = await supabase.auth.getUser();
+                if (user) {
+                    const { data } = await supabase.from('user_connections').select('meli_test_user').eq('user_id', user.id).maybeSingle();
+                    if (data?.meli_test_user) setTestUser(data.meli_test_user);
+                }
+                setTestUserStatus('✅ Token renovado automáticamente. No necesitas hacer nada más.');
+                setTestUserLoading(false);
+                return;
+            }
+        } catch { /* fall through to OAuth */ }
+        setTestUserLoading(false);
+        setTestUserStatus('No se pudo renovar en silencio — abriendo OAuth (una sola vez; después será automático)...');
+        handleConnectTestUser();
     };
 
     const handleDisconnectTestUser = async () => {
@@ -717,7 +752,7 @@ export const SettingsPage = () => {
                                         <button onClick={handleVerifyTestUser} className="text-xs text-green-600 hover:text-green-800 font-bold flex items-center gap-1">
                                             <span className="material-symbols-outlined text-[14px]">check_circle</span>Verificar token
                                         </button>
-                                        <button onClick={handleConnectTestUser} disabled={testUserLoading} className="text-xs text-blue-500 hover:text-blue-700 font-bold flex items-center gap-1">
+                                        <button onClick={handleRenewTestUser} disabled={testUserLoading} className="text-xs text-blue-500 hover:text-blue-700 font-bold flex items-center gap-1">
                                             <span className="material-symbols-outlined text-[14px]">refresh</span>Renovar token
                                         </button>
                                     </div>

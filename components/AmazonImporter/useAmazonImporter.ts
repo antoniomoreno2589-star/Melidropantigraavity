@@ -524,29 +524,12 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
                 try {
                     let testToken: string | null = null;
                     try {
-                        if (testUserCreds.password) {
-                            // Prefer fresh token via password grant
-                            testToken = await meliService.loginTestUser(testUserCreds.email, testUserCreds.password);
-                            if (testToken) {
-                                const { data: { user } } = await supabase.auth.getUser();
-                                if (user) {
-                                    const updated = {
-                                        ...testUserCreds,
-                                        access_token: testToken,
-                                        token_expires_at: new Date(Date.now() + 6 * 3600 * 1000).toISOString()
-                                    };
-                                    await supabase.from('user_connections').upsert(
-                                        { user_id: user.id, meli_test_user: updated },
-                                        { onConflict: 'user_id' }
-                                    );
-                                    setTestUserCreds(updated);
-                                }
-                            }
-                        } else {
-                            // Connected via OAuth (SettingsPage) — use stored access_token directly
-                            testToken = testUserCreds.access_token;
-                        }
-                    } catch { testToken = testUserCreds.access_token ?? null; }
+                        // autoRefreshTestUserToken handles everything: returns the cached
+                        // token if fresh, else silently renews via refresh_token (OAuth
+                        // connections) or password grant (legacy), persisting the result.
+                        testToken = await meliService.autoRefreshTestUserToken();
+                    } catch { /* fall back to stored token below */ }
+                    if (!testToken) testToken = testUserCreds.access_token ?? null;
 
                     if (testToken) {
                         const imageIds: string[] = [];
