@@ -253,6 +253,19 @@ export const OrdersPage = () => {
         catch (e) { console.error('Error saving return cost', e); }
     };
 
+    // ML withholds ISR/IVA per SAT rules, but the Orders API never exposes the amount
+    // (payments[].taxes_amount is always 0; the billing endpoint that has it is blocked
+    // for this app's scope) — so it's a manual entry from what ML's own app shows.
+    const handleTaxBlur = async (order: Order, rawValue: string) => {
+        const tax = parseFloat(rawValue);
+        const value = isNaN(tax) || tax < 0 ? 0 : tax;
+        if (value === (order.taxAmount ?? 0)) return;
+        const updated = { ...order, taxAmount: value };
+        setOrders(prev => prev.map(o => o.id === order.id ? updated : o));
+        try { await api.orders.update(updated); }
+        catch (e) { console.error('Error saving tax amount', e); }
+    };
+
     // amazonPurchasePrice is always stored in MXN (auto-filled or typed by user)
     // Real Amazon cost = unit price entered by the user × units ordered (pieces to buy).
     const costMXN = (order: Order) => (order.amazonPurchasePrice ?? 0) * (order.quantity ?? 1);
@@ -300,15 +313,16 @@ export const OrdersPage = () => {
 
     // ── export csv ─────────────────────────────────────────────────────
     const handleExport = () => {
-        const header = 'ID,Comprador,Producto,ASIN,Fecha,Entrega,Estado ML,Total MXN,Neto MXN,Comisión,Estado Amazon,Piezas,Costo Unitario,Costo Total,Envío Devolución,Reembolso,Moneda,Ganancia MXN\n';
+        const header = 'ID,Comprador,Producto,ASIN,Fecha,Entrega,Estado ML,Total MXN,Neto MXN,Comisión,Estado Amazon,Piezas,Costo Unitario,Costo Total,Envío Devolución,Reembolso,Impuestos,Moneda,Ganancia MXN\n';
         const rows = filteredOrders.map(o => {
             const currency    = currencyMap[o.amazonAsin] ?? 'USD';
             const returnCost  = o.returnShippingCost ?? 0;
             const refundAmt   = o.refundAmount ?? 0;
+            const taxAmt      = o.taxAmount ?? 0;
             const costTotal   = o.amazonPurchasePrice != null ? costMXN(o).toFixed(2) : '';
-            const showProfit  = returnCost > 0 || refundAmt > 0 || (o.status !== 'cancelled' && o.amazonPurchasePrice != null);
-            const gan         = showProfit ? (o.netIncome - costMXN(o) - returnCost).toFixed(2) : '';
-            return `${o.id},"${o.buyerName}","${o.productTitle}",${o.amazonAsin},${o.date},${o.shippingDeadline ?? ''},${o.status},${o.total},${o.netIncome},${o.mlCommission},${o.amazonStatus},${o.quantity ?? 1},${o.amazonPurchasePrice ?? ''},${costTotal},${returnCost},${refundAmt},${currency},${gan}`;
+            const showProfit  = returnCost > 0 || refundAmt > 0 || taxAmt > 0 || (o.status !== 'cancelled' && o.amazonPurchasePrice != null);
+            const gan         = showProfit ? (o.netIncome - costMXN(o) - returnCost - taxAmt).toFixed(2) : '';
+            return `${o.id},"${o.buyerName}","${o.productTitle}",${o.amazonAsin},${o.date},${o.shippingDeadline ?? ''},${o.status},${o.total},${o.netIncome},${o.mlCommission},${o.amazonStatus},${o.quantity ?? 1},${o.amazonPurchasePrice ?? ''},${costTotal},${returnCost},${refundAmt},${taxAmt},${currency},${gan}`;
         }).join('\n');
         const blob = new Blob([header + rows], { type: 'text/csv;charset=utf-8;' });
         const url  = URL.createObjectURL(blob);
@@ -561,11 +575,12 @@ export const OrdersPage = () => {
                                     const cost      = costMXN(order);
                                     const returnCost = order.returnShippingCost ?? 0;
                                     const refundAmt  = order.refundAmount ?? 0;
-                                    // netIncome already nets out any refund. Return shipping and refunds
-                                    // are real losses, so show profit even on cancelled/returned orders.
-                                    const showProfit = returnCost > 0 || refundAmt > 0
+                                    const taxAmt     = order.taxAmount ?? 0;
+                                    // netIncome already nets out any refund. Return shipping, refunds and
+                                    // taxes are real losses, so show profit even on cancelled/returned orders.
+                                    const showProfit = returnCost > 0 || refundAmt > 0 || taxAmt > 0
                                         || (order.status !== 'cancelled' && order.amazonPurchasePrice != null);
-                                    const ganancia  = showProfit ? order.netIncome - cost - returnCost : null;
+                                    const ganancia  = showProfit ? order.netIncome - cost - returnCost - taxAmt : null;
                                     const isUS     = currencyMap[order.amazonAsin] === 'USD';
                                     const sb       = statusBadge[order.status] ?? { label: order.status, cls: 'bg-slate-100 text-slate-500' };
 
@@ -683,9 +698,26 @@ export const OrdersPage = () => {
                                                                 <span className="font-bold text-red-500">-${fmt(refundAmt)}</span>
                                                             </div>
                                                         )}
+                                                        <div className="flex justify-between items-center text-xs py-1 border-b border-slate-100 dark:border-slate-700">
+                                                            <span className="text-slate-600 dark:text-slate-300">Impuestos (SAT)</span>
+                                                            <div className="flex items-center gap-0.5">
+                                                                <span className="text-[10px] text-red-500">-$</span>
+                                                                <input
+                                                                    type="number"
+                                                                    min="0"
+                                                                    step="0.01"
+                                                                    defaultValue={order.taxAmount || ''}
+                                                                    key={`tax-${order.id}-${order.taxAmount ?? 0}`}
+                                                                    onBlur={e => handleTaxBlur(order, e.target.value)}
+                                                                    placeholder="0.00"
+                                                                    className="w-14 pr-1 py-0.5 text-[11px] text-right border border-slate-200 dark:border-slate-600 rounded bg-slate-50 dark:bg-slate-900 text-slate-800 dark:text-slate-200 focus:border-primary outline-none font-bold"
+                                                                />
+                                                            </div>
+                                                        </div>
+                                                        <p className="text-[9px] text-slate-400 mt-1">ML no expone el impuesto por API — cópialo de tu app de ML</p>
                                                         <div className="flex justify-between text-xs pt-2 mt-1">
                                                             <span className="font-black text-slate-800 dark:text-white">Te queda</span>
-                                                            <span className={`font-black ${order.netIncome >= 0 ? 'text-green-600 dark:text-green-400' : 'text-red-500'}`}>${fmt(order.netIncome)}</span>
+                                                            <span className={`font-black ${(order.netIncome - taxAmt) >= 0 ? 'text-green-600 dark:text-green-400' : 'text-red-500'}`}>${fmt(order.netIncome - taxAmt)}</span>
                                                         </div>
                                                         {(order.hasReturn || returnCost > 0) && (
                                                             <div className="mt-2 pt-2 border-t border-red-100 dark:border-red-900/40">

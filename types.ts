@@ -40,6 +40,7 @@ export interface Order {
   hasReturn: boolean;           // Buyer opened a return/claim on this order
   returnShippingCost: number;   // Return shipping ML charged the seller (subtracts from profit)
   refundAmount: number;         // Amount ML refunded back to the buyer (payments[].transaction_amount_refunded)
+  taxAmount: number;            // ISR/IVA withholding ML deducts (manual entry — not exposed by the Orders API)
 }
 
 export interface User {

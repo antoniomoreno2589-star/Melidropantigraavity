@@ -318,6 +318,7 @@ export const api = {
                 hasReturn: o.has_return ?? false,
                 returnShippingCost: o.return_shipping_cost ?? 0,
                 refundAmount: o.refund_amount ?? 0,
+                taxAmount: o.tax_amount ?? 0,
             }));
         },
 
@@ -351,6 +352,7 @@ export const api = {
                 hasReturn: o.has_return ?? false,
                 returnShippingCost: o.return_shipping_cost ?? 0,
                 refundAmount: o.refund_amount ?? 0,
+                taxAmount: o.tax_amount ?? 0,
             }));
         },
 
@@ -361,6 +363,7 @@ export const api = {
                     amazon_status: order.amazonStatus,
                     amazon_purchase_price: order.amazonPurchasePrice,
                     return_shipping_cost: order.returnShippingCost,
+                    tax_amount: order.taxAmount,
                     status: order.status
                 })
                 .eq('id', order.id);
