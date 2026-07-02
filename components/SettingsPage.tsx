@@ -3,6 +3,7 @@ import { AmazonConnect } from './AmazonConnect';
 import { supabase } from '../services/supabase';
 import { meliService } from '../services/meliService';
 import { amazonService } from '../services/amazonService';
+import { mlProxyFetch } from '../services/mlProxy';
 
 interface PriceRule {
     id: number;
@@ -219,26 +220,18 @@ export const SettingsPage = () => {
                     ...(storedVerifier ? { code_verifier: storedVerifier } : {})
                 });
                 setTestUserStatus('Obteniendo token...');
-                const response = await fetch('/api/proxy', {
+                const response = await mlProxyFetch({
+                    url: 'https://api.mercadolibre.com/oauth/token',
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        url: 'https://api.mercadolibre.com/oauth/token',
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Accept': 'application/json' },
-                        body: body.toString()
-                    })
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Accept': 'application/json' },
+                    body: body.toString()
                 });
                 if (!response.ok) { const err = await response.json(); throw new Error(err.message || 'Error al obtener token'); }
                 const data = await response.json();
 
                 let email = testUserEmail || 'Usuario de prueba';
                 try {
-                    const userRes = await fetch('/api/proxy', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ url: 'https://api.mercadolibre.com/users/me', method: 'GET', headers: { 'Authorization': `Bearer ${data.access_token}` } })
-                    });
+                    const userRes = await mlProxyFetch({ url: 'https://api.mercadolibre.com/users/me', method: 'GET', headers: { 'Authorization': `Bearer ${data.access_token}` } });
                     if (userRes.ok) { const info = await userRes.json(); email = info.email || info.nickname || email; }
                 } catch { /* use default */ }
 
@@ -319,14 +312,10 @@ export const SettingsPage = () => {
         if (!testUser?.access_token) return;
         setTestUserStatus('Verificando token...');
         try {
-            const res = await fetch('/api/proxy', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    url: 'https://api.mercadolibre.com/users/me',
-                    method: 'GET',
-                    headers: { 'Authorization': `Bearer ${testUser.access_token}` }
-                })
+            const res = await mlProxyFetch({
+                url: 'https://api.mercadolibre.com/users/me',
+                method: 'GET',
+                headers: { 'Authorization': `Bearer ${testUser.access_token}` }
             });
             const data = await res.json();
             if (res.ok && data.id) {
@@ -385,15 +374,11 @@ export const SettingsPage = () => {
             const mainToken = await meliService.getValidToken();
             if (!mainToken) throw new Error('No hay token de la cuenta principal de ML. Conecta primero tu cuenta real.');
 
-            const resetRes = await fetch('/api/proxy', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    url: `https://api.mercadolibre.com/users/${existingUserId.trim()}`,
-                    method: 'PUT',
-                    headers: { 'Authorization': `Bearer ${mainToken}`, 'Content-Type': 'application/json' },
-                    body: { password: existingUserPwd }
-                })
+            const resetRes = await mlProxyFetch({
+                url: `https://api.mercadolibre.com/users/${existingUserId.trim()}`,
+                method: 'PUT',
+                headers: { 'Authorization': `Bearer ${mainToken}`, 'Content-Type': 'application/json' },
+                body: JSON.stringify({ password: existingUserPwd })
             });
             const resetData = await resetRes.json();
             if (!resetRes.ok) {

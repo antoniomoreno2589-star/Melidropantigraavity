@@ -1,6 +1,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
+import { mlProxyFetch } from '../services/mlProxy';
 
 type AccountType = 'amazon' | 'meli' | null;
 type ConnectStep = 'input' | 'processing' | 'success';
@@ -208,18 +209,14 @@ export const ProfilePage = () => {
                     const body = new URLSearchParams(bodyParams);
 
                     // Usamos el proxy para el intercambio del token
-                    const response = await fetch('/api/proxy', {
+                    const response = await mlProxyFetch({
+                        url: 'https://api.mercadolibre.com/oauth/token',
                         method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            url: 'https://api.mercadolibre.com/oauth/token',
-                            method: 'POST',
-                            headers: {
-                                'Content-Type': 'application/x-www-form-urlencoded',
-                                'Accept': 'application/json'
-                            },
-                            body: body.toString()
-                        })
+                        headers: {
+                            'Content-Type': 'application/x-www-form-urlencoded',
+                            'Accept': 'application/json'
+                        },
+                        body: body.toString()
                     });
 
                     if (!response.ok) {
@@ -241,14 +238,10 @@ export const ProfilePage = () => {
                     };
 
                     try {
-                        const userResponse = await fetch('/api/proxy', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({
-                                url: `https://api.mercadolibre.com/users/me`,
-                                method: 'GET',
-                                headers: { 'Authorization': `Bearer ${data.access_token}` }
-                            })
+                        const userResponse = await mlProxyFetch({
+                            url: `https://api.mercadolibre.com/users/me`,
+                            method: 'GET',
+                            headers: { 'Authorization': `Bearer ${data.access_token}` }
                         });
                         if (userResponse.ok) {
                             const userData = await userResponse.ok ? await userResponse.json() : null;

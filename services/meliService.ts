@@ -1,5 +1,6 @@
 import { api } from './api';
 import { supabase } from './supabase';
+import { mlProxyFetch } from './mlProxy';
 import { Product } from '../types';
 
 // Map raw ML order statuses to the narrower set allowed by the DB CHECK
@@ -104,15 +105,11 @@ class MeliService {
                 refresh_token: creds.refreshToken
             });
 
-            const response = await fetch('/api/proxy', {
+            const response = await mlProxyFetch({
+                url: `${this.baseUrl}/oauth/token`,
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    url: `${this.baseUrl}/oauth/token`,
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Accept': 'application/json' },
-                    body: body.toString()
-                })
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Accept': 'application/json' },
+                body: body.toString()
             });
 
             if (!response.ok) throw new Error('Failed to refresh token');
@@ -148,18 +145,14 @@ class MeliService {
             tokenPrefix: token.substring(0, 10) + '...'
         });
 
-        const response = await fetch('/api/proxy', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                url: targetUrl,
-                method: options.method || 'GET',
-                headers: {
-                    'Authorization': `Bearer ${token}`,
-                    ...(options.headers || {})
-                },
-                body: options.body
-            })
+        const response = await mlProxyFetch({
+            url: targetUrl,
+            method: options.method || 'GET',
+            headers: {
+                'Authorization': `Bearer ${token}`,
+                ...(options.headers || {})
+            },
+            body: options.body
         });
 
         // Breve espera para no saturar el proxy
@@ -180,18 +173,14 @@ class MeliService {
             }
 
             console.log('[Melidrop] Token refreshed successfully, retrying request...');
-            return fetch('/api/proxy', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    url: targetUrl,
-                    method: options.method || 'GET',
-                    headers: {
-                        'Authorization': `Bearer ${newToken}`,
-                        ...(options.headers || {})
-                    },
-                    body: options.body
-                })
+            return mlProxyFetch({
+                url: targetUrl,
+                method: options.method || 'GET',
+                headers: {
+                    'Authorization': `Bearer ${newToken}`,
+                    ...(options.headers || {})
+                },
+                body: options.body
             });
         }
         if (response.status === 403) {
@@ -209,14 +198,10 @@ class MeliService {
         try {
             const token = await this.getValidToken();
             if (!token) return 0;
-            const res = await fetch('/api/proxy', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    url: `https://api.mercadopago.com/v1/payments/${paymentId}`,
-                    method: 'GET',
-                    headers: { 'Authorization': `Bearer ${token}` },
-                })
+            const res = await mlProxyFetch({
+                url: `https://api.mercadopago.com/v1/payments/${paymentId}`,
+                method: 'GET',
+                headers: { 'Authorization': `Bearer ${token}` },
             });
             if (!res.ok) return 0;
             const data = await res.json();
@@ -274,11 +259,7 @@ class MeliService {
             // Release holds run ~1-2 months after approval; 90 days covers them.
             while (offset < 300) {
                 const url = `https://api.mercadopago.com/v1/payments/search?status=approved&sort=date_approved&criteria=desc&range=date_approved&begin_date=NOW-90DAYS&end_date=NOW&limit=${limit}&offset=${offset}`;
-                const res = await fetch('/api/proxy', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ url, method: 'GET', headers: { 'Authorization': `Bearer ${token}` } })
-                });
+                const res = await mlProxyFetch({ url, method: 'GET', headers: { 'Authorization': `Bearer ${token}` } });
                 if (!res.ok) break;
                 const data = await res.json();
                 const results: any[] = data.results ?? [];
@@ -1303,15 +1284,11 @@ class MeliService {
                 username: testUserEmail,
                 password: testUserPassword
             });
-            const response = await fetch('/api/proxy', {
+            const response = await mlProxyFetch({
+                url: `${this.baseUrl}/oauth/token`,
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    url: `${this.baseUrl}/oauth/token`,
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Accept': 'application/json' },
-                    body: body.toString()
-                })
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Accept': 'application/json' },
+                body: body.toString()
             });
             if (!response.ok) {
                 const err = await response.text();
@@ -1364,15 +1341,11 @@ class MeliService {
                             client_secret: creds.secret,
                             refresh_token: testUser.refresh_token,
                         });
-                        const res = await fetch('/api/proxy', {
+                        const res = await mlProxyFetch({
+                            url: `${this.baseUrl}/oauth/token`,
                             method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({
-                                url: `${this.baseUrl}/oauth/token`,
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Accept': 'application/json' },
-                                body: body.toString()
-                            })
+                            headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Accept': 'application/json' },
+                            body: body.toString()
                         });
                         if (res.ok) {
                             const tok = await res.json();
