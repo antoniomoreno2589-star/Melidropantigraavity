@@ -9,6 +9,15 @@ interface ProxyRequest {
     method?: string;
     headers?: HeadersInit;
     body?: BodyInit | null;
+    // Binary file upload (e.g. images): base64-encoded so it survives JSON.stringify
+    // below. meli-proxy decodes this and reconstructs a real multipart/form-data
+    // request server-side — a real FormData/Blob here would serialize to "{}".
+    multipart?: {
+        fieldName: string;
+        fileName: string;
+        mimeType: string;
+        base64: string;
+    };
 }
 
 export function mlProxyFetch(req: ProxyRequest): Promise<Response> {

@@ -338,40 +338,36 @@ export function useAmazonImporter() {
         const barcode = amazonAttrs.item_barcode?.[0]?.value || amazonAttrs.ean?.[0]?.value;
         const userHasBarcode = barcode && Object.values(attrs).includes(barcode);
 
-        // Attributes that ML expects as plain numbers (no units, no text)
-        const NUMERIC_ATTRIBUTES = new Set([
-            'SHEETS_CAPACITY',
-            'VOLTAGE', 'WATTAGE', 'AMPERAGE', 'FREQUENCY', 'CAPACITY',
-            'UNITS_PER_PACK', 'PACK_QUANTITY', 'NUMBER_OF_ITEMS',
-        ]);
-
-        // Attributes that require a number + unit (e.g. "81 cm")
-        const DIMENSION_ATTRIBUTES = new Set([
-            'HEIGHT', 'WIDTH', 'DEPTH', 'LENGTH',
-            'SELLER_PACKAGE_WIDTH', 'SELLER_PACKAGE_LENGTH', 'SELLER_PACKAGE_HEIGHT',
-            'SELLER_PACKAGE_DEPTH', 'PACKAGE_WIDTH', 'PACKAGE_LENGTH', 'PACKAGE_HEIGHT',
-        ]);
-
-        const VALID_UNITS = ['nm', 'millas', 'mm', 'ft', 'cm', 'U', 'm', 'in', 'pulgadas', 'km', 'manos', 'µm', 'mil', 'yd', '"'];
+        // ML tells us exactly how each attribute wants its value via value_type +
+        // allowed_units + default_unit (from /categories/{id}/attributes) — use that
+        // instead of guessing by attribute name, which silently missed attributes like
+        // BACKREST_WIDTH, MIN_HOURS_AUTONOMY, VOLUME_CAPACITY, SELLER_PACKAGE_WEIGHT.
+        const attrDefs = categoryAttributes[processed.asin] || [];
+        const attrDefById = new Map<string, any>(attrDefs.map((a: any) => [a.id, a]));
 
         const sanitizeAttrValue = (id: string, value: string): string => {
-            if (DIMENSION_ATTRIBUTES.has(id)) {
-                // Must be "number unit" — add "cm" if unit is missing or unrecognized
-                const numMatch = value.match(/^([\d.]+)\s*(.*)$/);
-                if (numMatch) {
-                    const num = numMatch[1];
-                    const unit = numMatch[2].trim().toLowerCase();
-                    const validUnit = VALID_UNITS.find(u => u.toLowerCase() === unit);
-                    return validUnit ? `${num} ${validUnit}` : `${num} cm`;
-                }
-                return value;
-            }
-            if (NUMERIC_ATTRIBUTES.has(id)) {
-                // Extract leading number (e.g. "8 hojas" → "8", "14.09 inches" → "14.09")
-                const match = value.match(/^[\d.]+/);
-                return match ? match[0] : value;
-            }
-            return value;
+            const def = attrDefById.get(id);
+            const valueType = def?.value_type;
+            if (valueType !== 'number_unit' && valueType !== 'number') return value;
+
+            // First number in the value — handles plain numbers ("40"), numbers
+            // with a unit already attached ("40 cm"), and ranges the AI sometimes
+            // returns ("40-45 cm", which ML rejects outright) by taking the first.
+            const numMatch = value.match(/\d+(?:\.\d+)?/);
+            if (!numMatch) return value;
+            const num = numMatch[0];
+            if (valueType === 'number') return num;
+
+            const allowedUnits: Array<{ id: string; name: string }> = def.allowed_units || [];
+            if (allowedUnits.length === 0) return num;
+
+            const trailingText = value.slice(numMatch.index! + num.length).trim().toLowerCase();
+            const matchedUnit = allowedUnits.find(u =>
+                u.name.toLowerCase() === trailingText || u.id.toLowerCase() === trailingText
+            );
+            const fallbackUnit = allowedUnits.find(u => u.id === def.default_unit) || allowedUnits[0];
+            const unit = (matchedUnit || fallbackUnit)?.name;
+            return unit ? `${num} ${unit}` : num;
         };
 
         const userAttrIds = new Set(Object.keys(attrs).filter(k => attrs[k]?.toString().trim()));
@@ -507,9 +503,42 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
     };
 
     // ── Step 5 handlers ────────────────────────────────────────────────
+    // Shared by handleDryRun/handlePublish (server-side guard) and Step4's UI
+    // (so the wizard can warn the user before they even try to publish).
+    // Returns [] when the ASIN is ready to publish.
+    const getBlockingIssues = (asin: string): string[] => {
+        const issues: string[] = [];
+        const product = loadedProducts.find(p => p.asin === asin);
+        const catId = selectedCategories[asin]?.id;
+
+        if (!catId) {
+            issues.push('Sin categoría de MercadoLibre asignada (vuelve al Paso 3)');
+        }
+        if (!product?.price || product.price <= 0) {
+            issues.push('Sin precio de Amazon disponible (no se puede calcular el precio de venta)');
+        }
+        if (catId) {
+            const attrs = categoryAttributes[asin] || [];
+            const userAttrs = userAttributes[asin] || {};
+            const missing = attrs.filter((a: any) =>
+                (a.tags?.required || a.tags?.new_required) && !userAttrs[a.id]?.toString().trim()
+            );
+            if (missing.length > 0) {
+                issues.push(`Faltan ${missing.length} atributo(s) requerido(s): ${missing.map((a: any) => a.name).join(', ')}`);
+            }
+        }
+        return issues;
+    };
+
     const handleDryRun = async (asin: string) => {
         const processed = processedProducts.find(p => p.asin === asin);
         if (!processed) return;
+
+        const blockingIssues = getBlockingIssues(asin);
+        if (blockingIssues.length > 0) {
+            setDryRunResults(prev => ({ ...prev, [asin]: { dryError: `No se puede probar:\n• ${blockingIssues.join('\n• ')}` } }));
+            return;
+        }
 
         setPublishingStatus(prev => ({ ...prev, [asin]: 'loading' }));
         try {
@@ -726,6 +755,15 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
             return;
         }
 
+        // Block if category/price/required-attrs aren't resolved — avoids sending ML
+        // a payload we already know is invalid (missing category_id, price 0, etc.)
+        const blockingIssues = getBlockingIssues(asin);
+        if (blockingIssues.length > 0) {
+            setPublishResults(prev => ({ ...prev, [asin]: { error: `No se puede publicar:\n• ${blockingIssues.join('\n• ')}` } }));
+            setPublishingStatus(prev => ({ ...prev, [asin]: 'error' }));
+            return;
+        }
+
         // Supabase check: block if we already have this ASIN in our products table
         setPublishingStatus(prev => ({ ...prev, [asin]: 'loading' }));
         try {
@@ -933,6 +971,7 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
         testUserCreds,
         handleDryRun,
         handlePublish,
+        getBlockingIssues,
         // Helpers
         calculateMexicoPrice,
         buildItemPayload,

@@ -131,11 +131,17 @@ class MeliService {
         }
     }
 
-    async fetchWithAuth(endpoint: string, options: RequestInit = {}, customToken?: string) {
+    async fetchWithAuth(
+        endpoint: string,
+        options: RequestInit = {},
+        customToken?: string,
+        multipart?: { fieldName: string; fileName: string; mimeType: string; base64: string }
+    ) {
         const token = customToken || await this.getValidToken();
         if (!token) throw new Error("No valid MercadoLibre token found");
 
         const targetUrl = `${this.baseUrl}${endpoint}`;
+        const bodyOrMultipart = multipart ? { multipart } : { body: options.body };
 
         // Debug logging
         console.log('[Melidrop] fetchWithAuth:', {
@@ -152,7 +158,7 @@ class MeliService {
                 'Authorization': `Bearer ${token}`,
                 ...(options.headers || {})
             },
-            body: options.body
+            ...bodyOrMultipart
         });
 
         // Breve espera para no saturar el proxy
@@ -180,7 +186,7 @@ class MeliService {
                     'Authorization': `Bearer ${newToken}`,
                     ...(options.headers || {})
                 },
-                body: options.body
+                ...bodyOrMultipart
             });
         }
         if (response.status === 403) {
@@ -1225,29 +1231,40 @@ class MeliService {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ source: imageUrl })
             }, customToken);
-            if (!response.ok) return null;
+            if (!response.ok) {
+                console.error(`[Melidrop] uploadImage failed (${response.status}) for ${imageUrl}:`, await response.text());
+                return null;
+            }
             const data = await response.json();
             return data.id || null;
-        } catch (e) {
+        } catch (e: any) {
+            console.error(`[Melidrop] uploadImage error for ${imageUrl}:`, e.message);
             return null;
         }
     }
 
+    // Uploads a data: URL (e.g. a canvas-upscaled or AI-cleaned image) as a real file,
+    // since ML's /pictures/items/upload endpoint requires multipart/form-data.
+    // NOTE: this goes through meli-proxy as a base64 "multipart" descriptor rather
+    // than a real FormData — mlProxyFetch JSON.stringifies its whole request body,
+    // and JSON.stringify(FormData) silently serializes to "{}", losing the image
+    // entirely (the proxy would forward an empty body and ML would reject it,
+    // previously surfacing as ML's generic "error procesando la foto").
     async uploadImageBinary(dataUrl: string, customToken?: string): Promise<string | null> {
         try {
             const [header, base64] = dataUrl.split(',');
             const mimeType = header.match(/data:([^;]+)/)?.[1] || 'image/png';
-            const binary = Uint8Array.from(atob(base64), c => c.charCodeAt(0));
-            const formData = new FormData();
-            formData.append('file', new Blob([binary], { type: mimeType }), 'image.png');
-            const response = await this.fetchWithAuth('/pictures/items/upload', {
-                method: 'POST',
-                body: formData
-            }, customToken);
-            if (!response.ok) return null;
+            const response = await this.fetchWithAuth('/pictures/items/upload', { method: 'POST' }, customToken, {
+                fieldName: 'file', fileName: 'image.png', mimeType, base64
+            });
+            if (!response.ok) {
+                console.error(`[Melidrop] uploadImageBinary failed (${response.status}):`, await response.text());
+                return null;
+            }
             const data = await response.json();
             return data.id || null;
-        } catch {
+        } catch (e: any) {
+            console.error('[Melidrop] uploadImageBinary error:', e.message);
             return null;
         }
     }

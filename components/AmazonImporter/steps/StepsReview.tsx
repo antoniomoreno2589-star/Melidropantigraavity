@@ -18,17 +18,32 @@ export function Step4Attributes({
     userAttributes,
     setUserAttributes,
     editedTitles,
+    selectedCategories,
+    getBlockingIssues,
     setStep,
 }: Props) {
+    // Products that still need attention before we can move to publishing.
+    // Duplicates/forbidden-word matches are excluded — those are meant to be
+    // skipped at publish time, not fixed, so they shouldn't block the batch.
+    const blockingByAsin: Record<string, string[]> = {};
+    for (const processed of processedProducts) {
+        if (validationResults[processed.asin]?.isSkipped) continue;
+        const issues = getBlockingIssues(processed.asin);
+        if (issues.length > 0) blockingByAsin[processed.asin] = issues;
+    }
+    const blockedCount = Object.keys(blockingByAsin).length;
+
     return (
         <div className="space-y-4">
             {processedProducts.map(processed => {
                 const val = validationResults[processed.asin];
                 const attrs = categoryAttributes[processed.asin] || [];
                 const userAttrs = userAttributes[processed.asin] || {};
+                const hasCategory = !!selectedCategories[processed.asin]?.id;
+                const issues = blockingByAsin[processed.asin] || [];
 
                 return (
-                    <div key={processed.asin} className="bg-white dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 overflow-hidden">
+                    <div key={processed.asin} className={`bg-white dark:bg-slate-800 rounded-2xl border overflow-hidden ${issues.length > 0 ? 'border-amber-300 dark:border-amber-700' : 'border-slate-200 dark:border-slate-700'}`}>
                         <div className="p-4 border-b border-slate-100 dark:border-slate-700">
                             <p className="font-black text-slate-900 dark:text-white">{editedTitles[processed.asin]}</p>
                             <p className="text-xs text-slate-500 font-mono mt-0.5">{processed.asin}</p>
@@ -48,22 +63,39 @@ export function Step4Attributes({
                             </div>
                         )}
 
+                        {/* Blocking issues: category / price / required attributes still missing */}
+                        {issues.length > 0 && (
+                            <div className="px-4 py-3 border-b border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 space-y-1">
+                                {issues.map((issue, i) => (
+                                    <div key={i} className="flex items-center gap-2 text-xs font-bold text-amber-700 dark:text-amber-400">
+                                        <span className="material-symbols-outlined text-[16px]">warning</span>
+                                        {issue}
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+
                         {/* Required Attributes */}
                         <div className="p-4">
-                            {attrs.length === 0 ? (
+                            {!hasCategory ? (
+                                <p className="text-sm text-amber-600 dark:text-amber-400 font-bold">Sin categoría asignada — vuelve al Paso 3 y selecciona una.</p>
+                            ) : attrs.length === 0 ? (
                                 <p className="text-sm text-slate-400 italic">No se encontraron atributos requeridos para esta categoría.</p>
                             ) : (
                                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                                    {attrs.slice(0, 16).map((attr: any) => (
+                                    {attrs.slice(0, 16).map((attr: any) => {
+                                        const isRequired = attr.tags?.required || attr.tags?.new_required;
+                                        const isEmpty = !userAttrs[attr.id]?.toString().trim();
+                                        return (
                                         <div key={attr.id}>
                                             <label className="text-[10px] font-black text-slate-500 uppercase tracking-wider">
-                                                {attr.name} {attr.tags?.required && <span className="text-red-500">*</span>}
+                                                {attr.name} {isRequired && <span className="text-red-500">*</span>}
                                             </label>
                                             {attr.values && attr.values.length > 0 ? (
                                                 <select
                                                     value={userAttrs[attr.id] || ''}
                                                     onChange={e => setUserAttributes(prev => ({ ...prev, [processed.asin]: { ...prev[processed.asin], [attr.id]: e.target.value } }))}
-                                                    className="mt-1 w-full px-2 py-1.5 border border-slate-300 dark:border-slate-600 rounded-lg text-xs bg-white dark:bg-slate-900 dark:text-white focus:ring-1 focus:ring-primary"
+                                                    className={`mt-1 w-full px-2 py-1.5 border rounded-lg text-xs bg-white dark:bg-slate-900 dark:text-white focus:ring-1 focus:ring-primary ${isRequired && isEmpty ? 'border-red-400 dark:border-red-600' : 'border-slate-300 dark:border-slate-600'}`}
                                                 >
                                                     <option value="">Seleccionar...</option>
                                                     {attr.values.slice(0, 20).map((v: any) => (
@@ -76,11 +108,11 @@ export function Step4Attributes({
                                                     value={userAttrs[attr.id] || ''}
                                                     onChange={e => setUserAttributes(prev => ({ ...prev, [processed.asin]: { ...prev[processed.asin], [attr.id]: e.target.value } }))}
                                                     placeholder={attr.hint || `Ingresa ${attr.name}`}
-                                                    className="mt-1 w-full px-2 py-1.5 border border-slate-300 dark:border-slate-600 rounded-lg text-xs bg-white dark:bg-slate-900 dark:text-white focus:ring-1 focus:ring-primary"
+                                                    className={`mt-1 w-full px-2 py-1.5 border rounded-lg text-xs bg-white dark:bg-slate-900 dark:text-white focus:ring-1 focus:ring-primary ${isRequired && isEmpty ? 'border-red-400 dark:border-red-600' : 'border-slate-300 dark:border-slate-600'}`}
                                                 />
                                             )}
                                         </div>
-                                    ))}
+                                    )})}
                                 </div>
                             )}
                         </div>
@@ -88,11 +120,20 @@ export function Step4Attributes({
                 );
             })}
 
+            {blockedCount > 0 && (
+                <div className="flex items-center gap-2 text-sm font-bold text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700 rounded-xl p-3">
+                    <span className="material-symbols-outlined text-[18px]">warning</span>
+                    {blockedCount} producto(s) con datos incompletos — corrígelos arriba para poder continuar.
+                </div>
+            )}
+
             <div className="flex gap-3">
                 <button onClick={() => setStep(3)} className="flex-1 py-3 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 font-bold rounded-xl hover:bg-slate-50 dark:hover:bg-slate-800 transition-all">Atrás</button>
                 <button
                     onClick={() => setStep(5)}
-                    className="flex-1 py-3 bg-primary hover:bg-primary/90 text-white font-black rounded-xl transition-all flex items-center justify-center gap-2"
+                    disabled={blockedCount > 0}
+                    title={blockedCount > 0 ? 'Resuelve los datos incompletos marcados arriba antes de continuar' : undefined}
+                    className="flex-1 py-3 bg-primary hover:bg-primary/90 text-white font-black rounded-xl transition-all flex items-center justify-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-primary"
                 >
                     Confirmar y Publicar <span className="material-symbols-outlined">arrow_forward</span>
                 </button>
@@ -155,6 +196,12 @@ export function Step5Publish({
         }
     };
 
+    const failedAsins = processedProducts
+        .filter(p => publishResults[p.asin]?.error || dryRunResults[p.asin]?.dryError)
+        .map(p => p.asin);
+
+    const selectFailed = () => setSelectedAsins(new Set(failedAsins));
+
     const handleBulkDryRun = async () => {
         if (selectedAsins.size === 0) return;
         setIsBulkProcessing(true);
@@ -188,8 +235,20 @@ export function Step5Publish({
                         <h2 className="text-lg font-black text-slate-900 dark:text-white mb-1">Confirmar Publicación</h2>
                         <p className="text-sm text-slate-500">Selecciona los productos para probar o publicar</p>
                     </div>
-                    <div className="text-sm font-bold text-slate-600 dark:text-slate-300 bg-slate-100 dark:bg-slate-900 px-3 py-1.5 rounded-lg">
-                        {selectedAsins.size} de {processedProducts.length} seleccionados
+                    <div className="flex items-center gap-2">
+                        {failedAsins.length > 0 && (
+                            <button
+                                onClick={selectFailed}
+                                className="text-xs font-black text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700 px-3 py-1.5 rounded-lg hover:bg-amber-100 dark:hover:bg-amber-900/40 transition-all flex items-center gap-1.5"
+                                title="Selecciona todos los productos que fallaron para reintentarlos"
+                            >
+                                <span className="material-symbols-outlined text-[16px]">replay</span>
+                                Seleccionar fallidos ({failedAsins.length})
+                            </button>
+                        )}
+                        <div className="text-sm font-bold text-slate-600 dark:text-slate-300 bg-slate-100 dark:bg-slate-900 px-3 py-1.5 rounded-lg">
+                            {selectedAsins.size} de {processedProducts.length} seleccionados
+                        </div>
                     </div>
                 </div>
 
