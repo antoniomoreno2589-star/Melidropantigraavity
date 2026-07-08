@@ -136,6 +136,22 @@ export function useAmazonImporter() {
         setLoadingAsins(false);
     };
 
+    // Re-fetches just the price for one ASIN from Amazon and updates it in place.
+    // Amazon's pricing API reflects live stock/offers — a single-seller item can
+    // briefly show no active offer and come right back, so "sin precio" from the
+    // original Step 2 load doesn't always mean the product can't be priced right
+    // now. Only touches price/currency; title/images/category stay as reviewed.
+    const refetchProductPrice = async (asin: string): Promise<void> => {
+        try {
+            const product = await amazonService.getProduct(asin);
+            setLoadedProducts(prev => prev.map(p =>
+                p.asin === asin ? { ...p, price: product.price, currency: product.currency } : p
+            ));
+        } catch (e: any) {
+            console.error(`[Melidrop] refetchProductPrice failed for ${asin}:`, e.message);
+        }
+    };
+
     // ── Step 3 handler ─────────────────────────────────────────────────
     const handleProcessWithAI = async () => {
         const validProducts = loadedProducts.filter(p => !p.loading && !p.error);
@@ -1021,6 +1037,7 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
         loadedProducts, setLoadedProducts,
         loadingAsins,
         handleLoadAsins,
+        refetchProductPrice,
         // Step 3
         processedProducts,
         editedTitles, setEditedTitles,

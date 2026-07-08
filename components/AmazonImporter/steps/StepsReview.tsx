@@ -20,6 +20,7 @@ export function Step4Attributes({
     editedTitles,
     selectedCategories,
     getBlockingIssues,
+    refetchProductPrice,
     setStep,
 }: Props) {
     // Products that still need attention before we can move to publishing.
@@ -32,6 +33,20 @@ export function Step4Attributes({
         if (issues.length > 0) blockingByAsin[processed.asin] = issues;
     }
     const blockedCount = Object.keys(blockingByAsin).length;
+
+    // Amazon's pricing API reflects live stock/offers — a single-seller item can
+    // briefly show no active offer at load time and be available again minutes
+    // later, so "sin precio" isn't always permanent. Let the user recheck one
+    // product without redoing the whole import.
+    const [refetchingPrice, setRefetchingPrice] = useState<Set<string>>(new Set());
+    const handleRetryPrice = async (asin: string) => {
+        setRefetchingPrice(prev => new Set(prev).add(asin));
+        try {
+            await refetchProductPrice(asin);
+        } finally {
+            setRefetchingPrice(prev => { const next = new Set(prev); next.delete(asin); return next; });
+        }
+    };
 
     return (
         <div className="space-y-4">
@@ -67,9 +82,25 @@ export function Step4Attributes({
                         {issues.length > 0 && (
                             <div className="px-4 py-3 border-b border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 space-y-1">
                                 {issues.map((issue, i) => (
-                                    <div key={i} className="flex items-center gap-2 text-xs font-bold text-amber-700 dark:text-amber-400">
-                                        <span className="material-symbols-outlined text-[16px]">warning</span>
-                                        {issue}
+                                    <div key={i} className="flex items-center justify-between gap-2 text-xs font-bold text-amber-700 dark:text-amber-400">
+                                        <span className="flex items-center gap-2">
+                                            <span className="material-symbols-outlined text-[16px]">warning</span>
+                                            {issue}
+                                        </span>
+                                        {issue.startsWith('Sin precio de Amazon') && (
+                                            <button
+                                                onClick={() => handleRetryPrice(processed.asin)}
+                                                disabled={refetchingPrice.has(processed.asin)}
+                                                className="text-[10px] font-black text-amber-800 dark:text-amber-300 underline hover:no-underline disabled:opacity-50 flex items-center gap-1 flex-shrink-0"
+                                            >
+                                                {refetchingPrice.has(processed.asin) ? (
+                                                    <>
+                                                        <span className="w-3 h-3 rounded-full border-2 border-amber-400 border-t-amber-700 animate-spin" />
+                                                        Verificando...
+                                                    </>
+                                                ) : 'Reintentar precio'}
+                                            </button>
+                                        )}
                                     </div>
                                 ))}
                             </div>
