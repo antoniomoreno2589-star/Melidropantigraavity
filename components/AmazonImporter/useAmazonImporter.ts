@@ -152,6 +152,29 @@ export function useAmazonImporter() {
         }
     };
 
+    // Drops one ASIN from the whole batch — the escape hatch for a product
+    // that can't be fixed in place (e.g. no category found, no valid price)
+    // so it stops blocking the rest of the batch from continuing past Step 4.
+    // Purely in-memory: nothing has been published yet, so this is just
+    // "never mind this one" — re-importing it later is always an option.
+    const removeProduct = (asin: string) => {
+        setLoadedProducts(prev => prev.filter(p => p.asin !== asin));
+        setProcessedProducts(prev => prev.filter(p => p.asin !== asin));
+        const dropKey = <T,>(rec: Record<string, T>): Record<string, T> => {
+            const { [asin]: _drop, ...rest } = rec;
+            return rest;
+        };
+        setEditedTitles(dropKey);
+        setSelectedCategories(dropKey);
+        setMlCategorySearchResults(dropKey);
+        setCategoryAttributes(dropKey);
+        setUserAttributes(dropKey);
+        setValidationResults(dropKey);
+        setPublishingStatus(dropKey);
+        setPublishResults(dropKey);
+        setDryRunResults(dropKey);
+    };
+
     // ── Step 3 handler ─────────────────────────────────────────────────
     const handleProcessWithAI = async () => {
         const validProducts = loadedProducts.filter(p => !p.loading && !p.error);
@@ -1038,6 +1061,7 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
         loadingAsins,
         handleLoadAsins,
         refetchProductPrice,
+        removeProduct,
         // Step 3
         processedProducts,
         editedTitles, setEditedTitles,

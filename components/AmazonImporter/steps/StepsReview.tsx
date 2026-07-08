@@ -21,6 +21,7 @@ export function Step4Attributes({
     selectedCategories,
     getBlockingIssues,
     refetchProductPrice,
+    removeProduct,
     setStep,
 }: Props) {
     // Products that still need attention before we can move to publishing.
@@ -46,6 +47,13 @@ export function Step4Attributes({
         } finally {
             setRefetchingPrice(prev => { const next = new Set(prev); next.delete(asin); return next; });
         }
+    };
+
+    // Escape hatch for a product that can't be fixed in place — drops it from
+    // the batch so it stops blocking everyone else from continuing to Step 5.
+    const handleRemoveProduct = (asin: string, title: string) => {
+        if (!confirm(`¿Eliminar "${title}" (${asin}) de esta importación?\n\nNo se publicará nada — simplemente se quita de este lote. Puedes volver a importarlo después si cambias de opinión.`)) return;
+        removeProduct(asin);
     };
 
     return (
@@ -103,6 +111,15 @@ export function Step4Attributes({
                                         )}
                                     </div>
                                 ))}
+                                <div className="pt-1.5 mt-1.5 border-t border-amber-200/70 dark:border-amber-800/70 flex justify-end">
+                                    <button
+                                        onClick={() => handleRemoveProduct(processed.asin, editedTitles[processed.asin] || processed.asin)}
+                                        className="text-[10px] font-black text-red-600 dark:text-red-400 hover:text-red-800 dark:hover:text-red-300 flex items-center gap-1"
+                                    >
+                                        <span className="material-symbols-outlined text-[14px]">delete</span>
+                                        Eliminar este producto del lote
+                                    </button>
+                                </div>
                             </div>
                         )}
 
