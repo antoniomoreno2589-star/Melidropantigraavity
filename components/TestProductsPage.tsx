@@ -156,6 +156,17 @@ export const TestProductsPage = () => {
             return;
         }
 
+        // checkDuplicate() with no override checks the real account — guards
+        // against accidentally publishing the same ASIN twice for real (e.g. a
+        // double-click, or retrying after a network hiccup).
+        const dup = await meliService.checkDuplicate(product.asin);
+        if (dup.isDuplicate) {
+            alert(`Ya existe en tu cuenta real de MercadoLibre (ID: ${dup.existingItem?.id}). No se volvió a publicar.`);
+            await api.testProducts.update(id, { meli_id: dup.existingItem?.id, is_published_to_real: true });
+            setTestProducts(prev => prev.map(p => p.id === id ? { ...p, meliId: dup.existingItem?.id, isPublishedToReal: true } : p));
+            return;
+        }
+
         console.log('[Melidrop] handlePublishToReal: Using real credentials', {
             userId: realCreds.id,
             nickname: realCreds.nickname,
@@ -214,10 +225,26 @@ export const TestProductsPage = () => {
         }
     };
 
+    // A test product's meli_id lives under the REAL account only once
+    // isPublishedToReal is true — until then it belongs to the sandbox test
+    // user's own catalog, so deleting it needs THAT account's token instead.
+    const resolveDeleteToken = async (product: TestProduct): Promise<string | undefined> => {
+        if (product.isPublishedToReal) return undefined;
+        try {
+            return (await meliService.autoRefreshTestUserToken()) ?? undefined;
+        } catch {
+            return undefined;
+        }
+    };
+
     const handleDelete = async (id: string, meliId?: string) => {
         if (!confirm('¿Estás seguro de que deseas eliminar este producto?')) return;
         try {
-            if (meliId) await meliService.deleteItem(meliId).catch(() => {});
+            const product = testProducts.find(p => p.id === id);
+            if (meliId && product) {
+                const token = await resolveDeleteToken(product);
+                await meliService.deleteItem(meliId, token).catch(() => {});
+            }
             await api.testProducts.delete(id);
             setTestProducts(prev => prev.filter(p => p.id !== id));
         } catch (err: any) {
@@ -232,7 +259,10 @@ export const TestProductsPage = () => {
         try {
             const toDelete = testProducts.filter(p => selectedIds.includes(p.id));
             await Promise.all(toDelete.map(async p => {
-                if (p.meliId) await meliService.deleteItem(p.meliId).catch(() => {});
+                if (p.meliId) {
+                    const token = await resolveDeleteToken(p);
+                    await meliService.deleteItem(p.meliId, token).catch(() => {});
+                }
                 await api.testProducts.delete(p.id);
             }));
             setTestProducts(prev => prev.filter(p => !selectedIds.includes(p.id)));
@@ -262,6 +292,17 @@ export const TestProductsPage = () => {
                 continue;
             }
             try {
+                // Guard against publishing the same ASIN twice for real.
+                const dup = await meliService.checkDuplicate(product.asin);
+                if (dup.isDuplicate) {
+                    await api.testProducts.update(product.id, { meli_id: dup.existingItem?.id, is_published_to_real: true });
+                    setTestProducts(prev => prev.map(p =>
+                        p.id === product.id ? { ...p, meliId: dup.existingItem?.id, isPublishedToReal: true } : p
+                    ));
+                    successCount++;
+                    continue;
+                }
+
                 const descriptionText = product.publishPayload?.description?.plain_text;
                 const itemPayload = { ...product.publishPayload, description: undefined };
                 const result = await meliService.publishItem(itemPayload, false);
@@ -295,9 +336,17 @@ export const TestProductsPage = () => {
     };
 
     const clearSandbox = async () => {
-        const confirmClear = window.confirm('¿Estás seguro de limpiar todo el entorno de pruebas? Esta acción eliminará permanentemente todos los productos del catálogo de test.');
+        const confirmClear = window.confirm('¿Estás seguro de limpiar todo el entorno de pruebas? Esta acción eliminará permanentemente todos los productos del catálogo de test, incluyendo sus publicaciones en la cuenta de prueba de MercadoLibre.');
         if (confirmClear) {
             try {
+                // Delete each sandbox listing from ML first (using the test user's own
+                // token — these ids don't exist under the real account) so "clear"
+                // actually clears MercadoLibre's test catalog too, not just this table.
+                const toDelete = testProducts.filter(p => p.meliId && !p.isPublishedToReal);
+                await Promise.all(toDelete.map(async p => {
+                    const token = await resolveDeleteToken(p);
+                    await meliService.deleteItem(p.meliId!, token).catch(() => {});
+                }));
                 await api.testProducts.clearAll();
                 setTestProducts([]);
                 setSelectedIds([]);

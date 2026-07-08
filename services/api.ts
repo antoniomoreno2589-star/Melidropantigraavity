@@ -498,9 +498,13 @@ export const api = {
             const { data: { user } } = await supabase.auth.getUser();
             if (!user) throw new Error("User not authenticated");
 
+            // Upsert on (user_id, asin) — the Amazon Importer's "Probar (sandbox)"
+            // can be retried for the same ASIN (e.g. the "Seleccionar fallidos"
+            // bulk retry), and a plain insert created a fresh duplicate row every
+            // time instead of refreshing the existing one.
             const { error } = await supabase
                 .from('test_products')
-                .insert({
+                .upsert({
                     user_id: user.id,
                     title: product.title,
                     asin: product.asin,
@@ -514,7 +518,7 @@ export const api = {
                     category: product.category,
                     meli_id: product.meli_id,
                     publish_payload: product.publish_payload
-                });
+                }, { onConflict: 'user_id,asin' });
 
             if (error) throw error;
         },

@@ -1418,14 +1418,18 @@ class MeliService {
         }
     }
 
-    async deleteItem(itemId: string): Promise<boolean> {
+    // customToken lets callers target the sandbox test-user's account instead of
+    // the real one — a test product's meli_id lives in a completely separate ML
+    // catalog, so deleting it with the real account's token silently fails
+    // (item not found under that account) and orphans the sandbox listing.
+    async deleteItem(itemId: string, customToken?: string): Promise<boolean> {
         try {
             // Step 1: Set status to closed
             const res1 = await this.fetchWithAuth(`/items/${itemId}`, {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ status: 'closed' })
-            });
+            }, customToken);
 
             if (!res1.ok) {
                 const err = await res1.json();
@@ -1437,7 +1441,7 @@ class MeliService {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ deleted: 'true' })
-            });
+            }, customToken);
 
             return res2.ok;
         } catch (e) {
