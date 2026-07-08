@@ -6,6 +6,38 @@ import { api } from '../../services/api';
 import { supabase } from '../../services/supabase';
 import { Step, Marketplace, ListingType, LoadedProduct } from './types';
 
+// Sanitizes a raw attribute value against ML's own attribute definition (value_type +
+// allowed_units + default_unit, from /categories/{id}/attributes). Shared by
+// buildItemPayload (to build the actual publish payload) and getBlockingIssues (to
+// warn in Step4 before the user even attempts to publish) so both agree on what
+// counts as "valid" for a given attribute.
+// Returns null when a number/number_unit attribute has no parseable number at all
+// (e.g. the AI extracted "Agua tibia" for a wash-temperature attribute) — sending
+// that as-is is a guaranteed ML rejection.
+function sanitizeAttributeValue(def: any, rawValue: string): string | null {
+    const valueType = def?.value_type;
+    if (valueType !== 'number_unit' && valueType !== 'number') return rawValue;
+
+    // First number in the value — handles plain numbers ("40"), numbers with a
+    // unit already attached ("40 cm"), and ranges the AI sometimes returns
+    // ("40-45 cm", which ML rejects outright) by taking the first.
+    const numMatch = rawValue.match(/\d+(?:\.\d+)?/);
+    if (!numMatch) return null;
+    const num = numMatch[0];
+    if (valueType === 'number') return num;
+
+    const allowedUnits: Array<{ id: string; name: string }> = def.allowed_units || [];
+    if (allowedUnits.length === 0) return num;
+
+    const trailingText = rawValue.slice(numMatch.index! + num.length).trim().toLowerCase();
+    const matchedUnit = allowedUnits.find(u =>
+        u.name.toLowerCase() === trailingText || u.id.toLowerCase() === trailingText
+    );
+    const fallbackUnit = allowedUnits.find(u => u.id === def.default_unit) || allowedUnits[0];
+    const unit = (matchedUnit || fallbackUnit)?.name;
+    return unit ? `${num} ${unit}` : num;
+}
+
 export function useAmazonImporter() {
     // ── Step navigation ────────────────────────────────────────────────
     const [step, setStep] = useState<Step>(1);
@@ -344,31 +376,8 @@ export function useAmazonImporter() {
         // BACKREST_WIDTH, MIN_HOURS_AUTONOMY, VOLUME_CAPACITY, SELLER_PACKAGE_WEIGHT.
         const attrDefs = categoryAttributes[processed.asin] || [];
         const attrDefById = new Map<string, any>(attrDefs.map((a: any) => [a.id, a]));
-
-        const sanitizeAttrValue = (id: string, value: string): string => {
-            const def = attrDefById.get(id);
-            const valueType = def?.value_type;
-            if (valueType !== 'number_unit' && valueType !== 'number') return value;
-
-            // First number in the value — handles plain numbers ("40"), numbers
-            // with a unit already attached ("40 cm"), and ranges the AI sometimes
-            // returns ("40-45 cm", which ML rejects outright) by taking the first.
-            const numMatch = value.match(/\d+(?:\.\d+)?/);
-            if (!numMatch) return value;
-            const num = numMatch[0];
-            if (valueType === 'number') return num;
-
-            const allowedUnits: Array<{ id: string; name: string }> = def.allowed_units || [];
-            if (allowedUnits.length === 0) return num;
-
-            const trailingText = value.slice(numMatch.index! + num.length).trim().toLowerCase();
-            const matchedUnit = allowedUnits.find(u =>
-                u.name.toLowerCase() === trailingText || u.id.toLowerCase() === trailingText
-            );
-            const fallbackUnit = allowedUnits.find(u => u.id === def.default_unit) || allowedUnits[0];
-            const unit = (matchedUnit || fallbackUnit)?.name;
-            return unit ? `${num} ${unit}` : num;
-        };
+        const sanitizeAttrValue = (id: string, value: string): string | null =>
+            sanitizeAttributeValue(attrDefById.get(id), value);
 
         const userAttrIds = new Set(Object.keys(attrs).filter(k => attrs[k]?.toString().trim()));
 
@@ -384,7 +393,8 @@ export function useAmazonImporter() {
                     if (id !== 'SELLER_SKU') return true;
                     return false;
                 })
-                .map(([id, value_name]) => ({ id, value_name: sanitizeAttrValue(id, value_name.toString().trim()) })),
+                .map(([id, value_name]) => ({ id, value_name: sanitizeAttrValue(id, value_name.toString().trim()) }))
+                .filter((a): a is { id: string; value_name: string } => a.value_name !== null),
             { id: 'SELLER_SKU', value_name: processed.asin },
             ...(barcode && !userHasBarcode ? [{ id: 'UPC', value_name: barcode }] : []),
             // Only add UNITS_PER_PACK / MODEL defaults if the category supports them
@@ -520,9 +530,15 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
         if (catId) {
             const attrs = categoryAttributes[asin] || [];
             const userAttrs = userAttributes[asin] || {};
-            const missing = attrs.filter((a: any) =>
-                (a.tags?.required || a.tags?.new_required) && !userAttrs[a.id]?.toString().trim()
-            );
+            const missing = attrs.filter((a: any) => {
+                if (!a.tags?.required && !a.tags?.new_required) return false;
+                const raw = userAttrs[a.id]?.toString().trim();
+                if (!raw) return true;
+                // Also catches values that are present but unusable for this
+                // attribute's type — e.g. "Agua tibia" for a number_unit attribute —
+                // so the user fixes it here instead of hitting a cryptic ML error.
+                return sanitizeAttributeValue(a, raw) === null;
+            });
             if (missing.length > 0) {
                 issues.push(`Faltan ${missing.length} atributo(s) requerido(s): ${missing.map((a: any) => a.name).join(', ')}`);
             }
@@ -561,6 +577,36 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
                     if (!testToken) testToken = testUserCreds.access_token ?? null;
 
                     if (testToken) {
+                        // The test user's sandbox catalog is a completely separate ML
+                        // account from the real one — checkDuplicate() with no override
+                        // only ever looks at the real account, so without this every
+                        // "Probar (sandbox)" click published a fresh duplicate listing.
+                        let testUserId: number | string | undefined = testUserCreds?.id;
+                        if (!testUserId) {
+                            const info = await meliService.getUserInfoByToken(testToken);
+                            testUserId = info?.id;
+                            if (testUserId) {
+                                const { data: { user } } = await supabase.auth.getUser();
+                                if (user) {
+                                    const updated = { ...testUserCreds, id: testUserId };
+                                    await supabase.from('user_connections').upsert(
+                                        { user_id: user.id, meli_test_user: updated },
+                                        { onConflict: 'user_id' }
+                                    );
+                                    setTestUserCreds(updated);
+                                }
+                            }
+                        }
+
+                        const existing = testUserId
+                            ? await meliService.checkDuplicate(asin, { token: testToken, userId: testUserId })
+                            : { isDuplicate: false };
+
+                        if (existing.isDuplicate) {
+                            console.log(`[Melidrop] ${asin} already in sandbox catalog (${existing.existingItem?.id}), skipping re-publish`);
+                            publishResult = { id: existing.existingItem?.id, alreadyPublished: true };
+                            testMeliId = existing.existingItem?.id ?? null;
+                        } else {
                         const imageIds: string[] = [];
                         const seenAmazonIds = new Set<string>();
                         for (const img of processed.images.slice(0, 10)) {
@@ -592,6 +638,18 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
                             (testPayload as any).pictures = imageIds.map((id: string) => ({ id }));
                         }
                         publishResult = await meliService.publishItem(testPayload, false, testToken);
+
+                        // Some categories reject the hardcoded WARRANTY_TYPE free-text
+                        // value — they expect one of a fixed set of value_ids instead.
+                        // sale_terms are optional enrichment, not required to publish,
+                        // so drop them and retry rather than fail the whole listing.
+                        if (publishResult?.error && publishResult.cause?.some((c: any) => c.message?.toLowerCase().includes('sale term'))) {
+                            console.log(`[Melidrop] Category rejects sale_terms — retrying without them`);
+                            const noTermsPayload = { ...testPayload };
+                            delete (noTermsPayload as any).sale_terms;
+                            publishResult = await meliService.publishItem(noTermsPayload, false, testToken);
+                        }
+
                         if (publishResult?.id) {
                             testMeliId = publishResult.id;
                             console.log(`[Melidrop] Sandbox item published with ID: ${publishResult.id}`);
@@ -610,6 +668,7 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
                         } else {
                             console.error(`[Melidrop] ❌ Item publish failed, no ID:`, publishResult);
                         }
+                        } // end existing.isDuplicate else (fresh sandbox publish)
                     } else {
                         publishResult = { error: 'No se pudo obtener token del usuario de prueba' };
                     }
@@ -852,6 +911,17 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
                 delete familyPayload.title;
                 familyPayload.family_name = originalTitle;
                 result = await meliService.publishItem(familyPayload, isDraft, publishToken);
+            }
+
+            // Some categories reject the hardcoded WARRANTY_TYPE free-text value —
+            // they expect one of a fixed set of value_ids instead. sale_terms are
+            // optional enrichment, not required to publish, so drop them and retry
+            // rather than fail the whole listing over a warranty label.
+            if (result.error && result.cause?.some((c: any) => c.message?.toLowerCase().includes('sale term'))) {
+                console.log(`[Melidrop] Category rejects sale_terms — retrying without them`);
+                const noTermsPayload = { ...publishPayload };
+                delete (noTermsPayload as any).sale_terms;
+                result = await meliService.publishItem(noTermsPayload, isDraft, publishToken);
             }
 
             console.log(`[Melidrop] Publication response for ${asin}:`, result);

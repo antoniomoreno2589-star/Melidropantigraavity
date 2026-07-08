@@ -1143,18 +1143,22 @@ class MeliService {
         }
     }
 
-    async checkDuplicate(asin: string): Promise<{ isDuplicate: boolean; existingItem?: any }> {
-        const creds = this.getCredentials();
-        if (!creds) return { isDuplicate: false };
+    // opts lets callers check a DIFFERENT account than the real one — e.g. the
+    // sandbox test user, whose items live in a completely separate ML catalog.
+    // Without this, sandbox publishes had no duplicate protection at all: every
+    // "Probar (sandbox)" click created a brand-new listing under the test user.
+    async checkDuplicate(asin: string, opts?: { token: string; userId: string | number }): Promise<{ isDuplicate: boolean; existingItem?: any }> {
+        const userId = opts?.userId ?? this.getCredentials()?.id;
+        if (!userId) return { isDuplicate: false };
         try {
             // Search all items (no status filter) — a freshly published item may be
             // 'under_review' or 'inactive' and wouldn't appear in active/paused only.
-            const response = await this.fetchWithAuth(`/users/${creds.id}/items/search?seller_custom_field=${asin}&limit=5`);
+            const response = await this.fetchWithAuth(`/users/${userId}/items/search?seller_custom_field=${asin}&limit=5`, {}, opts?.token);
             if (!response.ok) return { isDuplicate: false };
             const data = await response.json();
             if (data.results && data.results.length > 0) {
                 for (const itemId of data.results) {
-                    const itemRes = await this.fetchWithAuth(`/items/${itemId}?attributes=seller_custom_field,status`);
+                    const itemRes = await this.fetchWithAuth(`/items/${itemId}?attributes=seller_custom_field,status`, {}, opts?.token);
                     if (!itemRes.ok) continue;
                     const itemData = await itemRes.json();
                     // Consider any non-closed item as a duplicate
@@ -1167,6 +1171,16 @@ class MeliService {
             return { isDuplicate: false };
         } catch (e) {
             return { isDuplicate: false };
+        }
+    }
+
+    async getUserInfoByToken(token: string): Promise<{ id: number; nickname?: string; email?: string } | null> {
+        try {
+            const response = await this.fetchWithAuth('/users/me', {}, token);
+            if (!response.ok) return null;
+            return await response.json();
+        } catch {
+            return null;
         }
     }
 
