@@ -653,7 +653,20 @@ export const OrdersPage = () => {
 
                                             {/* Product */}
                                             <td className="px-4 py-3.5 max-w-[200px]">
-                                                <p className="text-xs font-bold text-slate-700 dark:text-slate-300 line-clamp-2 leading-snug">{order.productTitle}</p>
+                                                {order.meliItemId ? (
+                                                    <a
+                                                        href={`https://articulo.mercadolibre.com.mx/${order.meliItemId}`}
+                                                        target="_blank"
+                                                        rel="noopener noreferrer"
+                                                        title="Ver publicación en MercadoLibre"
+                                                        className="text-xs font-bold text-slate-700 dark:text-slate-300 line-clamp-2 leading-snug hover:text-primary hover:underline flex items-start gap-1"
+                                                    >
+                                                        <span>{order.productTitle}</span>
+                                                        <span className="material-symbols-outlined text-[13px] flex-shrink-0 mt-0.5">open_in_new</span>
+                                                    </a>
+                                                ) : (
+                                                    <p className="text-xs font-bold text-slate-700 dark:text-slate-300 line-clamp-2 leading-snug">{order.productTitle}</p>
+                                                )}
                                                 {order.amazonAsin && (
                                                     <span className="inline-block mt-1 text-xs font-mono font-bold text-primary bg-primary/10 px-2 py-0.5 rounded tracking-wider">{order.amazonAsin}</span>
                                                 )}
