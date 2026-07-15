@@ -782,19 +782,7 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
                             if (seenAmazonIds.has(dedupeKey)) continue;
                             seenAmazonIds.add(dedupeKey);
 
-                            let id: string | null = null;
-                            if (img.cleanedUrl) {
-                                id = await meliService.uploadImageBinary(img.cleanedUrl, testToken);
-                            } else {
-                                // Normalize to full-resolution Amazon URL, then resize if still < 500x250
-                                const fullUrl = normalizeAmazonImageUrl(img.url);
-                                const resizedUrl = await resizeImageIfNeeded(fullUrl);
-                                if (resizedUrl.startsWith('data:')) {
-                                    id = await meliService.uploadImageBinary(resizedUrl, testToken);
-                                } else {
-                                    id = await meliService.uploadImage(resizedUrl, testToken);
-                                }
-                            }
+                            const id = await uploadProductImage(img, testToken);
                             if (id && !imageIds.includes(id)) imageIds.push(id);
                         }
                         const testPayload = { ...payload, description: undefined };
@@ -960,6 +948,37 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
         });
     };
 
+    // Uploads one product image to ML, retrying transient failures automatically.
+    // "Ocurrió un error procesando la foto" on a source-based upload is usually
+    // ML's server timing out fetching the image from Amazon's CDN — a one-off
+    // network hiccup, not a real problem with the image (confirmed by users
+    // seeing it succeed on a bare retry with the exact same image/URL). Retrying
+    // here does automatically what they were already doing by hand.
+    const uploadProductImage = async (img: { url: string; cleanedUrl?: string }, token?: string): Promise<string | null> => {
+        const attemptUpload = async (): Promise<string | null> => {
+            if (img.cleanedUrl) {
+                return meliService.uploadImageBinary(img.cleanedUrl, token);
+            }
+            const fullUrl = normalizeAmazonImageUrl(img.url);
+            const resizedUrl = await resizeImageIfNeeded(fullUrl);
+            return resizedUrl.startsWith('data:')
+                ? meliService.uploadImageBinary(resizedUrl, token)
+                : meliService.uploadImage(resizedUrl, token);
+        };
+
+        const MAX_ATTEMPTS = 3;
+        for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+            const id = await attemptUpload();
+            if (id) return id;
+            if (attempt < MAX_ATTEMPTS) {
+                console.warn(`[Melidrop] Image upload attempt ${attempt}/${MAX_ATTEMPTS} failed for ${img.url}, retrying...`);
+                await new Promise(r => setTimeout(r, 700 * attempt));
+            }
+        }
+        console.error(`[Melidrop] Image upload failed after ${MAX_ATTEMPTS} attempts: ${img.url}`);
+        return null;
+    };
+
     const handlePublish = async (asin: string, isDraft = false) => {
         const processed = processedProducts.find(p => p.asin === asin);
         if (!processed) return;
@@ -1029,19 +1048,7 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
                 if (seenAmazonIds.has(dedupeKey)) continue;
                 seenAmazonIds.add(dedupeKey);
 
-                let id: string | null = null;
-                if (img.cleanedUrl) {
-                    id = await meliService.uploadImageBinary(img.cleanedUrl, publishToken);
-                } else {
-                    // Normalize to full-resolution Amazon URL, then resize if still < 500x250
-                    const fullUrl = normalizeAmazonImageUrl(img.url);
-                    const resizedUrl = await resizeImageIfNeeded(fullUrl);
-                    if (resizedUrl.startsWith('data:')) {
-                        id = await meliService.uploadImageBinary(resizedUrl, publishToken);
-                    } else {
-                        id = await meliService.uploadImage(resizedUrl, publishToken);
-                    }
-                }
+                const id = await uploadProductImage(img, publishToken);
                 if (id && !imageIds.includes(id)) {
                     console.log(`[Melidrop] ${asin}: Successfully uploaded image, imageId=${id}`);
                     imageIds.push(id);
