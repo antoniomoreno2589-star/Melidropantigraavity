@@ -201,7 +201,7 @@ export function Step4Attributes({
                             ) : (
                                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                                     {attrs.slice(0, 16).map((attr: any) => {
-                                        const isRequired = attr.tags?.required || attr.tags?.new_required;
+                                        const isRequired = attr.tags?.required || attr.tags?.new_required || attr.tags?.conditional_required;
                                         const isEmpty = !userAttrs[attr.id]?.toString().trim();
                                         return (
                                         <div key={attr.id}>

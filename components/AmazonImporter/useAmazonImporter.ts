@@ -15,6 +15,23 @@ import { Step, Marketplace, ListingType, LoadedProduct } from './types';
 // (e.g. the AI extracted "Agua tibia" for a wash-temperature attribute) — sending
 // that as-is is a guaranteed ML rejection.
 function sanitizeAttributeValue(def: any, rawValue: string): string | null {
+    // Fixed-choice attributes (ML returns a `values` list) — the payload must
+    // match one of ML's own option strings exactly, or ML rejects it with
+    // "not valid, item values [(null:<what we sent>)]" (it tried to resolve
+    // our text to one of its value_ids and got nothing). Confirmed live: the
+    // AI mapped RECOMMENDED_AGE_GROUP to "12-24 meses", which doesn't exist —
+    // the category's real 9 options are "6-12 meses"/"12-18 meses"/"18-24
+    // meses"/"0-24 meses"/etc. Snap to the exact match (case/whitespace
+    // insensitive) or drop it — an unmatched string is a guaranteed
+    // rejection either way, and dropping surfaces it as a normal "missing
+    // required attribute" in Step4 (whose dropdown shows the real options)
+    // instead of a publish-time failure.
+    if (Array.isArray(def?.values) && def.values.length > 0) {
+        const norm = (s: string) => s.trim().toLowerCase();
+        const match = def.values.find((v: any) => norm(v.name) === norm(rawValue));
+        return match ? match.name : null;
+    }
+
     const valueType = def?.value_type;
     if (valueType !== 'number_unit' && valueType !== 'number') return rawValue;
 
@@ -36,6 +53,21 @@ function sanitizeAttributeValue(def: any, rawValue: string): string | null {
     const fallbackUnit = allowedUnits.find(u => u.id === def.default_unit) || allowedUnits[0];
     const unit = (matchedUnit || fallbackUnit)?.name;
     return unit ? `${num} ${unit}` : num;
+}
+
+// Finds which of a category's real attributes actually carries the product's
+// barcode — categories vary (some use GTIN, some EAN/UPC, some none at all;
+// confirmed live that MLM189211's ONLY code attribute is GTIN, no UPC exists
+// there at all). Sending the barcode under an id the category doesn't have
+// does nothing — ML silently ignores it and still reports the real one
+// missing. GTIN is checked first since it's the most common in practice.
+const CODE_ATTR_PRIORITY = ['GTIN', 'EAN', 'UPC', 'ITEM_BARCODE', 'UNIVERSAL_CODE'];
+function resolveBarcodeAttributeId(categoryAttrs: any[]): string | null {
+    for (const id of CODE_ATTR_PRIORITY) {
+        if (categoryAttrs.some((a: any) => a.id === id)) return id;
+    }
+    const loose = categoryAttrs.find((a: any) => a.id.includes('CODE') || a.id.includes('BARCODE'));
+    return loose?.id ?? null;
 }
 
 export function useAmazonImporter() {
@@ -346,16 +378,12 @@ export function useAmazonImporter() {
                         console.log(`[Melidrop] Amazon attrs for ${product.asin}:`, amazonAttrs);
                         console.log(`[Melidrop] Barcode extracted: ${barcode}`);
 
-                        const codeAttrOptions = relevant.filter((a: any) =>
-                            a.id === 'EAN' || a.id === 'UPC' || a.id === 'GTIN' ||
-                            a.id === 'ITEM_BARCODE' || a.id === 'UNIVERSAL_CODE' ||
-                            a.id.includes('CODE') || a.id.includes('BARCODE')
-                        );
-                        console.log(`[Melidrop] Available code attributes:`, codeAttrOptions.map((a: any) => a.id));
+                        const codeAttrId = resolveBarcodeAttributeId(relevant);
+                        console.log(`[Melidrop] Resolved code attribute for this category: ${codeAttrId}`);
 
-                        if (barcode && codeAttrOptions.length > 0) {
-                            seed[codeAttrOptions[0].id] = barcode;
-                            console.log(`[Melidrop] Seeded ${codeAttrOptions[0].id} = ${barcode}`);
+                        if (barcode && codeAttrId) {
+                            seed[codeAttrId] = barcode;
+                            console.log(`[Melidrop] Seeded ${codeAttrId} = ${barcode}`);
                         }
 
                         const aiMapped = await aiImporterService.mapAttributes(
@@ -437,12 +465,8 @@ export function useAmazonImporter() {
 
             const amazonAttrs = product.attributes || {};
             const barcode = amazonAttrs.item_barcode?.[0]?.value || amazonAttrs.ean?.[0]?.value;
-            const codeAttrOptions = relevant.filter((a: any) =>
-                a.id === 'EAN' || a.id === 'UPC' || a.id === 'GTIN' ||
-                a.id === 'ITEM_BARCODE' || a.id === 'UNIVERSAL_CODE' ||
-                a.id.includes('CODE') || a.id.includes('BARCODE')
-            );
-            if (barcode && codeAttrOptions.length > 0) seed[codeAttrOptions[0].id] = barcode;
+            const codeAttrId = resolveBarcodeAttributeId(relevant);
+            if (barcode && codeAttrId) seed[codeAttrId] = barcode;
 
             if (processed) {
                 const aiMapped = await aiImporterService.mapAttributes(
@@ -497,6 +521,7 @@ export function useAmazonImporter() {
         const amazonAttrs = product.attributes || {};
         const barcode = amazonAttrs.item_barcode?.[0]?.value || amazonAttrs.ean?.[0]?.value;
         const userHasBarcode = barcode && Object.values(attrs).includes(barcode);
+        const barcodeAttrId = resolveBarcodeAttributeId(categoryAttributes[processed.asin] || []);
 
         // ML tells us exactly how each attribute wants its value via value_type +
         // allowed_units + default_unit (from /categories/{id}/attributes) — use that
@@ -524,7 +549,11 @@ export function useAmazonImporter() {
                 .map(([id, value_name]) => ({ id, value_name: sanitizeAttrValue(id, value_name.toString().trim()) }))
                 .filter((a): a is { id: string; value_name: string } => a.value_name !== null),
             { id: 'SELLER_SKU', value_name: processed.asin },
-            ...(barcode && !userHasBarcode ? [{ id: 'UPC', value_name: barcode }] : []),
+            // Falls back to whatever code attribute this category actually has —
+            // confirmed live that some categories (e.g. MLM189211) only accept
+            // GTIN and have no UPC attribute at all, so a hardcoded 'UPC' here
+            // would get silently ignored and ML would still report it missing.
+            ...(barcode && !userHasBarcode && barcodeAttrId ? [{ id: barcodeAttrId, value_name: barcode }] : []),
             // Only add UNITS_PER_PACK / MODEL defaults if the category supports them
             ...(!userAttrIds.has('UNITS_PER_PACK') && catAttrIds.has('UNITS_PER_PACK') ? [{ id: 'UNITS_PER_PACK', value_name: '1' }] : []),
             ...(!userAttrIds.has('MODEL') && catAttrIds.has('MODEL') ? [{ id: 'MODEL', value_name: product.brand || processed.asin }] : []),
@@ -659,7 +688,11 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
             const attrs = categoryAttributes[asin] || [];
             const userAttrs = userAttributes[asin] || {};
             const missing = attrs.filter((a: any) => {
-                if (!a.tags?.required && !a.tags?.new_required) return false;
+                // conditional_required matters in practice: e.g. GTIN carries only
+                // this tag (not required/new_required) in categories where ML still
+                // hard-rejects the publish without it — confirmed live against
+                // MLM189211's real attribute schema.
+                if (!a.tags?.required && !a.tags?.new_required && !a.tags?.conditional_required) return false;
                 const raw = userAttrs[a.id]?.toString().trim();
                 if (!raw) return true;
                 // Also catches values that are present but unusable for this
