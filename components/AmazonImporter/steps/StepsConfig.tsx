@@ -91,6 +91,7 @@ export const Step2Asins: React.FC<Props> = ({
     loadingAsins,
     handleLoadAsins,
     handleProcessWithAI,
+    removeProduct,
     setStep,
 }) => (
     <div className="space-y-4">
@@ -115,7 +116,17 @@ export const Step2Asins: React.FC<Props> = ({
         {loadedProducts.length > 0 && (
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 {loadedProducts.map(p => (
-                    <div key={p.asin} className="bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 p-4 flex gap-3">
+                    <div key={p.asin} className="relative bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 p-4 flex gap-3">
+                        <button
+                            onClick={() => {
+                                if (!confirm(`¿Quitar ${p.asin} de esta importación?`)) return;
+                                removeProduct(p.asin);
+                            }}
+                            title="Quitar este producto de la importación"
+                            className="absolute top-2 right-2 p-1 text-slate-300 hover:text-red-500 dark:text-slate-600 dark:hover:text-red-400 transition-colors"
+                        >
+                            <span className="material-symbols-outlined text-[18px]">close</span>
+                        </button>
                         {p.loading ? (
                             <div className="flex items-center gap-3 w-full">
                                 <div className="w-16 h-16 rounded-lg bg-slate-100 dark:bg-slate-700 animate-pulse flex-shrink-0" />
@@ -188,6 +199,7 @@ export const Step3AI: React.FC<Props> = ({
     selectedCategories, setSelectedCategories,
     mlCategorySearchResults,
     handleLoadAttributes,
+    removeProduct,
     setStep,
 }) => (
     <div className="space-y-4">
@@ -210,7 +222,19 @@ export const Step3AI: React.FC<Props> = ({
                             <p className="font-black text-slate-900 dark:text-white text-sm">ASIN: {processed.asin}</p>
                             {processed.errors.length > 0 && <p className="text-xs text-amber-600 mt-0.5">{processed.errors.join(' · ')}</p>}
                         </div>
-                        <span className="bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300 text-[10px] font-black px-3 py-1 rounded-full uppercase">✓ Procesado</span>
+                        <div className="flex items-center gap-2">
+                            <span className="bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300 text-[10px] font-black px-3 py-1 rounded-full uppercase">✓ Procesado</span>
+                            <button
+                                onClick={() => {
+                                    if (!confirm(`¿Quitar "${editedTitles[processed.asin] || processed.optimizedTitle}" (${processed.asin}) de esta importación?`)) return;
+                                    removeProduct(processed.asin);
+                                }}
+                                title="Quitar este producto de la importación"
+                                className="p-1 text-slate-300 hover:text-red-500 dark:text-slate-600 dark:hover:text-red-400 transition-colors"
+                            >
+                                <span className="material-symbols-outlined text-[18px]">close</span>
+                            </button>
+                        </div>
                     </div>
 
                     <div className="p-4 space-y-4">

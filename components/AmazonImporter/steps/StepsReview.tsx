@@ -67,9 +67,18 @@ export function Step4Attributes({
 
                 return (
                     <div key={processed.asin} className={`bg-white dark:bg-slate-800 rounded-2xl border overflow-hidden ${issues.length > 0 ? 'border-amber-300 dark:border-amber-700' : 'border-slate-200 dark:border-slate-700'}`}>
-                        <div className="p-4 border-b border-slate-100 dark:border-slate-700">
-                            <p className="font-black text-slate-900 dark:text-white">{editedTitles[processed.asin]}</p>
-                            <p className="text-xs text-slate-500 font-mono mt-0.5">{processed.asin}</p>
+                        <div className="p-4 border-b border-slate-100 dark:border-slate-700 flex items-start justify-between gap-2">
+                            <div className="min-w-0">
+                                <p className="font-black text-slate-900 dark:text-white">{editedTitles[processed.asin]}</p>
+                                <p className="text-xs text-slate-500 font-mono mt-0.5">{processed.asin}</p>
+                            </div>
+                            <button
+                                onClick={() => handleRemoveProduct(processed.asin, editedTitles[processed.asin] || processed.asin)}
+                                title="Quitar este producto de la importación"
+                                className="flex-shrink-0 p-1 text-slate-300 hover:text-red-500 dark:text-slate-600 dark:hover:text-red-400 transition-colors"
+                            >
+                                <span className="material-symbols-outlined text-[18px]">close</span>
+                            </button>
                         </div>
 
                         {/* Validations */}
@@ -111,15 +120,6 @@ export function Step4Attributes({
                                         )}
                                     </div>
                                 ))}
-                                <div className="pt-1.5 mt-1.5 border-t border-amber-200/70 dark:border-amber-800/70 flex justify-end">
-                                    <button
-                                        onClick={() => handleRemoveProduct(processed.asin, editedTitles[processed.asin] || processed.asin)}
-                                        className="text-[10px] font-black text-red-600 dark:text-red-400 hover:text-red-800 dark:hover:text-red-300 flex items-center gap-1"
-                                    >
-                                        <span className="material-symbols-outlined text-[14px]">delete</span>
-                                        Eliminar este producto del lote
-                                    </button>
-                                </div>
                             </div>
                         )}
 
