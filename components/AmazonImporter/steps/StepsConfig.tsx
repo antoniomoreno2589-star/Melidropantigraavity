@@ -1,8 +1,36 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { Marketplace, ListingType } from '../types';
 import { useAmazonImporter } from '../useAmazonImporter';
 
 type Props = ReturnType<typeof useAmazonImporter>;
+
+// Ticks once a second while `startedAt` is set, so a long batch run (hundreds
+// of ASINs) shows a live "Xm Ys transcurridos" readout instead of a bare
+// spinner with no sense of how long it'll actually take.
+const useElapsedMs = (startedAt: number | null): number => {
+    const [, forceTick] = useState(0);
+    useEffect(() => {
+        if (!startedAt) return;
+        const id = setInterval(() => forceTick(t => t + 1), 1000);
+        return () => clearInterval(id);
+    }, [startedAt]);
+    return startedAt ? Date.now() - startedAt : 0;
+};
+
+const formatDuration = (ms: number): string => {
+    const totalSeconds = Math.max(0, Math.round(ms / 1000));
+    const m = Math.floor(totalSeconds / 60);
+    const s = totalSeconds % 60;
+    return m > 0 ? `${m}m ${s}s` : `${s}s`;
+};
+
+// Rough "cuánto falta" from the average pace so far — only meaningful once
+// at least one item in the batch has completed.
+const estimateRemainingMs = (elapsedMs: number, progress: { current: number; total: number } | null): number | null => {
+    if (!progress || progress.current <= 0 || progress.current >= progress.total) return null;
+    const msPerItem = elapsedMs / progress.current;
+    return msPerItem * (progress.total - progress.current);
+};
 
 // ── Step 1 ─────────────────────────────────────────────────────────────────
 export const Step1Config: React.FC<Props> = ({
@@ -90,6 +118,9 @@ export const Step2Asins: React.FC<Props> = ({
     loadedProducts,
     loadingAsins,
     processingProgress,
+    processingStartedAt,
+    lastRunDurationMs,
+    isProcessing,
     handleLoadAsins,
     handleProcessWithAI,
     removeProduct,
@@ -100,6 +131,11 @@ export const Step2Asins: React.FC<Props> = ({
     const tokens = asinInput.split(/[\n,\s]+/).map(a => a.trim()).filter(Boolean);
     const validAsins = tokens.map(a => a.toUpperCase()).filter(a => /^[A-Z0-9]{10}$/.test(a));
     const invalidCount = tokens.length - validAsins.length;
+
+    // handleLoadAsins and handleProcessWithAI ("Procesar con IA", below) never
+    // run at the same time, so one shared ticker covers both busy states.
+    const elapsedMs = useElapsedMs((loadingAsins || isProcessing) ? processingStartedAt : null);
+    const etaMs = (loadingAsins || isProcessing) ? estimateRemainingMs(elapsedMs, processingProgress) : null;
 
     return (
     <div className="space-y-4">
@@ -142,6 +178,11 @@ export const Step2Asins: React.FC<Props> = ({
                         style={{ width: `${Math.round((processingProgress.current / processingProgress.total) * 100)}%` }}
                     />
                 </div>
+            )}
+            {loadingAsins && processingStartedAt && (
+                <p className="mt-1.5 text-[11px] text-slate-400 text-center font-mono">
+                    ⏱ {formatDuration(elapsedMs)} transcurridos{etaMs != null ? ` · ~${formatDuration(etaMs)} restantes` : ''}
+                </p>
             )}
         </div>
 
@@ -212,14 +253,40 @@ export const Step2Asins: React.FC<Props> = ({
         )}
 
         <div className="flex gap-3">
-            <button onClick={() => setStep(1)} className="flex-1 py-3 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 font-bold rounded-xl hover:bg-slate-50 dark:hover:bg-slate-800 transition-all">Atrás</button>
+            <button onClick={() => setStep(1)} disabled={isProcessing}
+                className="flex-1 py-3 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 font-bold rounded-xl hover:bg-slate-50 dark:hover:bg-slate-800 transition-all disabled:opacity-50">Atrás</button>
             <button
                 onClick={async () => { await handleProcessWithAI(); setStep(3); }}
-                disabled={loadedProducts.filter(p => !p.loading && !p.error).length === 0}
+                disabled={isProcessing || loadedProducts.filter(p => !p.loading && !p.error).length === 0}
                 className="flex-1 py-3 bg-primary hover:bg-primary/90 text-white font-black rounded-xl transition-all disabled:opacity-50 flex items-center justify-center gap-2">
-                Procesar con IA <span className="material-symbols-outlined">auto_awesome</span>
+                {isProcessing
+                    ? <><span className="w-4 h-4 rounded-full border-2 border-white/30 border-t-white animate-spin" />
+                        {processingProgress && processingProgress.total > 0
+                            ? `Procesando... (${processingProgress.current}/${processingProgress.total})`
+                            : 'Procesando...'}
+                      </>
+                    : <>Procesar con IA <span className="material-symbols-outlined">auto_awesome</span></>}
             </button>
         </div>
+        {/* handleProcessWithAI runs from this button while still on Step 2 (it
+            only advances to Step 3 once the whole batch finishes), so its own
+            progress/timer has to live here — Step 3's screen isn't mounted yet. */}
+        {isProcessing && processingProgress && processingProgress.total > 5 && (
+            <div className="h-1.5 bg-slate-100 dark:bg-slate-900 rounded-full overflow-hidden">
+                <div
+                    className="h-full bg-primary rounded-full transition-all duration-300 ease-out"
+                    style={{ width: `${Math.round((processingProgress.current / processingProgress.total) * 100)}%` }}
+                />
+            </div>
+        )}
+        {isProcessing && processingStartedAt && (
+            <p className="text-[11px] text-slate-400 text-center font-mono">
+                ⏱ {formatDuration(elapsedMs)} transcurridos{etaMs != null ? ` · ~${formatDuration(etaMs)} restantes` : ''}
+            </p>
+        )}
+        {!loadingAsins && !isProcessing && lastRunDurationMs != null && (
+            <p className="text-[11px] text-slate-400 text-center">Última corrida: {formatDuration(lastRunDurationMs)}</p>
+        )}
     </div>
     );
 };
@@ -227,6 +294,7 @@ export const Step2Asins: React.FC<Props> = ({
 // ── Step 3 ─────────────────────────────────────────────────────────────────
 export const Step3AI: React.FC<Props> = ({
     isProcessing, processingStage, processingProgress,
+    processingStartedAt, lastRunDurationMs,
     processedProducts,
     editedTitles, setEditedTitles,
     selectedCategories, setSelectedCategories,
@@ -234,7 +302,15 @@ export const Step3AI: React.FC<Props> = ({
     handleLoadAttributes,
     removeProduct,
     setStep,
-}) => (
+}) => {
+    // The only op that actually runs while Step 3 is on screen is
+    // handleLoadAttributes (validating duplicates/atributos) — by the time
+    // handleProcessWithAI's own run finishes and Step 3 mounts, isProcessing
+    // is already back to false.
+    const elapsedMs = useElapsedMs(isProcessing ? processingStartedAt : null);
+    const etaMs = isProcessing ? estimateRemainingMs(elapsedMs, processingProgress) : null;
+
+    return (
     <div className="space-y-4">
         {isProcessing && (
             <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-2xl p-6">
@@ -242,7 +318,7 @@ export const Step3AI: React.FC<Props> = ({
                     <div className="w-8 h-8 rounded-full border-4 border-blue-200 border-t-blue-500 animate-spin flex-shrink-0" />
                     <div className="flex-1 min-w-0">
                         <div className="flex items-center justify-between gap-3">
-                            <p className="font-black text-blue-900 dark:text-blue-100">Claude está analizando tus productos...</p>
+                            <p className="font-black text-blue-900 dark:text-blue-100">Procesando productos...</p>
                             {processingProgress && processingProgress.total > 0 && (
                                 <span className="flex-shrink-0 text-xs font-black text-blue-700 dark:text-blue-300 bg-blue-100 dark:bg-blue-900/40 px-2.5 py-1 rounded-full">
                                     {processingProgress.current}/{processingProgress.total}
@@ -259,6 +335,11 @@ export const Step3AI: React.FC<Props> = ({
                             style={{ width: `${Math.round((processingProgress.current / processingProgress.total) * 100)}%` }}
                         />
                     </div>
+                )}
+                {processingStartedAt && (
+                    <p className="mt-2 text-[11px] text-blue-500 dark:text-blue-400 text-center font-mono">
+                        ⏱ {formatDuration(elapsedMs)} transcurridos{etaMs != null ? ` · ~${formatDuration(etaMs)} restantes` : ''}
+                    </p>
                 )}
             </div>
         )}
@@ -354,6 +435,9 @@ export const Step3AI: React.FC<Props> = ({
             );
         })}
 
+        {!isProcessing && lastRunDurationMs != null && (
+            <p className="text-[11px] text-slate-400 text-center">Última corrida: {formatDuration(lastRunDurationMs)}</p>
+        )}
         <div className="flex gap-3" style={{ display: isProcessing ? 'none' : 'flex' }}>
             <button onClick={() => setStep(2)} className="flex-1 py-3 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 font-bold rounded-xl hover:bg-slate-50 dark:hover:bg-slate-800 transition-all">Atrás</button>
             <button
@@ -364,4 +448,5 @@ export const Step3AI: React.FC<Props> = ({
             </button>
         </div>
     </div>
-);
+    );
+};

@@ -96,6 +96,11 @@ export function useAmazonImporter() {
     // (AI processing, then attribute/duplicate validation) so Step 3 can show
     // a live "X de Y" count instead of a spinner with no sense of progress.
     const [processingProgress, setProcessingProgress] = useState<{ current: number; total: number } | null>(null);
+    // Wall-clock timing for the current/last run of any of the long-running
+    // loops (ASIN load, AI processing, attribute validation), so the UI can
+    // show a live ticking timer plus "última corrida: Xm Ys" afterward.
+    const [processingStartedAt, setProcessingStartedAt] = useState<number | null>(null);
+    const [lastRunDurationMs, setLastRunDurationMs] = useState<number | null>(null);
 
     // ── Step 4: Attributes & Validation ───────────────────────────────
     const [categoryAttributes, setCategoryAttributes] = useState<Record<string, any[]>>({});
@@ -144,6 +149,7 @@ export function useAmazonImporter() {
         }));
         setLoadedProducts(initial);
         setProcessingProgress({ current: 0, total: asins.length });
+        setProcessingStartedAt(Date.now());
 
         // Amazon's SP-API has real rate limits — firing every ASIN at once (a bare
         // Promise.all, no cap) got most of a large batch (300+) throttled. Worse,
@@ -209,6 +215,10 @@ export function useAmazonImporter() {
         })));
         setLoadingAsins(false);
         setProcessingProgress(null);
+        setProcessingStartedAt(prev => {
+            if (prev) setLastRunDurationMs(Date.now() - prev);
+            return null;
+        });
     };
 
     // Re-fetches just the price for one ASIN from Amazon and updates it in place.
@@ -258,89 +268,117 @@ export function useAmazonImporter() {
         setIsProcessing(true);
         setProcessingStage(`Procesando ${validProducts.length} productos...`);
         setProcessingProgress({ current: 0, total: validProducts.length });
+        setProcessingStartedAt(Date.now());
 
-        try {
-            // Process AI + category predictions in parallel — items don't finish in
-            // order, but each bump of the counter as one completes still gives an
-            // accurate, live "X de Y" instead of a spinner with no sense of progress.
-            const processedWithCategories = await Promise.all(validProducts.map(async (product) => {
-                console.log(`[Melidrop] Processing ${product.asin}: received ${product.images?.length ?? 0} images from Amazon`);
-                const processed = await aiImporterService.processProduct(product, marketplace, [], cleanImages);
-                console.log(`[Melidrop] ${product.asin}: aiImporterService returned ${processed.images?.length ?? 0} images`);
-                const mlPredictions = await meliService.predictCategory(
-                    processed.categorySuggestion.search_term, marketplace
-                );
-                setProcessingProgress(prev => prev ? { ...prev, current: prev.current + 1 } : prev);
+        // Same fix as Step 2's ASIN loader: a bare Promise.all fired every
+        // product's AI call (Claude) + ML category prediction simultaneously,
+        // with no concurrency cap and no per-item isolation — one product
+        // failing aborted AI processing for the ENTIRE batch, and at scale this
+        // would hammer Claude/ML's rate limits the same way Amazon's got
+        // hammered in Step 2. Bounded worker pool + per-item retry instead.
+        const CONCURRENCY = 5;
+        const results: Array<{ processed: any; mlPredictions: any } | null> = new Array(validProducts.length).fill(null);
+        let nextIndex = 0;
+        let completed = 0;
 
-                // Deduplicate images by Amazon image ID (between /images/I/ and first .)
-                const seenImageIds = new Set<string>();
-                const uniqueImages: typeof processed.images = [];
-                for (const img of processed.images) {
-                    // Extract unique ID: string between /images/I/ and first .
-                    const idMatch = img.url.match(/\/images\/I\/([^.]+)\./);
-                    const imageId = idMatch ? idMatch[1] : null;
+        const processOneWithRetry = async (product: LoadedProduct): Promise<{ processed: any; mlPredictions: any } | null> => {
+            const MAX_ATTEMPTS = 3;
+            for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+                try {
+                    const processed = await aiImporterService.processProduct(product, marketplace, [], cleanImages);
+                    const mlPredictions = await meliService.predictCategory(
+                        processed.categorySuggestion.search_term, marketplace
+                    );
 
-                    // Deduplicate by ID if available, otherwise by full URL
-                    const dedupeKey = imageId || img.url;
-
-                    if (!seenImageIds.has(dedupeKey)) {
-                        seenImageIds.add(dedupeKey);
-                        uniqueImages.push(img);
+                    // Deduplicate images by Amazon image ID (between /images/I/ and first .)
+                    const seenImageIds = new Set<string>();
+                    const uniqueImages: typeof processed.images = [];
+                    for (const img of processed.images) {
+                        const idMatch = img.url.match(/\/images\/I\/([^.]+)\./);
+                        const imageId = idMatch ? idMatch[1] : null;
+                        const dedupeKey = imageId || img.url;
+                        if (!seenImageIds.has(dedupeKey)) {
+                            seenImageIds.add(dedupeKey);
+                            uniqueImages.push(img);
+                        }
                     }
-                }
-                processed.images = uniqueImages.slice(0, 10);
-                console.log(`[Melidrop] ${product.asin}: after deduplication = ${processed.images?.length ?? 0} images`);
+                    processed.images = uniqueImages.slice(0, 10);
 
-                return { processed, mlPredictions };
-            }));
-
-            // Update state in batch
-            const mlCategoryMap: Record<string, any[]> = {};
-            const selectedCategoryMap: Record<string, { id: string; name: string }> = {};
-
-            for (const { processed, mlPredictions } of processedWithCategories) {
-                if (mlPredictions?.length > 0) {
-                    mlCategoryMap[processed.asin] = mlPredictions;
-                    const topPred = mlPredictions[0];
-                    selectedCategoryMap[processed.asin] = {
-                        id: topPred.category_id || topPred.id,
-                        name: topPred.category_name || topPred.domain_name
-                    };
+                    return { processed, mlPredictions };
+                } catch (e: any) {
+                    if (attempt === MAX_ATTEMPTS) {
+                        console.error(`[Melidrop] AI processing failed for ${product.asin} after ${MAX_ATTEMPTS} attempts:`, e.message);
+                        return null;
+                    }
+                    await new Promise(r => setTimeout(r, 800 * attempt));
                 }
             }
+            return null;
+        };
 
-            setMlCategorySearchResults(prev => ({ ...prev, ...mlCategoryMap }));
-            setSelectedCategories(prev => ({ ...prev, ...selectedCategoryMap }));
-
-            const results = processedWithCategories.map(({ processed }) => processed);
-
-            // Clean titles for all products in batch
-            const editedTitlesMap: Record<string, string> = {};
-            for (let i = 0; i < results.length; i++) {
-                const processed = results[i];
-                const product = validProducts[i];
-                let finalTitle = processed.optimizedTitle || product.title;
-                finalTitle = finalTitle
-                    .replace(/ni\s+os/gi, 'niños')
-                    .replace(/ni\s+as/gi, 'niñas');
-                if (product.brand) {
-                    const brandRegex = new RegExp(product.brand, 'gi');
-                    finalTitle = finalTitle.replace(brandRegex, '').replace(/\s\s+/g, ' ').trim();
-                }
-                finalTitle = finalTitle.replace(/^[\s\-–—,.:;|]+/, '').trim();
-                finalTitle = finalTitle.charAt(0).toUpperCase() + finalTitle.slice(1);
-                editedTitlesMap[processed.asin] = finalTitle;
+        const worker = async () => {
+            while (nextIndex < validProducts.length) {
+                const i = nextIndex++;
+                results[i] = await processOneWithRetry(validProducts[i]);
+                completed++;
+                setProcessingProgress(prev => prev ? { ...prev, current: completed } : prev);
             }
+        };
 
-            setEditedTitles(prev => ({ ...prev, ...editedTitlesMap }));
-            setProcessedProducts(results);
-            setIsProcessing(false);
-            setProcessingProgress(null);
-        } catch (err: any) {
-            console.error('[Melidrop] AI processing error:', err);
-            setIsProcessing(false);
-            setProcessingProgress(null);
+        await Promise.all(Array.from({ length: Math.min(CONCURRENCY, validProducts.length) }, () => worker()));
+
+        const processedWithCategories = results.filter((r): r is { processed: any; mlPredictions: any } => r !== null);
+        const failedCount = validProducts.length - processedWithCategories.length;
+        if (failedCount > 0) {
+            console.warn(`[Melidrop] ${failedCount} de ${validProducts.length} productos no se pudieron procesar con IA — revisa la consola para el detalle. Puedes volver al Paso 2 y reintentar.`);
         }
+
+        // Update state in batch
+        const mlCategoryMap: Record<string, any[]> = {};
+        const selectedCategoryMap: Record<string, { id: string; name: string }> = {};
+
+        for (const { processed, mlPredictions } of processedWithCategories) {
+            if (mlPredictions?.length > 0) {
+                mlCategoryMap[processed.asin] = mlPredictions;
+                const topPred = mlPredictions[0];
+                selectedCategoryMap[processed.asin] = {
+                    id: topPred.category_id || topPred.id,
+                    name: topPred.category_name || topPred.domain_name
+                };
+            }
+        }
+
+        setMlCategorySearchResults(prev => ({ ...prev, ...mlCategoryMap }));
+        setSelectedCategories(prev => ({ ...prev, ...selectedCategoryMap }));
+
+        const finalResults = processedWithCategories.map(({ processed }) => processed);
+
+        // Clean titles for all products in batch
+        const editedTitlesMap: Record<string, string> = {};
+        for (const processed of finalResults) {
+            const product = validProducts.find(p => p.asin === processed.asin);
+            if (!product) continue;
+            let finalTitle = processed.optimizedTitle || product.title;
+            finalTitle = finalTitle
+                .replace(/ni\s+os/gi, 'niños')
+                .replace(/ni\s+as/gi, 'niñas');
+            if (product.brand) {
+                const brandRegex = new RegExp(product.brand, 'gi');
+                finalTitle = finalTitle.replace(brandRegex, '').replace(/\s\s+/g, ' ').trim();
+            }
+            finalTitle = finalTitle.replace(/^[\s\-–—,.:;|]+/, '').trim();
+            finalTitle = finalTitle.charAt(0).toUpperCase() + finalTitle.slice(1);
+            editedTitlesMap[processed.asin] = finalTitle;
+        }
+
+        setEditedTitles(prev => ({ ...prev, ...editedTitlesMap }));
+        setProcessedProducts(finalResults);
+        setIsProcessing(false);
+        setProcessingProgress(null);
+        setProcessingStartedAt(prev => {
+            if (prev) setLastRunDurationMs(Date.now() - prev);
+            return null;
+        });
     };
 
     // ── Step 4 handler ─────────────────────────────────────────────────
@@ -354,6 +392,7 @@ export function useAmazonImporter() {
         setIsProcessing(true);
         setProcessingStage('Validando duplicados y palabras prohibidas...');
         setProcessingProgress({ current: 0, total: processedProducts.length });
+        setProcessingStartedAt(Date.now());
 
         const nextValidations: Record<string, any> = {};
         const nextStatus: Record<string, string> = {};
@@ -459,6 +498,10 @@ export function useAmazonImporter() {
         setUserAttributes(prev => ({ ...prev, ...nextUserAttrs }));
         setIsProcessing(false);
         setProcessingProgress(null);
+        setProcessingStartedAt(prev => {
+            if (prev) setLastRunDurationMs(Date.now() - prev);
+            return null;
+        });
         setStep(4);
     };
 
@@ -1309,6 +1352,8 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
         mlCategorySearchResults,
         processingStage,
         processingProgress,
+        processingStartedAt,
+        lastRunDurationMs,
         isProcessing,
         handleProcessWithAI,
         // Step 4
