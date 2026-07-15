@@ -65,6 +65,10 @@ export function Step4Attributes({
     const [categorySearchInput, setCategorySearchInput] = useState<Record<string, string>>({});
     const [searchingCategory, setSearchingCategory] = useState<Set<string>>(new Set());
     const [selectingCategory, setSelectingCategory] = useState<Set<string>>(new Set());
+    // Products with an already-assigned category still show a "Cambiar" button
+    // that opens the same search UI — this tracks which ones currently have it
+    // open. A product with no category yet is always effectively "open".
+    const [changingCategory, setChangingCategory] = useState<Set<string>>(new Set());
 
     const handleSearchCategory = async (asin: string, defaultTerm: string) => {
         const term = (categorySearchInput[asin] ?? defaultTerm).trim();
@@ -81,9 +85,18 @@ export function Step4Attributes({
         setSelectingCategory(prev => new Set(prev).add(asin));
         try {
             await selectCategoryForProduct(asin, catId, catName);
+            setChangingCategory(prev => { const next = new Set(prev); next.delete(asin); return next; });
         } finally {
             setSelectingCategory(prev => { const next = new Set(prev); next.delete(asin); return next; });
         }
+    };
+
+    const toggleChangeCategory = (asin: string) => {
+        setChangingCategory(prev => {
+            const next = new Set(prev);
+            if (next.has(asin)) next.delete(asin); else next.add(asin);
+            return next;
+        });
     };
 
     return (
@@ -154,10 +167,24 @@ export function Step4Attributes({
                         )}
 
                         {/* Required Attributes */}
-                        <div className="p-4">
-                            {!hasCategory ? (
+                        <div className="p-4 space-y-3">
+                            {(!hasCategory || changingCategory.has(processed.asin)) ? (
                                 <div className="space-y-3">
-                                    <p className="text-sm text-amber-600 dark:text-amber-400 font-bold">Sin categoría asignada — búscala aquí, sin salir de este paso:</p>
+                                    {hasCategory ? (
+                                        <div className="flex items-center justify-between gap-2">
+                                            <p className="text-xs text-slate-500">
+                                                Categoría actual: <span className="font-bold text-slate-700 dark:text-slate-300">{selectedCategories[processed.asin]?.name}</span>
+                                            </p>
+                                            <button
+                                                onClick={() => toggleChangeCategory(processed.asin)}
+                                                className="flex-shrink-0 text-[11px] font-bold text-slate-400 hover:text-slate-600 dark:hover:text-slate-300"
+                                            >
+                                                Cancelar
+                                            </button>
+                                        </div>
+                                    ) : (
+                                        <p className="text-sm text-amber-600 dark:text-amber-400 font-bold">Sin categoría asignada — búscala aquí, sin salir de este paso:</p>
+                                    )}
                                     <div className="flex gap-2">
                                         <input
                                             type="text"
@@ -185,7 +212,7 @@ export function Step4Attributes({
                                                     key={cat.category_id || cat.id}
                                                     onClick={() => handleSelectCategory(processed.asin, cat.category_id || cat.id, cat.category_name || cat.domain_name)}
                                                     disabled={selectingCategory.has(processed.asin)}
-                                                    className="text-[11px] font-bold px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-400 hover:border-primary hover:text-primary transition-all disabled:opacity-50"
+                                                    className={`text-[11px] font-bold px-2.5 py-1.5 rounded-lg border transition-all disabled:opacity-50 ${selectedCategories[processed.asin]?.id === (cat.category_id || cat.id) ? 'bg-primary text-white border-primary' : 'bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-400 border-slate-200 dark:border-slate-700 hover:border-primary hover:text-primary'}`}
                                                 >
                                                     {selectingCategory.has(processed.asin) ? 'Asignando...' : (cat.category_name || cat.domain_name)}
                                                 </button>
@@ -196,45 +223,63 @@ export function Step4Attributes({
                                         <p className="text-xs text-slate-400 italic">Sin resultados — intenta con otro término de búsqueda.</p>
                                     )}
                                 </div>
-                            ) : attrs.length === 0 ? (
-                                <p className="text-sm text-slate-400 italic">No se encontraron atributos requeridos para esta categoría.</p>
                             ) : (
-                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                                    {/* categoryAttributes is already capped upstream (pickRelevantAttributes,
-                                        required-first) — capping again here risked cutting off a required
-                                        field the blocking check upstream could still see and flag, with no
-                                        way to fix it in the form (that's what this was hiding). */}
-                                    {attrs.map((attr: any) => {
-                                        const isRequired = attr.tags?.required || attr.tags?.new_required || attr.tags?.conditional_required;
-                                        const isEmpty = !userAttrs[attr.id]?.toString().trim();
-                                        return (
-                                        <div key={attr.id}>
-                                            <label className="text-[10px] font-black text-slate-500 uppercase tracking-wider">
-                                                {attr.name} {isRequired && <span className="text-red-500">*</span>}
-                                            </label>
-                                            {attr.values && attr.values.length > 0 ? (
-                                                <select
-                                                    value={userAttrs[attr.id] || ''}
-                                                    onChange={e => setUserAttributes(prev => ({ ...prev, [processed.asin]: { ...prev[processed.asin], [attr.id]: e.target.value } }))}
-                                                    className={`mt-1 w-full px-2 py-1.5 border rounded-lg text-xs bg-white dark:bg-slate-900 dark:text-white focus:ring-1 focus:ring-primary ${isRequired && isEmpty ? 'border-red-400 dark:border-red-600' : 'border-slate-300 dark:border-slate-600'}`}
-                                                >
-                                                    <option value="">Seleccionar...</option>
-                                                    {attr.values.slice(0, 20).map((v: any) => (
-                                                        <option key={v.id} value={v.name}>{v.name}</option>
-                                                    ))}
-                                                </select>
-                                            ) : (
-                                                <input
-                                                    type="text"
-                                                    value={userAttrs[attr.id] || ''}
-                                                    onChange={e => setUserAttributes(prev => ({ ...prev, [processed.asin]: { ...prev[processed.asin], [attr.id]: e.target.value } }))}
-                                                    placeholder={attr.hint || `Ingresa ${attr.name}`}
-                                                    className={`mt-1 w-full px-2 py-1.5 border rounded-lg text-xs bg-white dark:bg-slate-900 dark:text-white focus:ring-1 focus:ring-primary ${isRequired && isEmpty ? 'border-red-400 dark:border-red-600' : 'border-slate-300 dark:border-slate-600'}`}
-                                                />
-                                            )}
-                                        </div>
-                                    )})}
+                                <div className="flex items-center justify-between gap-2">
+                                    <div className="min-w-0">
+                                        <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Categoría MercadoLibre</label>
+                                        <p className="text-sm font-bold text-slate-900 dark:text-white truncate">{selectedCategories[processed.asin]?.name}</p>
+                                    </div>
+                                    <button
+                                        onClick={() => toggleChangeCategory(processed.asin)}
+                                        title="Elegir una categoría distinta para este producto"
+                                        className="flex-shrink-0 text-[11px] font-black text-primary hover:underline flex items-center gap-1"
+                                    >
+                                        <span className="material-symbols-outlined text-[14px]">sync_alt</span>Cambiar
+                                    </button>
                                 </div>
+                            )}
+
+                            {hasCategory && !changingCategory.has(processed.asin) && (
+                                attrs.length === 0 ? (
+                                    <p className="text-sm text-slate-400 italic">No se encontraron atributos requeridos para esta categoría.</p>
+                                ) : (
+                                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                        {/* categoryAttributes is already capped upstream (pickRelevantAttributes,
+                                            required-first) — capping again here risked cutting off a required
+                                            field the blocking check upstream could still see and flag, with no
+                                            way to fix it in the form (that's what this was hiding). */}
+                                        {attrs.map((attr: any) => {
+                                            const isRequired = attr.tags?.required || attr.tags?.new_required || attr.tags?.conditional_required;
+                                            const isEmpty = !userAttrs[attr.id]?.toString().trim();
+                                            return (
+                                            <div key={attr.id}>
+                                                <label className="text-[10px] font-black text-slate-500 uppercase tracking-wider">
+                                                    {attr.name} {isRequired && <span className="text-red-500">*</span>}
+                                                </label>
+                                                {attr.values && attr.values.length > 0 ? (
+                                                    <select
+                                                        value={userAttrs[attr.id] || ''}
+                                                        onChange={e => setUserAttributes(prev => ({ ...prev, [processed.asin]: { ...prev[processed.asin], [attr.id]: e.target.value } }))}
+                                                        className={`mt-1 w-full px-2 py-1.5 border rounded-lg text-xs bg-white dark:bg-slate-900 dark:text-white focus:ring-1 focus:ring-primary ${isRequired && isEmpty ? 'border-red-400 dark:border-red-600' : 'border-slate-300 dark:border-slate-600'}`}
+                                                    >
+                                                        <option value="">Seleccionar...</option>
+                                                        {attr.values.slice(0, 20).map((v: any) => (
+                                                            <option key={v.id} value={v.name}>{v.name}</option>
+                                                        ))}
+                                                    </select>
+                                                ) : (
+                                                    <input
+                                                        type="text"
+                                                        value={userAttrs[attr.id] || ''}
+                                                        onChange={e => setUserAttributes(prev => ({ ...prev, [processed.asin]: { ...prev[processed.asin], [attr.id]: e.target.value } }))}
+                                                        placeholder={attr.hint || `Ingresa ${attr.name}`}
+                                                        className={`mt-1 w-full px-2 py-1.5 border rounded-lg text-xs bg-white dark:bg-slate-900 dark:text-white focus:ring-1 focus:ring-primary ${isRequired && isEmpty ? 'border-red-400 dark:border-red-600' : 'border-slate-300 dark:border-slate-600'}`}
+                                                    />
+                                                )}
+                                            </div>
+                                        )})}
+                                    </div>
+                                )
                             )}
                         </div>
                     </div>

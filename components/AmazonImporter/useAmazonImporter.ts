@@ -544,7 +544,15 @@ export function useAmazonImporter() {
             const attrs = await meliService.getCategoryAttributes(categoryId);
             const relevant = pickRelevantAttributes(attrs, 40);
             setCategoryAttributes(prev => ({ ...prev, [asin]: relevant }));
-            if (relevant.length === 0) return;
+            if (relevant.length === 0) { setUserAttributes(prev => ({ ...prev, [asin]: {} })); return; }
+
+            // This isn't only "assign for the first time" anymore — the user can
+            // switch an already-categorized product to a totally different one, so
+            // prev[asin] may hold values keyed by the OLD category's attribute ids.
+            // buildItemPayload sends whatever's in userAttributes without checking
+            // it against the current category, so an unrelated id riding along
+            // isn't just inert — keep only values whose id still means something here.
+            const relevantIds = new Set(relevant.map((a: any) => a.id));
 
             const seed: Record<string, string> = {};
             const brandAttr = relevant.find((a: any) => a.id === 'BRAND' || a.id === 'MARCA');
@@ -572,9 +580,15 @@ export function useAmazonImporter() {
                         }
                     });
                 }
-                setUserAttributes(prev => ({ ...prev, [asin]: { ...defaultAttrs, ...(prev[asin] || {}) } }));
+                setUserAttributes(prev => {
+                    const kept = Object.fromEntries(Object.entries(prev[asin] || {}).filter(([id]) => relevantIds.has(id)));
+                    return { ...prev, [asin]: { ...defaultAttrs, ...kept } };
+                });
             } else {
-                setUserAttributes(prev => ({ ...prev, [asin]: { ...seed, ...(prev[asin] || {}) } }));
+                setUserAttributes(prev => {
+                    const kept = Object.fromEntries(Object.entries(prev[asin] || {}).filter(([id]) => relevantIds.has(id)));
+                    return { ...prev, [asin]: { ...seed, ...kept } };
+                });
             }
         } catch (e) {
             console.error(`[Melidrop] Failed to load attributes for ${asin} after manual category selection:`, e);
