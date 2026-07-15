@@ -19,6 +19,9 @@ export function Step4Attributes({
     setUserAttributes,
     editedTitles,
     selectedCategories,
+    mlCategorySearchResults,
+    searchCategoryForProduct,
+    selectCategoryForProduct,
     getBlockingIssues,
     refetchProductPrice,
     removeProduct,
@@ -54,6 +57,33 @@ export function Step4Attributes({
     const handleRemoveProduct = (asin: string, title: string) => {
         if (!confirm(`¿Eliminar "${title}" (${asin}) de esta importación?\n\nNo se publicará nada — simplemente se quita de este lote. Puedes volver a importarlo después si cambias de opinión.`)) return;
         removeProduct(asin);
+    };
+
+    // Fixing "sin categoría" used to mean going back to Step 3, which re-runs
+    // handleLoadAttributes for the WHOLE batch and discards every other
+    // product's already-checked state just to fix one. This does it in place.
+    const [categorySearchInput, setCategorySearchInput] = useState<Record<string, string>>({});
+    const [searchingCategory, setSearchingCategory] = useState<Set<string>>(new Set());
+    const [selectingCategory, setSelectingCategory] = useState<Set<string>>(new Set());
+
+    const handleSearchCategory = async (asin: string, defaultTerm: string) => {
+        const term = (categorySearchInput[asin] ?? defaultTerm).trim();
+        if (!term) return;
+        setSearchingCategory(prev => new Set(prev).add(asin));
+        try {
+            await searchCategoryForProduct(asin, term);
+        } finally {
+            setSearchingCategory(prev => { const next = new Set(prev); next.delete(asin); return next; });
+        }
+    };
+
+    const handleSelectCategory = async (asin: string, catId: string, catName: string) => {
+        setSelectingCategory(prev => new Set(prev).add(asin));
+        try {
+            await selectCategoryForProduct(asin, catId, catName);
+        } finally {
+            setSelectingCategory(prev => { const next = new Set(prev); next.delete(asin); return next; });
+        }
     };
 
     return (
@@ -126,7 +156,46 @@ export function Step4Attributes({
                         {/* Required Attributes */}
                         <div className="p-4">
                             {!hasCategory ? (
-                                <p className="text-sm text-amber-600 dark:text-amber-400 font-bold">Sin categoría asignada — vuelve al Paso 3 y selecciona una.</p>
+                                <div className="space-y-3">
+                                    <p className="text-sm text-amber-600 dark:text-amber-400 font-bold">Sin categoría asignada — búscala aquí, sin salir de este paso:</p>
+                                    <div className="flex gap-2">
+                                        <input
+                                            type="text"
+                                            value={categorySearchInput[processed.asin] ?? editedTitles[processed.asin] ?? ''}
+                                            onChange={e => setCategorySearchInput(prev => ({ ...prev, [processed.asin]: e.target.value }))}
+                                            onKeyDown={e => { if (e.key === 'Enter') handleSearchCategory(processed.asin, editedTitles[processed.asin] || processed.asin); }}
+                                            placeholder="Buscar categoría de MercadoLibre..."
+                                            className="flex-1 px-3 py-2 border border-slate-300 dark:border-slate-600 rounded-lg text-sm bg-white dark:bg-slate-900 dark:text-white focus:ring-2 focus:ring-primary focus:border-transparent"
+                                        />
+                                        <button
+                                            onClick={() => handleSearchCategory(processed.asin, editedTitles[processed.asin] || processed.asin)}
+                                            disabled={searchingCategory.has(processed.asin)}
+                                            className="px-4 py-2 bg-slate-900 dark:bg-white dark:text-slate-900 text-white font-bold rounded-lg text-xs disabled:opacity-50 flex items-center gap-1.5 flex-shrink-0"
+                                        >
+                                            {searchingCategory.has(processed.asin)
+                                                ? <span className="w-3.5 h-3.5 rounded-full border-2 border-white/30 dark:border-slate-400 border-t-white dark:border-t-slate-900 animate-spin" />
+                                                : <span className="material-symbols-outlined text-[16px]">search</span>}
+                                            Buscar
+                                        </button>
+                                    </div>
+                                    {(mlCategorySearchResults[processed.asin]?.length ?? 0) > 0 && (
+                                        <div className="flex flex-wrap gap-1.5">
+                                            {mlCategorySearchResults[processed.asin].slice(0, 8).map((cat: any) => (
+                                                <button
+                                                    key={cat.category_id || cat.id}
+                                                    onClick={() => handleSelectCategory(processed.asin, cat.category_id || cat.id, cat.category_name || cat.domain_name)}
+                                                    disabled={selectingCategory.has(processed.asin)}
+                                                    className="text-[11px] font-bold px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-400 hover:border-primary hover:text-primary transition-all disabled:opacity-50"
+                                                >
+                                                    {selectingCategory.has(processed.asin) ? 'Asignando...' : (cat.category_name || cat.domain_name)}
+                                                </button>
+                                            ))}
+                                        </div>
+                                    )}
+                                    {mlCategorySearchResults[processed.asin]?.length === 0 && (
+                                        <p className="text-xs text-slate-400 italic">Sin resultados — intenta con otro término de búsqueda.</p>
+                                    )}
+                                </div>
                             ) : attrs.length === 0 ? (
                                 <p className="text-sm text-slate-400 italic">No se encontraron atributos requeridos para esta categoría.</p>
                             ) : (

@@ -395,6 +395,77 @@ export function useAmazonImporter() {
         setStep(4);
     };
 
+    // Lets Step 4 recover from "sin categoría asignada" in place — going back to
+    // Step 3 would re-run handleLoadAttributes for the WHOLE batch, discarding
+    // every other product's already-checked duplicate/attribute state just to
+    // fix one. Reuses mlCategorySearchResults, the same state Step 3's category
+    // buttons read from, so the existing UI pattern works unmodified here too.
+    const searchCategoryForProduct = async (asin: string, searchTerm: string) => {
+        if (!searchTerm.trim()) return;
+        const predictions = await meliService.predictCategory(searchTerm.trim(), marketplace);
+        setMlCategorySearchResults(prev => ({ ...prev, [asin]: predictions }));
+    };
+
+    // Assigns a category to ONE product and loads its attributes — the single-item
+    // equivalent of what handleLoadAttributes does for the whole batch, so nothing
+    // else already validated on this screen gets touched.
+    const selectCategoryForProduct = async (asin: string, categoryId: string, categoryName: string) => {
+        setSelectedCategories(prev => ({ ...prev, [asin]: { id: categoryId, name: categoryName } }));
+
+        const processed = processedProducts.find(p => p.asin === asin);
+        const product = loadedProducts.find(p => p.asin === asin);
+        if (!product) return;
+
+        try {
+            const attrs = await meliService.getCategoryAttributes(categoryId);
+            const relevant = attrs
+                .filter((a: any) =>
+                    a.tags?.required || a.tags?.new_required ||
+                    (!a.tags?.read_only && a.relevance >= 1)
+                )
+                .slice(0, 40);
+            setCategoryAttributes(prev => ({ ...prev, [asin]: relevant }));
+            if (relevant.length === 0) return;
+
+            const seed: Record<string, string> = {};
+            const brandAttr = relevant.find((a: any) => a.id === 'BRAND' || a.id === 'MARCA');
+            if (brandAttr && product.brand && !['unknown', 'n/a', ''].includes(product.brand.toLowerCase())) {
+                seed[brandAttr.id] = product.brand;
+            }
+            const conditionAttr = relevant.find((a: any) => a.id === 'ITEM_CONDITION');
+            if (conditionAttr) seed['ITEM_CONDITION'] = 'Nuevo';
+
+            const amazonAttrs = product.attributes || {};
+            const barcode = amazonAttrs.item_barcode?.[0]?.value || amazonAttrs.ean?.[0]?.value;
+            const codeAttrOptions = relevant.filter((a: any) =>
+                a.id === 'EAN' || a.id === 'UPC' || a.id === 'GTIN' ||
+                a.id === 'ITEM_BARCODE' || a.id === 'UNIVERSAL_CODE' ||
+                a.id.includes('CODE') || a.id.includes('BARCODE')
+            );
+            if (barcode && codeAttrOptions.length > 0) seed[codeAttrOptions[0].id] = barcode;
+
+            if (processed) {
+                const aiMapped = await aiImporterService.mapAttributes(
+                    product.title, product.description || '', product.attributes || {}, relevant
+                );
+                const defaultAttrs: Record<string, string> = { ...seed };
+                if (Array.isArray(aiMapped)) {
+                    aiMapped.forEach((ma: any) => {
+                        if (ma.id && ma.value_name &&
+                            !['genérico', 'generic', 'n/a', 'no aplica', 'unknown'].includes(ma.value_name.toLowerCase())) {
+                            defaultAttrs[ma.id] = ma.value_name;
+                        }
+                    });
+                }
+                setUserAttributes(prev => ({ ...prev, [asin]: { ...defaultAttrs, ...(prev[asin] || {}) } }));
+            } else {
+                setUserAttributes(prev => ({ ...prev, [asin]: { ...seed, ...(prev[asin] || {}) } }));
+            }
+        } catch (e) {
+            console.error(`[Melidrop] Failed to load attributes for ${asin} after manual category selection:`, e);
+        }
+    };
+
     // ── Pricing helpers ────────────────────────────────────────────────
     const calculateMexicoPrice = (cost: number, currency: string): number => {
         const isUSD = (currency?.toUpperCase() ?? 'USD') !== 'MXN';
@@ -1130,6 +1201,8 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
         userAttributes, setUserAttributes,
         validationResults,
         handleLoadAttributes,
+        searchCategoryForProduct,
+        selectCategoryForProduct,
         // Step 5
         publishingStatus,
         publishResults,
