@@ -981,35 +981,71 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
         });
     };
 
-    // Uploads one product image to ML, retrying transient failures automatically.
-    // "Ocurrió un error procesando la foto" on a source-based upload is usually
-    // ML's server timing out fetching the image from Amazon's CDN — a one-off
-    // network hiccup, not a real problem with the image (confirmed by users
-    // seeing it succeed on a bare retry with the exact same image/URL). Retrying
-    // here does automatically what they were already doing by hand.
-    const uploadProductImage = async (img: { url: string; cleanedUrl?: string }, token?: string): Promise<string | null> => {
-        const attemptUpload = async (): Promise<string | null> => {
-            if (img.cleanedUrl) {
-                return meliService.uploadImageBinary(img.cleanedUrl, token);
+    // Fetches an image ourselves and returns it as a data: URL, so we can upload
+    // the bytes directly instead of asking ML to fetch the URL itself.
+    const fetchImageAsBase64 = async (url: string): Promise<string | null> => {
+        try {
+            const res = await fetch(url);
+            if (!res.ok) return null;
+            const blob = await res.blob();
+            return await new Promise<string>((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onloadend = () => resolve(reader.result as string);
+                reader.onerror = reject;
+                reader.readAsDataURL(blob);
+            });
+        } catch (e) {
+            console.warn(`[Melidrop] fetchImageAsBase64 failed for ${url}:`, e);
+            return null;
+        }
+    };
+
+    const retryUpload = async (fn: () => Promise<string | null>, attempts: number, label: string, urlForLog: string): Promise<string | null> => {
+        for (let attempt = 1; attempt <= attempts; attempt++) {
+            const id = await fn();
+            if (id) return id;
+            if (attempt < attempts) {
+                console.warn(`[Melidrop] ${label} attempt ${attempt}/${attempts} failed for ${urlForLog}, retrying...`);
+                await new Promise(r => setTimeout(r, 1000 * attempt));
             }
-            const fullUrl = normalizeAmazonImageUrl(img.url);
+        }
+        return null;
+    };
+
+    // Uploads one product image to ML. "Ocurrió un error procesando la foto" on
+    // the normal (source-URL) path is ML's own server timing out fetching the
+    // image from Amazon's CDN — a hop we don't control. A handful of users saw
+    // it take up to 6 manual retries in a row to get through, meaning a short
+    // same-strategy retry isn't always enough. So past the first few attempts
+    // this switches strategy entirely: fetch the image ourselves (client-side)
+    // and upload the bytes directly, removing ML's Amazon-fetch step from the
+    // equation rather than just hoping the same thing works on attempt N+1.
+    const uploadProductImage = async (img: { url: string; cleanedUrl?: string }, token?: string): Promise<string | null> => {
+        if (img.cleanedUrl) {
+            const id = await retryUpload(() => meliService.uploadImageBinary(img.cleanedUrl!, token), 4, 'cleaned-image upload', img.url);
+            if (!id) console.error(`[Melidrop] Cleaned-image upload failed after all attempts: ${img.url}`);
+            return id;
+        }
+
+        const fullUrl = normalizeAmazonImageUrl(img.url);
+
+        const uploadNormal = async (): Promise<string | null> => {
             const resizedUrl = await resizeImageIfNeeded(fullUrl);
             return resizedUrl.startsWith('data:')
                 ? meliService.uploadImageBinary(resizedUrl, token)
                 : meliService.uploadImage(resizedUrl, token);
         };
+        let id = await retryUpload(uploadNormal, 3, 'image upload', img.url);
+        if (id) return id;
 
-        const MAX_ATTEMPTS = 3;
-        for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-            const id = await attemptUpload();
-            if (id) return id;
-            if (attempt < MAX_ATTEMPTS) {
-                console.warn(`[Melidrop] Image upload attempt ${attempt}/${MAX_ATTEMPTS} failed for ${img.url}, retrying...`);
-                await new Promise(r => setTimeout(r, 700 * attempt));
-            }
-        }
-        console.error(`[Melidrop] Image upload failed after ${MAX_ATTEMPTS} attempts: ${img.url}`);
-        return null;
+        console.warn(`[Melidrop] Normal upload path exhausted for ${img.url} — switching to direct binary fetch...`);
+        const uploadViaDirectFetch = async (): Promise<string | null> => {
+            const dataUrl = await fetchImageAsBase64(fullUrl);
+            return dataUrl ? meliService.uploadImageBinary(dataUrl, token) : null;
+        };
+        id = await retryUpload(uploadViaDirectFetch, 3, 'direct-fetch upload', img.url);
+        if (!id) console.error(`[Melidrop] Image upload failed after all attempts (normal + direct-fetch): ${img.url}`);
+        return id;
     };
 
     const handlePublish = async (asin: string, isDraft = false) => {
