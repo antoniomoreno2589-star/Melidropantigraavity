@@ -589,6 +589,16 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
         const processed = processedProducts.find(p => p.asin === asin);
         if (!processed) return;
 
+        // Hard lock #1: already published to sandbox this session. The ML catalog
+        // search used further down as a fallback check can lag a few seconds
+        // behind a fresh publish, so a same-session repeat click (e.g. retrying
+        // "fallidos" before realizing this one already succeeded) could slip
+        // past it — this in-memory check is instant and always current.
+        if (dryRunResults[asin]?.testMeliId) {
+            console.warn(`[Melidrop] ${asin} already published to sandbox this session (${dryRunResults[asin].testMeliId}), skipping`);
+            return;
+        }
+
         const blockingIssues = getBlockingIssues(asin);
         if (blockingIssues.length > 0) {
             setDryRunResults(prev => ({ ...prev, [asin]: { dryError: `No se puede probar:\n• ${blockingIssues.join('\n• ')}` } }));
@@ -597,6 +607,32 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
 
         setPublishingStatus(prev => ({ ...prev, [asin]: 'loading' }));
         try {
+            // Hard lock #2: already published in a PREVIOUS session (survives page
+            // reloads). This is our own database write from the moment the sandbox
+            // publish succeeded, so — unlike ML's search index — there's no lag.
+            const { data: { user: currentUser } } = await supabase.auth.getUser();
+            if (currentUser) {
+                const { data: existingRow } = await supabase
+                    .from('test_products')
+                    .select('meli_id')
+                    .eq('user_id', currentUser.id)
+                    .eq('asin', asin)
+                    .maybeSingle();
+                if (existingRow?.meli_id) {
+                    console.warn(`[Melidrop] ${asin} already in test_products (${existingRow.meli_id}), skipping re-publish`);
+                    setDryRunResults(prev => ({
+                        ...prev,
+                        [asin]: {
+                            testMeliId: existingRow.meli_id,
+                            testPublish: { id: existingRow.meli_id, alreadyPublished: true },
+                            hasTestUser: !!testUserCreds?.access_token,
+                        }
+                    }));
+                    setPublishingStatus(prev => ({ ...prev, [asin]: 'idle' }));
+                    return;
+                }
+            }
+
             const payload = buildItemPayload(processed, true);
             const validation = await meliService.validateItem(payload);
 

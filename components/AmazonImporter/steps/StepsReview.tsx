@@ -236,11 +236,19 @@ export function Step5Publish({
         });
     };
 
+    // Mirrors the individual row checkbox's disabled condition — already
+    // real-published and skipped (duplicate/forbidden-word) products can't be
+    // selected here either. Sandbox-tested-only items stay selectable, since
+    // "probar" then "publicar real" on the same item is a legitimate flow.
+    const selectableAsins = processedProducts
+        .filter(p => !validationResults[p.asin]?.isSkipped && !publishResults[p.asin]?.id)
+        .map(p => p.asin);
+
     const toggleSelectAll = () => {
-        if (selectedAsins.size === processedProducts.length) {
+        if (selectedAsins.size === selectableAsins.length && selectableAsins.length > 0) {
             setSelectedAsins(new Set());
         } else {
-            setSelectedAsins(new Set(processedProducts.map(p => p.asin)));
+            setSelectedAsins(new Set(selectableAsins));
         }
     };
 
@@ -346,9 +354,10 @@ export function Step5Publish({
                     <div className="flex items-center gap-3 px-4 py-3 bg-slate-50 dark:bg-slate-900/50 rounded-lg border border-slate-200 dark:border-slate-700">
                         <input
                             type="checkbox"
-                            checked={selectedAsins.size > 0 && selectedAsins.size === processedProducts.length}
+                            checked={selectedAsins.size > 0 && selectedAsins.size === selectableAsins.length}
                             onChange={toggleSelectAll}
-                            className="w-5 h-5 rounded border-slate-300 dark:border-slate-600 cursor-pointer"
+                            disabled={selectableAsins.length === 0}
+                            className="w-5 h-5 rounded border-slate-300 dark:border-slate-600 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
                         />
                         <div className="flex-1 grid grid-cols-4 gap-4">
                             <div className="text-[10px] font-black text-slate-600 dark:text-slate-400 uppercase tracking-wider">Producto</div>
@@ -366,6 +375,40 @@ export function Step5Publish({
                         const val = validationResults[processed.asin];
                         const isSelected = selectedAsins.has(processed.asin);
 
+                        // Single source of truth for the row's status badge — every
+                        // branch renders something, so this cell is never blank (the
+                        // old version fell through to nothing once a sandbox dry-run
+                        // finished, since publishingStatus became 'idle', which matched
+                        // none of the 4 hardcoded conditions — that's what made a
+                        // successful sandbox test look identical to "nothing happened"
+                        // and led to the same product being re-published repeatedly).
+                        //
+                        // Only a REAL publish locks the row — "probar sandbox" then
+                        // "publicar real" is a legitimate two-step flow on the same
+                        // item, so a successful sandbox test must stay selectable.
+                        // Re-testing an already-sandboxed item is separately made a
+                        // safe no-op inside handleDryRun itself, so nothing bad
+                        // happens even if it does get re-selected and re-run.
+                        const isLocked = !!result?.id;
+                        let badge: { label: string; icon: string; cls: string };
+                        if (result?.id) {
+                            badge = { label: 'Publicado (real)', icon: 'check_circle', cls: 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300' };
+                        } else if (result?.error) {
+                            badge = { label: 'Error al publicar', icon: 'error', cls: 'bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300' };
+                        } else if (status === 'loading') {
+                            badge = { label: 'Procesando...', icon: '', cls: 'bg-slate-100 dark:bg-slate-900 text-slate-600 dark:text-slate-400' };
+                        } else if (dry?.testMeliId) {
+                            badge = { label: 'Probado en sandbox ✓', icon: 'check_circle', cls: 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300' };
+                        } else if (dry?.dryError) {
+                            badge = { label: 'Error en sandbox', icon: 'warning', cls: 'bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400' };
+                        } else if (val?.isSkipped) {
+                            badge = { label: 'Descartado', icon: 'block', cls: 'bg-slate-100 dark:bg-slate-900 text-slate-500 dark:text-slate-400' };
+                        } else if (dry && !dry.testMeliId && !dry.dryError) {
+                            badge = { label: 'En catálogo local', icon: 'check_circle', cls: 'bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300' };
+                        } else {
+                            badge = { label: 'Pendiente', icon: '', cls: 'bg-slate-100 dark:bg-slate-900 text-slate-600 dark:text-slate-400' };
+                        }
+
                         return (
                             <div key={processed.asin}>
                                 <div className="flex items-center gap-3 px-4 py-3 border border-slate-200 dark:border-slate-700 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-900/30 transition-colors">
@@ -373,7 +416,8 @@ export function Step5Publish({
                                         type="checkbox"
                                         checked={isSelected}
                                         onChange={() => toggleSelection(processed.asin)}
-                                        disabled={val?.isSkipped}
+                                        disabled={val?.isSkipped || isLocked}
+                                        title={isLocked ? 'Ya se publicó — no se puede volver a seleccionar' : undefined}
                                         className="w-5 h-5 rounded border-slate-300 dark:border-slate-600 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
                                     />
                                     <div className="flex-1 grid grid-cols-4 gap-4 items-center">
@@ -382,18 +426,15 @@ export function Step5Publish({
                                         </div>
                                         <div className="text-xs font-mono text-slate-500">{processed.asin}</div>
                                         <div>
-                                            {status === 'success' && <span className="inline-flex items-center gap-1 bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300 text-[10px] font-black px-2 py-1 rounded-full">
-                                                <span className="material-symbols-outlined text-[12px]">check_circle</span> Publicado
-                                            </span>}
-                                            {status === 'loading' && <span className="inline-flex items-center gap-1 text-slate-600 dark:text-slate-400 text-[10px] font-black">
-                                                <span className="w-3 h-3 rounded-full border-2 border-slate-400 border-t-slate-700 animate-spin" /> Publicando
-                                            </span>}
-                                            {status === 'error' && <span className="inline-flex items-center gap-1 bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300 text-[10px] font-black px-2 py-1 rounded-full">
-                                                <span className="material-symbols-outlined text-[12px]">error</span> Error
-                                            </span>}
-                                            {!status && <span className="inline-flex items-center gap-1 bg-slate-100 dark:bg-slate-900 text-slate-600 dark:text-slate-400 text-[10px] font-bold px-2 py-1 rounded-full">
-                                                {val?.isSkipped ? '🚫 Descartado' : 'Pendiente'}
-                                            </span>}
+                                            <span className={`inline-flex items-center gap-1 text-[10px] font-black px-2 py-1 rounded-full ${badge.cls}`}>
+                                                {status === 'loading' ? (
+                                                    <span className="w-3 h-3 rounded-full border-2 border-slate-400 border-t-slate-700 animate-spin" />
+                                                ) : badge.icon ? (
+                                                    <span className="material-symbols-outlined text-[12px]">{badge.icon}</span>
+                                                ) : null}
+                                                {isLocked && <span className="material-symbols-outlined text-[12px]">lock</span>}
+                                                {badge.label}
+                                            </span>
                                         </div>
                                         <div>
                                             {result?.id && (
@@ -402,15 +443,8 @@ export function Step5Publish({
                                                     <span className="material-symbols-outlined text-[12px]">open_in_new</span> ML-{result.id}
                                                 </a>
                                             )}
-                                            {result?.error && <span className="text-[10px] text-red-600 dark:text-red-400 font-bold">❌ Error</span>}
-                                            {dry && !result?.id && dry.testMeliId && (
-                                                <span className="text-[10px] text-green-600 dark:text-green-400 font-bold">✓ Probado (sandbox)</span>
-                                            )}
-                                            {dry && !result?.id && !dry.testMeliId && !dry.dryError && (
-                                                <span className="text-[10px] text-blue-600 dark:text-blue-400 font-bold">✓ En catálogo local</span>
-                                            )}
-                                            {dry?.dryError && (
-                                                <span className="text-[10px] text-amber-600 dark:text-amber-400 font-bold">⚠️ Error sandbox</span>
+                                            {!result?.id && dry?.testMeliId && (
+                                                <span className="text-xs text-slate-500 font-mono">Sandbox ID: {dry.testMeliId}</span>
                                             )}
                                         </div>
                                     </div>
