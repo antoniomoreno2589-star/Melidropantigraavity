@@ -327,6 +327,30 @@ export function Step5Publish({
 
     const selectFailed = () => setSelectedAsins(new Set(failedAsins));
 
+    const [copiedFailed, setCopiedFailed] = useState(false);
+    const handleCopyFailed = async () => {
+        const list = failedAsins.join('\n');
+        try {
+            await navigator.clipboard.writeText(list);
+            setCopiedFailed(true);
+            setTimeout(() => setCopiedFailed(false), 2000);
+        } catch {
+            // Clipboard API blocked (permissions/context) — fall back to a
+            // visible, selectable prompt so the list is never just lost.
+            window.prompt('Copia la lista (Ctrl+C):', list);
+        }
+    };
+
+    // Sends the failed ASINs back to Step 2 as a brand-new import — for when
+    // "Seleccionar fallidos" + retry-in-place isn't enough (e.g. the failure
+    // looks like it needs fresh Amazon data or a fresh AI pass, not just
+    // another attempt with the same processed state).
+    const handleRetryFailedAsNewImport = () => {
+        if (failedAsins.length === 0) return;
+        setAsinInput(failedAsins.join('\n'));
+        setStep(2);
+    };
+
     const handleBulkDryRun = async () => {
         if (selectedAsins.size === 0) return;
         setIsBulkProcessing(true);
@@ -360,16 +384,34 @@ export function Step5Publish({
                         <h2 className="text-lg font-black text-slate-900 dark:text-white mb-1">Confirmar Publicación</h2>
                         <p className="text-sm text-slate-500">Selecciona los productos para probar o publicar</p>
                     </div>
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-2 flex-wrap justify-end">
                         {failedAsins.length > 0 && (
-                            <button
-                                onClick={selectFailed}
-                                className="text-xs font-black text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700 px-3 py-1.5 rounded-lg hover:bg-amber-100 dark:hover:bg-amber-900/40 transition-all flex items-center gap-1.5"
-                                title="Selecciona todos los productos que fallaron para reintentarlos"
-                            >
-                                <span className="material-symbols-outlined text-[16px]">replay</span>
-                                Seleccionar fallidos ({failedAsins.length})
-                            </button>
+                            <>
+                                <button
+                                    onClick={selectFailed}
+                                    className="text-xs font-black text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700 px-3 py-1.5 rounded-lg hover:bg-amber-100 dark:hover:bg-amber-900/40 transition-all flex items-center gap-1.5"
+                                    title="Selecciona todos los productos que fallaron para reintentarlos"
+                                >
+                                    <span className="material-symbols-outlined text-[16px]">replay</span>
+                                    Seleccionar fallidos ({failedAsins.length})
+                                </button>
+                                <button
+                                    onClick={handleCopyFailed}
+                                    className="text-xs font-black text-slate-600 dark:text-slate-300 bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 px-3 py-1.5 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-800 transition-all flex items-center gap-1.5"
+                                    title="Copia la lista de ASINs fallidos, uno por línea"
+                                >
+                                    <span className="material-symbols-outlined text-[16px]">{copiedFailed ? 'check' : 'content_copy'}</span>
+                                    {copiedFailed ? '¡Copiado!' : 'Copiar ASINs fallidos'}
+                                </button>
+                                <button
+                                    onClick={handleRetryFailedAsNewImport}
+                                    className="text-xs font-black text-primary bg-primary/10 border border-primary/20 px-3 py-1.5 rounded-lg hover:bg-primary/20 transition-all flex items-center gap-1.5"
+                                    title="Lleva los ASINs fallidos al Paso 2 para reintentarlos como importación nueva"
+                                >
+                                    <span className="material-symbols-outlined text-[16px]">restart_alt</span>
+                                    Reintentar en importación nueva
+                                </button>
+                            </>
                         )}
                         <div className="text-sm font-bold text-slate-600 dark:text-slate-300 bg-slate-100 dark:bg-slate-900 px-3 py-1.5 rounded-lg">
                             {selectedAsins.size} de {processedProducts.length} seleccionados
