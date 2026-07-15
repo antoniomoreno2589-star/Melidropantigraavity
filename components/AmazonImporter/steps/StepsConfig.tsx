@@ -193,7 +193,7 @@ export const Step2Asins: React.FC<Props> = ({
 
 // ── Step 3 ─────────────────────────────────────────────────────────────────
 export const Step3AI: React.FC<Props> = ({
-    isProcessing, processingStage,
+    isProcessing, processingStage, processingProgress,
     processedProducts,
     editedTitles, setEditedTitles,
     selectedCategories, setSelectedCategories,
@@ -204,12 +204,29 @@ export const Step3AI: React.FC<Props> = ({
 }) => (
     <div className="space-y-4">
         {isProcessing && (
-            <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-2xl p-6 flex items-center gap-4">
-                <div className="w-8 h-8 rounded-full border-4 border-blue-200 border-t-blue-500 animate-spin flex-shrink-0" />
-                <div>
-                    <p className="font-black text-blue-900 dark:text-blue-100">Claude está analizando tus productos...</p>
-                    <p className="text-sm text-blue-600 dark:text-blue-400 mt-0.5">{processingStage}</p>
+            <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-2xl p-6">
+                <div className="flex items-center gap-4">
+                    <div className="w-8 h-8 rounded-full border-4 border-blue-200 border-t-blue-500 animate-spin flex-shrink-0" />
+                    <div className="flex-1 min-w-0">
+                        <div className="flex items-center justify-between gap-3">
+                            <p className="font-black text-blue-900 dark:text-blue-100">Claude está analizando tus productos...</p>
+                            {processingProgress && processingProgress.total > 0 && (
+                                <span className="flex-shrink-0 text-xs font-black text-blue-700 dark:text-blue-300 bg-blue-100 dark:bg-blue-900/40 px-2.5 py-1 rounded-full">
+                                    {processingProgress.current}/{processingProgress.total}
+                                </span>
+                            )}
+                        </div>
+                        <p className="text-sm text-blue-600 dark:text-blue-400 mt-0.5 truncate">{processingStage}</p>
+                    </div>
                 </div>
+                {processingProgress && processingProgress.total > 0 && (
+                    <div className="mt-4 h-2 bg-blue-100 dark:bg-blue-900/40 rounded-full overflow-hidden">
+                        <div
+                            className="h-full bg-blue-500 rounded-full transition-all duration-300 ease-out"
+                            style={{ width: `${Math.round((processingProgress.current / processingProgress.total) * 100)}%` }}
+                        />
+                    </div>
+                )}
             </div>
         )}
 

@@ -60,6 +60,10 @@ export function useAmazonImporter() {
     const [mlCategorySearchResults, setMlCategorySearchResults] = useState<Record<string, any[]>>({});
     const [processingStage, setProcessingStage] = useState('');
     const [isProcessing, setIsProcessing] = useState(false);
+    // Tracks completed/total across the two long-running per-product loops
+    // (AI processing, then attribute/duplicate validation) so Step 3 can show
+    // a live "X de Y" count instead of a spinner with no sense of progress.
+    const [processingProgress, setProcessingProgress] = useState<{ current: number; total: number } | null>(null);
 
     // ── Step 4: Attributes & Validation ───────────────────────────────
     const [categoryAttributes, setCategoryAttributes] = useState<Record<string, any[]>>({});
@@ -182,9 +186,12 @@ export function useAmazonImporter() {
 
         setIsProcessing(true);
         setProcessingStage(`Procesando ${validProducts.length} productos...`);
+        setProcessingProgress({ current: 0, total: validProducts.length });
 
         try {
-            // Process AI + category predictions in parallel
+            // Process AI + category predictions in parallel — items don't finish in
+            // order, but each bump of the counter as one completes still gives an
+            // accurate, live "X de Y" instead of a spinner with no sense of progress.
             const processedWithCategories = await Promise.all(validProducts.map(async (product) => {
                 console.log(`[Melidrop] Processing ${product.asin}: received ${product.images?.length ?? 0} images from Amazon`);
                 const processed = await aiImporterService.processProduct(product, marketplace, [], cleanImages);
@@ -192,6 +199,7 @@ export function useAmazonImporter() {
                 const mlPredictions = await meliService.predictCategory(
                     processed.categorySuggestion.search_term, marketplace
                 );
+                setProcessingProgress(prev => prev ? { ...prev, current: prev.current + 1 } : prev);
 
                 // Deduplicate images by Amazon image ID (between /images/I/ and first .)
                 const seenImageIds = new Set<string>();
@@ -256,9 +264,11 @@ export function useAmazonImporter() {
             setEditedTitles(prev => ({ ...prev, ...editedTitlesMap }));
             setProcessedProducts(results);
             setIsProcessing(false);
+            setProcessingProgress(null);
         } catch (err: any) {
             console.error('[Melidrop] AI processing error:', err);
             setIsProcessing(false);
+            setProcessingProgress(null);
         }
     };
 
@@ -272,6 +282,7 @@ export function useAmazonImporter() {
 
         setIsProcessing(true);
         setProcessingStage('Validando duplicados y palabras prohibidas...');
+        setProcessingProgress({ current: 0, total: processedProducts.length });
 
         const nextValidations: Record<string, any> = {};
         const nextStatus: Record<string, string> = {};
@@ -281,8 +292,12 @@ export function useAmazonImporter() {
 
         for (const processed of processedProducts) {
             const product = loadedProducts.find(p => p.asin === processed.asin);
-            if (!product) continue;
+            if (!product) {
+                setProcessingProgress(prev => prev ? { ...prev, current: prev.current + 1 } : prev);
+                continue;
+            }
 
+            setProcessingStage(`Validando ${editedTitles[product.asin] || product.title || product.asin}...`);
             const catId = selectedCategories[product.asin]?.id;
 
             const dupCheck = await meliService.checkDuplicate(product.asin);
@@ -366,6 +381,8 @@ export function useAmazonImporter() {
                     console.error(`Failed to map attributes for ${product.asin}:`, e);
                 }
             }
+
+            setProcessingProgress(prev => prev ? { ...prev, current: prev.current + 1 } : prev);
         }
 
         setValidationResults(nextValidations);
@@ -374,6 +391,7 @@ export function useAmazonImporter() {
         setCategoryAttributes(nextCategoryAttrs);
         setUserAttributes(prev => ({ ...prev, ...nextUserAttrs }));
         setIsProcessing(false);
+        setProcessingProgress(null);
         setStep(4);
     };
 
@@ -1104,6 +1122,7 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
         selectedCategories, setSelectedCategories,
         mlCategorySearchResults,
         processingStage,
+        processingProgress,
         isProcessing,
         handleProcessWithAI,
         // Step 4
