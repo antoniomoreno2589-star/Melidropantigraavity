@@ -93,7 +93,14 @@ export const Step2Asins: React.FC<Props> = ({
     handleProcessWithAI,
     removeProduct,
     setStep,
-}) => (
+}) => {
+    // Same parsing handleLoadAsins actually uses, so this count always matches
+    // what "Cargar Productos" will really load — not just a token count.
+    const tokens = asinInput.split(/[\n,\s]+/).map(a => a.trim()).filter(Boolean);
+    const validAsins = tokens.map(a => a.toUpperCase()).filter(a => /^[A-Z0-9]{10}$/.test(a));
+    const invalidCount = tokens.length - validAsins.length;
+
+    return (
     <div className="space-y-4">
         <div className="bg-white dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 p-6">
             <h2 className="text-lg font-black text-slate-900 dark:text-white mb-1">Ingresa los ASINs</h2>
@@ -105,11 +112,23 @@ export const Step2Asins: React.FC<Props> = ({
                 placeholder={"B08N5WRWNW\nB09G9HDQLR\nB07ZPKBL9V"}
                 className="w-full px-4 py-3 border border-slate-300 dark:border-slate-600 rounded-xl bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-white font-mono text-sm focus:ring-2 focus:ring-primary focus:border-transparent resize-none"
             />
+            {tokens.length > 0 && (
+                <div className="mt-2 flex items-center gap-2 text-xs">
+                    <span className="font-black text-primary bg-primary/10 px-2 py-1 rounded-full">
+                        {validAsins.length} ASIN{validAsins.length === 1 ? '' : 's'} detectado{validAsins.length === 1 ? '' : 's'}
+                    </span>
+                    {invalidCount > 0 && (
+                        <span className="text-slate-400">
+                            ({invalidCount} línea{invalidCount === 1 ? '' : 's'} no parece{invalidCount === 1 ? '' : 'n'} un ASIN válido)
+                        </span>
+                    )}
+                </div>
+            )}
             <button onClick={handleLoadAsins} disabled={loadingAsins || !asinInput.trim()}
                 className="mt-3 w-full py-3 bg-slate-900 dark:bg-white dark:text-slate-900 text-white font-black rounded-xl transition-all disabled:opacity-50 flex items-center justify-center gap-2">
                 {loadingAsins
                     ? <><span className="w-4 h-4 rounded-full border-2 border-white/30 border-t-white animate-spin" />Cargando...</>
-                    : <><span className="material-symbols-outlined">cloud_download</span>Cargar Productos</>}
+                    : <><span className="material-symbols-outlined">cloud_download</span>Cargar {validAsins.length > 0 ? `${validAsins.length} ` : ''}Producto{validAsins.length === 1 ? '' : 's'}</>}
             </button>
         </div>
 
@@ -189,7 +208,8 @@ export const Step2Asins: React.FC<Props> = ({
             </button>
         </div>
     </div>
-);
+    );
+};
 
 // ── Step 3 ─────────────────────────────────────────────────────────────────
 export const Step3AI: React.FC<Props> = ({
