@@ -70,6 +70,25 @@ function resolveBarcodeAttributeId(categoryAttrs: any[]): string | null {
     return loose?.id ?? null;
 }
 
+// Same "is this actually required" check getBlockingIssues uses — kept in
+// sync so an attribute Step 4 flags as missing is always one it also renders
+// a field for. conditional_required matters in practice: e.g. GTIN_ABSENCE_REASON
+// (the "motivo" ML demands when a product has no GTIN) carries only this tag.
+function isRequiredAttr(a: any): boolean {
+    return !!(a.tags?.required || a.tags?.new_required || a.tags?.conditional_required);
+}
+
+// ML's category attribute lists can run well past what's comfortable to show
+// at once, so both the fetch and the Step 4 form cap how many render. Sorting
+// required attributes first before either cap applies means a required field
+// can never be silently cut off while still being demanded by getBlockingIssues.
+function pickRelevantAttributes(attrs: any[], limit: number): any[] {
+    return attrs
+        .filter((a: any) => isRequiredAttr(a) || (!a.tags?.read_only && a.relevance >= 1))
+        .sort((a: any, b: any) => Number(isRequiredAttr(b)) - Number(isRequiredAttr(a)))
+        .slice(0, limit);
+}
+
 export function useAmazonImporter() {
     // ── Step navigation ────────────────────────────────────────────────
     const [step, setStep] = useState<Step>(1);
@@ -431,12 +450,7 @@ export function useAmazonImporter() {
             if (catId) {
                 try {
                     const attrs = await meliService.getCategoryAttributes(catId);
-                    const relevant = attrs
-                        .filter((a: any) =>
-                            a.tags?.required || a.tags?.new_required ||
-                            (!a.tags?.read_only && a.relevance >= 1)
-                        )
-                        .slice(0, 40);
+                    const relevant = pickRelevantAttributes(attrs, 40);
 
                     nextCategoryAttrs[product.asin] = relevant;
 
@@ -528,12 +542,7 @@ export function useAmazonImporter() {
 
         try {
             const attrs = await meliService.getCategoryAttributes(categoryId);
-            const relevant = attrs
-                .filter((a: any) =>
-                    a.tags?.required || a.tags?.new_required ||
-                    (!a.tags?.read_only && a.relevance >= 1)
-                )
-                .slice(0, 40);
+            const relevant = pickRelevantAttributes(attrs, 40);
             setCategoryAttributes(prev => ({ ...prev, [asin]: relevant }));
             if (relevant.length === 0) return;
 
@@ -770,11 +779,7 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
             const attrs = categoryAttributes[asin] || [];
             const userAttrs = userAttributes[asin] || {};
             const missing = attrs.filter((a: any) => {
-                // conditional_required matters in practice: e.g. GTIN carries only
-                // this tag (not required/new_required) in categories where ML still
-                // hard-rejects the publish without it — confirmed live against
-                // MLM189211's real attribute schema.
-                if (!a.tags?.required && !a.tags?.new_required && !a.tags?.conditional_required) return false;
+                if (!isRequiredAttr(a)) return false;
                 const raw = userAttrs[a.id]?.toString().trim();
                 if (!raw) return true;
                 // Also catches values that are present but unusable for this

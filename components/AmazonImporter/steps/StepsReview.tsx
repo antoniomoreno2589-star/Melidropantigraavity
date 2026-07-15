@@ -200,7 +200,11 @@ export function Step4Attributes({
                                 <p className="text-sm text-slate-400 italic">No se encontraron atributos requeridos para esta categoría.</p>
                             ) : (
                                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                                    {attrs.slice(0, 16).map((attr: any) => {
+                                    {/* categoryAttributes is already capped upstream (pickRelevantAttributes,
+                                        required-first) — capping again here risked cutting off a required
+                                        field the blocking check upstream could still see and flag, with no
+                                        way to fix it in the form (that's what this was hiding). */}
+                                    {attrs.map((attr: any) => {
                                         const isRequired = attr.tags?.required || attr.tags?.new_required || attr.tags?.conditional_required;
                                         const isEmpty = !userAttrs[attr.id]?.toString().trim();
                                         return (
