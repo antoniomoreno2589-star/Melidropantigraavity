@@ -143,33 +143,72 @@ export function useAmazonImporter() {
             imageUrl: '', images: [], category: '', attributes: {}, loading: true, error: null
         }));
         setLoadedProducts(initial);
+        setProcessingProgress({ current: 0, total: asins.length });
 
-        try {
-            // Load all ASINs in parallel (was sequential before)
-            const products = await Promise.all(asins.map(asin => amazonService.getProduct(asin)));
+        // Amazon's SP-API has real rate limits — firing every ASIN at once (a bare
+        // Promise.all, no cap) got most of a large batch (300+) throttled. Worse,
+        // Promise.all rejects the WHOLE batch the instant any single ASIN fails,
+        // and the old catch handler then marked every product with that one
+        // error — so even ASINs that would have succeeded showed as failed just
+        // because one other ASIN in the batch had a problem.
+        //
+        // A small worker pool keeps a bounded number of requests in flight and
+        // gives each ASIN its own try/catch, so one failure can't poison the
+        // rest — plus a short retry for the transient rate-limit rejections a
+        // large batch will still sometimes hit even at this concurrency.
+        const CONCURRENCY = 5;
+        const results: any[] = new Array(asins.length);
+        let nextIndex = 0;
+        let completed = 0;
 
-            setLoadedProducts(products.map(product => ({
-                asin: product.asin,
-                title: product.title,
-                description: product.description,
-                brand: product.brand || '',
-                price: product.price,
-                currency: product.currency,
-                imageUrl: product.imageUrl,
-                images: product.images || (product.imageUrl ? [product.imageUrl] : []),
-                category: product.category || '',
-                attributes: product.attributes || {},
-                loading: false,
-                error: null
-            })));
-        } catch (err: any) {
-            // Mark failed products individually
-            setLoadedProducts(prev => prev.map(p => {
-                const product = asins.find(asin => asin === p.asin);
-                return { ...p, loading: false, error: err.message };
-            }));
-        }
+        const fetchOneWithRetry = async (asin: string): Promise<any> => {
+            const MAX_ATTEMPTS = 3;
+            for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+                try {
+                    return await amazonService.getProduct(asin);
+                } catch (e: any) {
+                    if (attempt === MAX_ATTEMPTS) throw e;
+                    await new Promise(r => setTimeout(r, 800 * attempt));
+                }
+            }
+        };
+
+        const worker = async () => {
+            while (nextIndex < asins.length) {
+                const i = nextIndex++;
+                const asin = asins[i];
+                try {
+                    results[i] = { ...(await fetchOneWithRetry(asin)), asin };
+                } catch (e: any) {
+                    console.error(`[Melidrop] Failed to load ${asin} after retries:`, e.message);
+                    results[i] = {
+                        asin, title: '', description: '', brand: '', price: 0, currency: 'USD',
+                        imageUrl: '', images: [], category: '', attributes: {}, _failed: true, _error: e.message,
+                    };
+                }
+                completed++;
+                setProcessingProgress(prev => prev ? { ...prev, current: completed } : prev);
+            }
+        };
+
+        await Promise.all(Array.from({ length: Math.min(CONCURRENCY, asins.length) }, () => worker()));
+
+        setLoadedProducts(results.map(product => ({
+            asin: product.asin,
+            title: product.title,
+            description: product.description,
+            brand: product.brand || '',
+            price: product.price,
+            currency: product.currency,
+            imageUrl: product.imageUrl,
+            images: product.images || (product.imageUrl ? [product.imageUrl] : []),
+            category: product.category || '',
+            attributes: product.attributes || {},
+            loading: false,
+            error: product._failed ? product._error : null
+        })));
         setLoadingAsins(false);
+        setProcessingProgress(null);
     };
 
     // Re-fetches just the price for one ASIN from Amazon and updates it in place.

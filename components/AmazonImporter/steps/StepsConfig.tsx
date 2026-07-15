@@ -89,6 +89,7 @@ export const Step2Asins: React.FC<Props> = ({
     asinInput, setAsinInput,
     loadedProducts,
     loadingAsins,
+    processingProgress,
     handleLoadAsins,
     handleProcessWithAI,
     removeProduct,
@@ -127,9 +128,21 @@ export const Step2Asins: React.FC<Props> = ({
             <button onClick={handleLoadAsins} disabled={loadingAsins || !asinInput.trim()}
                 className="mt-3 w-full py-3 bg-slate-900 dark:bg-white dark:text-slate-900 text-white font-black rounded-xl transition-all disabled:opacity-50 flex items-center justify-center gap-2">
                 {loadingAsins
-                    ? <><span className="w-4 h-4 rounded-full border-2 border-white/30 border-t-white animate-spin" />Cargando...</>
+                    ? <><span className="w-4 h-4 rounded-full border-2 border-white/30 border-t-white animate-spin" />
+                        {processingProgress && processingProgress.total > 0
+                            ? `Cargando... (${processingProgress.current}/${processingProgress.total})`
+                            : 'Cargando...'}
+                      </>
                     : <><span className="material-symbols-outlined">cloud_download</span>Cargar {validAsins.length > 0 ? `${validAsins.length} ` : ''}Producto{validAsins.length === 1 ? '' : 's'}</>}
             </button>
+            {loadingAsins && processingProgress && processingProgress.total > 5 && (
+                <div className="mt-2 h-1.5 bg-slate-100 dark:bg-slate-900 rounded-full overflow-hidden">
+                    <div
+                        className="h-full bg-primary rounded-full transition-all duration-300 ease-out"
+                        style={{ width: `${Math.round((processingProgress.current / processingProgress.total) * 100)}%` }}
+                    />
+                </div>
+            )}
         </div>
 
         {loadedProducts.length > 0 && (
