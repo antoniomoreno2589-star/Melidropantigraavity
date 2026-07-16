@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect, useCallback } from 'react';
+import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import { api } from '../services/api';
 import { meliService } from '../services/meliService';
 import { amazonService } from '../services/amazonService';
@@ -84,14 +84,30 @@ export const OrdersPage = () => {
 
     useEffect(() => { loadOrders(); }, [loadOrders]);
 
-    // ── auto-sync on mount when last sync is stale (> 2 h) ────────────
+    // ── auto-sync: mount only if stale (> 2h); every later range change, always ──
+    // handleSync() only ever pulls ML data for whatever `range` is active when it's
+    // called. The mount-time check alone left a real gap: switching the date filter
+    // to an older window (e.g. 30d) re-reads Supabase but never re-fetches ML for
+    // that window, so an order whose status changed on ML AFTER it was last synced
+    // (a cancellation, a refund) shows stale forever unless someone happens to
+    // manually resync while that specific range is in view. Confirmed live: an
+    // order 20 days old still showed 'paid' in Supabase while ML had it as
+    // 'cancelled' since days earlier, simply because no sync had covered its date
+    // since the cancellation happened.
+    const didInitialSync = useRef(false);
     useEffect(() => {
-        api.sync.getLastSync().then(s => {
-            const stale = !s || Date.now() - new Date(s.finished_at).getTime() > 2 * 3600 * 1000;
-            if (stale) handleSync();
-        }).catch(() => {});
+        if (!range.from || !range.to) return;
+        if (!didInitialSync.current) {
+            didInitialSync.current = true;
+            api.sync.getLastSync().then(s => {
+                const stale = !s || Date.now() - new Date(s.finished_at).getTime() > 2 * 3600 * 1000;
+                if (stale) handleSync();
+            }).catch(() => {});
+            return;
+        }
+        handleSync();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, []);
+    }, [range.from, range.to]);
 
     // ── sync from ML ───────────────────────────────────────────────────
     const handleSync = async () => {
