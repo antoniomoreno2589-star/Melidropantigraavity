@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useAmazonImporter } from '../useAmazonImporter';
+import { useAmazonImporter, resolveBarcodeAttributeId } from '../useAmazonImporter';
 
 type Props = ReturnType<typeof useAmazonImporter>;
 
@@ -103,10 +103,17 @@ export function Step4Attributes({
         <div className="space-y-4">
             {processedProducts.map(processed => {
                 const val = validationResults[processed.asin];
-                const attrs = categoryAttributes[processed.asin] || [];
+                const allAttrs = categoryAttributes[processed.asin] || [];
                 const userAttrs = userAttributes[processed.asin] || {};
                 const hasCategory = !!selectedCategories[processed.asin]?.id;
                 const issues = blockingByAsin[processed.asin] || [];
+                // EMPTY_GTIN_REASON only means anything when there's no real code —
+                // showing it as a red-asterisked field to fill in for a product that
+                // already has one is self-contradictory (getBlockingIssues already
+                // agrees and doesn't block on it in this case; hide the field to match).
+                const codeAttrId = resolveBarcodeAttributeId(allAttrs);
+                const hasRealCode = !!(codeAttrId && userAttrs[codeAttrId]?.toString().trim());
+                const attrs = hasRealCode ? allAttrs.filter((a: any) => a.id !== 'EMPTY_GTIN_REASON') : allAttrs;
 
                 return (
                     <div key={processed.asin} className={`bg-white dark:bg-slate-800 rounded-2xl border overflow-hidden ${issues.length > 0 ? 'border-amber-300 dark:border-amber-700' : 'border-slate-200 dark:border-slate-700'}`}>

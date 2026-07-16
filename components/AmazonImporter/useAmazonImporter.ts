@@ -72,7 +72,7 @@ function sanitizeAttributeValue(def: any, rawValue: string): string | null {
 // does nothing — ML silently ignores it and still reports the real one
 // missing. GTIN is checked first since it's the most common in practice.
 const CODE_ATTR_PRIORITY = ['GTIN', 'EAN', 'UPC', 'ITEM_BARCODE', 'UNIVERSAL_CODE'];
-function resolveBarcodeAttributeId(categoryAttrs: any[]): string | null {
+export function resolveBarcodeAttributeId(categoryAttrs: any[]): string | null {
     for (const id of CODE_ATTR_PRIORITY) {
         if (categoryAttrs.some((a: any) => a.id === id)) return id;
     }
@@ -822,8 +822,16 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
         if (catId) {
             const attrs = categoryAttributes[asin] || [];
             const userAttrs = userAttributes[asin] || {};
+            const codeAttrId = resolveBarcodeAttributeId(attrs);
+            const hasRealCode = !!(codeAttrId && userAttrs[codeAttrId]?.toString().trim());
             const missing = attrs.filter((a: any) => {
                 if (!isRequiredAttr(a)) return false;
+                // EMPTY_GTIN_REASON's condition is literally "there's no real code" —
+                // conditional_required flags that it HAS a condition, not that it's
+                // unconditionally required the way required/new_required are. Confirmed
+                // live: a product with a real GTIN filled in was still being blocked on
+                // this, asking for a reason the code's own presence already answers.
+                if (a.id === 'EMPTY_GTIN_REASON' && hasRealCode) return false;
                 const raw = userAttrs[a.id]?.toString().trim();
                 if (!raw) return true;
                 // Also catches values that are present but unusable for this
