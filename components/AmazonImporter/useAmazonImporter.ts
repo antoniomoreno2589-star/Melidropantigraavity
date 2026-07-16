@@ -932,7 +932,10 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
 
                         if (existing.isDuplicate) {
                             console.log(`[Melidrop] ${asin} already in sandbox catalog (${existing.existingItem?.id}), skipping re-publish`);
-                            publishResult = { id: existing.existingItem?.id, alreadyPublished: true };
+                            // checkDuplicate already fetched this item's current status
+                            // (that's how it decided it was a duplicate) — reuse it instead
+                            // of assuming 'active' for an item we didn't just publish.
+                            publishResult = { id: existing.existingItem?.id, alreadyPublished: true, status: existing.existingItem?.status };
                             testMeliId = existing.existingItem?.id ?? null;
                         } else {
                         const imageIds: string[] = [];
@@ -1004,7 +1007,11 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
                 cost_usd: loadedProducts.find(p => p.asin === processed.asin)?.price || 0,
                 image_url: processed.images[0]?.url,
                 category: payload.category_id,
-                status: 'active',
+                // publishResult IS ML's raw item response on a fresh publish (status
+                // included directly), or the real status checkDuplicate already read
+                // on a skip — either way this is what ML actually returned, not an
+                // assumption. 'active' only as a last resort when nothing published.
+                status: publishResult?.status || 'active',
                 publish_payload: productionPayload,
                 ...(testMeliId ? { meli_id: testMeliId } : {})
             });

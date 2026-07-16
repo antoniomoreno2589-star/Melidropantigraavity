@@ -16,7 +16,7 @@ export const TestProductsPage = () => {
     const [searchQuery, setSearchQuery] = useState('');
     const [selectedIds, setSelectedIds] = useState<string[]>([]);
     const [isSyncing, setIsSyncing] = useState(false);
-    const [filterStatus, setFilterStatus] = useState<'all' | 'published' | 'not_published' | 'active' | 'paused'>('all');
+    const [filterStatus, setFilterStatus] = useState<'all' | 'published' | 'not_published' | 'active' | 'paused' | 'under_review'>('all');
     const [filterDate, setFilterDate] = useState<string>('');
     const [showFilters, setShowFilters] = useState(false);
 
@@ -106,6 +106,7 @@ export const TestProductsPage = () => {
             else if (filterStatus === 'not_published') matchesStatus = !p.isPublishedToReal;
             else if (filterStatus === 'active') matchesStatus = p.status === 'active';
             else if (filterStatus === 'paused') matchesStatus = p.status === 'paused';
+            else if (filterStatus === 'under_review') matchesStatus = ['under_review', 'not_yet_active', 'payment_required'].includes(p.status);
 
             // 3. Date filter
             const matchesDate = filterDate ? p.creationDate === filterDate : true;
@@ -118,6 +119,30 @@ export const TestProductsPage = () => {
     const handleSync = async () => {
         setIsSyncing(true);
         try {
+            // This used to only re-read whatever was already in Supabase — a
+            // product published as 'under_review' would still say that forever,
+            // even after ML actually reviewed it and flipped it to active/paused.
+            // Actually ask ML for each item's current status and persist any change.
+            const current = await api.testProducts.list();
+            const withMeliId = current.filter(p => p.meliId);
+            const CONCURRENCY = 5;
+            let nextIndex = 0;
+            const worker = async () => {
+                while (nextIndex < withMeliId.length) {
+                    const p = withMeliId[nextIndex++];
+                    try {
+                        const token = await resolveItemToken(p);
+                        const item = await meliService.getItem(p.meliId!, token);
+                        if (item?.status && item.status !== p.status) {
+                            await api.testProducts.update(p.id, { status: item.status });
+                        }
+                    } catch (e) {
+                        console.error(`[Melidrop] Failed to refresh status for ${p.asin}:`, e);
+                    }
+                }
+            };
+            await Promise.all(Array.from({ length: Math.min(CONCURRENCY, withMeliId.length) }, () => worker()));
+
             const data = await api.testProducts.list();
             setTestProducts(data);
             alert('Sincronización con el Sandbox de Mercado Libre completada.');
@@ -227,8 +252,9 @@ export const TestProductsPage = () => {
 
     // A test product's meli_id lives under the REAL account only once
     // isPublishedToReal is true — until then it belongs to the sandbox test
-    // user's own catalog, so deleting it needs THAT account's token instead.
-    const resolveDeleteToken = async (product: TestProduct): Promise<string | undefined> => {
+    // user's own catalog, so any call on it (delete, status check) needs
+    // THAT account's token instead.
+    const resolveItemToken = async (product: TestProduct): Promise<string | undefined> => {
         if (product.isPublishedToReal) return undefined;
         try {
             return (await meliService.autoRefreshTestUserToken()) ?? undefined;
@@ -242,7 +268,7 @@ export const TestProductsPage = () => {
         try {
             const product = testProducts.find(p => p.id === id);
             if (meliId && product) {
-                const token = await resolveDeleteToken(product);
+                const token = await resolveItemToken(product);
                 await meliService.deleteItem(meliId, token).catch(() => {});
             }
             await api.testProducts.delete(id);
@@ -260,7 +286,7 @@ export const TestProductsPage = () => {
             const toDelete = testProducts.filter(p => selectedIds.includes(p.id));
             await Promise.all(toDelete.map(async p => {
                 if (p.meliId) {
-                    const token = await resolveDeleteToken(p);
+                    const token = await resolveItemToken(p);
                     await meliService.deleteItem(p.meliId, token).catch(() => {});
                 }
                 await api.testProducts.delete(p.id);
@@ -344,7 +370,7 @@ export const TestProductsPage = () => {
                 // actually clears MercadoLibre's test catalog too, not just this table.
                 const toDelete = testProducts.filter(p => p.meliId && !p.isPublishedToReal);
                 await Promise.all(toDelete.map(async p => {
-                    const token = await resolveDeleteToken(p);
+                    const token = await resolveItemToken(p);
                     await meliService.deleteItem(p.meliId!, token).catch(() => {});
                 }));
                 await api.testProducts.clearAll();
@@ -363,7 +389,30 @@ export const TestProductsPage = () => {
             case 'not_published': return 'No publicados en MercadoLibre';
             case 'active': return 'Productos activos';
             case 'paused': return 'Productos pausados';
+            case 'under_review': return 'En revisión';
             default: return 'Todos los productos';
+        }
+    };
+
+    // Now that handleSync pulls ML's real status instead of a hardcoded 'active',
+    // this needs to cover the actual states ML uses — a plain active/paused split
+    // would show "Pausado" for an item that's really just pending review.
+    const statusBadge = (status: string): { label: string; cls: string } => {
+        switch (status) {
+            case 'active':
+                return { label: 'Activo', cls: 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400' };
+            case 'paused':
+                return { label: 'Pausado', cls: 'bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400' };
+            case 'under_review':
+            case 'not_yet_active':
+            case 'payment_required':
+                return { label: 'En revisión', cls: 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400' };
+            case 'closed':
+                return { label: 'Cerrado', cls: 'bg-slate-200 text-slate-600 dark:bg-slate-700 dark:text-slate-300' };
+            case 'inactive':
+                return { label: 'Inactivo', cls: 'bg-slate-200 text-slate-600 dark:bg-slate-700 dark:text-slate-300' };
+            default:
+                return { label: status || 'Desconocido', cls: 'bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400' };
         }
     };
 
@@ -558,11 +607,17 @@ export const TestProductsPage = () => {
                                             >
                                                 Productos activos
                                             </button>
-                                            <button 
+                                            <button
                                                 onClick={() => { setFilterStatus('paused'); setShowFilters(false); }}
                                                 className={`w-full text-left px-4 py-2.5 text-xs hover:bg-slate-50 dark:hover:bg-slate-700 ${filterStatus === 'paused' ? 'font-black text-primary bg-primary/5' : 'text-slate-600 dark:text-slate-300'}`}
                                             >
                                                 Productos pausados
+                                            </button>
+                                            <button
+                                                onClick={() => { setFilterStatus('under_review'); setShowFilters(false); }}
+                                                className={`w-full text-left px-4 py-2.5 text-xs hover:bg-slate-50 dark:hover:bg-slate-700 ${filterStatus === 'under_review' ? 'font-black text-primary bg-primary/5' : 'text-slate-600 dark:text-slate-300'}`}
+                                            >
+                                                En revisión
                                             </button>
                                         </div>
                                     )}
@@ -609,7 +664,9 @@ export const TestProductsPage = () => {
                                                 </td>
                                             </tr>
                                         ) : (
-                                            filteredProducts.map(p => (
+                                            filteredProducts.map(p => {
+                                                const badge = statusBadge(p.status);
+                                                return (
                                                 <tr key={p.id} className={`hover:bg-slate-50 dark:hover:bg-slate-800/30 transition-colors group ${selectedIds.includes(p.id) ? 'bg-primary/5' : ''}`}>
                                                     <td className="px-6 py-4">
                                                         <input 
@@ -640,11 +697,7 @@ export const TestProductsPage = () => {
                                                         ${p.priceMXN.toLocaleString()}
                                                     </td>
                                                     <td className="px-6 py-4 text-center">
-                                                        {p.status === 'active' ? (
-                                                            <span className="px-2 py-0.5 rounded-full text-[9px] font-black uppercase bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400">Activo</span>
-                                                        ) : (
-                                                            <span className="px-2 py-0.5 rounded-full text-[9px] font-black uppercase bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400">Pausado</span>
-                                                        )}
+                                                        <span className={`px-2 py-0.5 rounded-full text-[9px] font-black uppercase ${badge.cls}`}>{badge.label}</span>
                                                     </td>
                                                     <td className="px-6 py-4">
                                                         <span className="text-[11px] font-bold text-slate-500">{p.creationDate}</span>
@@ -674,8 +727,9 @@ export const TestProductsPage = () => {
                                                         )}
                                                     </td>
                                                 </tr>
-                                            )
-                                        ))}
+                                                );
+                                            })
+                                        )}
                                     </tbody>
                                 </table>
                             </div>

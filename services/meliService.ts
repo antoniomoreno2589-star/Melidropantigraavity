@@ -879,10 +879,10 @@ class MeliService {
         return Array.from(unique.values());
     }
 
-    async getItem(itemId: string) {
+    async getItem(itemId: string, customToken?: string) {
         if (!itemId) return null;
         try {
-            const response = await this.fetchWithAuth(`/items/${itemId}`);
+            const response = await this.fetchWithAuth(`/items/${itemId}`, {}, customToken);
             return await response.json();
         } catch (e) { return null; }
     }
