@@ -187,13 +187,19 @@ export function useAmazonImporter() {
         let completed = 0;
 
         const fetchOneWithRetry = async (asin: string): Promise<any> => {
-            const MAX_ATTEMPTS = 3;
+            // 3 attempts capped at ~2.4s total wasn't enough room for a real rate-limit
+            // window to clear (confirmed live: amazon-proxy was re-fetching Amazon's LWA
+            // token on every call, tripping Amazon's login rate limit under a batch's
+            // concurrency — now fixed server-side with token caching, but a genuinely
+            // busy moment can still throttle a request, so retries get more time to
+            // actually recover instead of exhausting themselves within a couple seconds).
+            const MAX_ATTEMPTS = 4;
             for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
                 try {
                     return await amazonService.getProduct(asin);
                 } catch (e: any) {
                     if (attempt === MAX_ATTEMPTS) throw e;
-                    await new Promise(r => setTimeout(r, 800 * attempt));
+                    await new Promise(r => setTimeout(r, 1200 * attempt));
                 }
             }
         };
