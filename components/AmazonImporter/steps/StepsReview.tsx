@@ -256,7 +256,7 @@ export function Step4Attributes({
                                                 <label className="text-[10px] font-black text-slate-500 uppercase tracking-wider">
                                                     {attr.name} {isRequired && <span className="text-red-500">*</span>}
                                                 </label>
-                                                {attr.values && attr.values.length > 0 ? (
+                                                {attr.values && attr.values.length > 0 && !attr.tags?.catalog_required ? (
                                                     <select
                                                         value={userAttrs[attr.id] || ''}
                                                         onChange={e => setUserAttributes(prev => ({ ...prev, [processed.asin]: { ...prev[processed.asin], [attr.id]: e.target.value } }))}
@@ -268,13 +268,26 @@ export function Step4Attributes({
                                                         ))}
                                                     </select>
                                                 ) : (
-                                                    <input
-                                                        type="text"
-                                                        value={userAttrs[attr.id] || ''}
-                                                        onChange={e => setUserAttributes(prev => ({ ...prev, [processed.asin]: { ...prev[processed.asin], [attr.id]: e.target.value } }))}
-                                                        placeholder={attr.hint || `Ingresa ${attr.name}`}
-                                                        className={`mt-1 w-full px-2 py-1.5 border rounded-lg text-xs bg-white dark:bg-slate-900 dark:text-white focus:ring-1 focus:ring-primary ${isRequired && isEmpty ? 'border-red-400 dark:border-red-600' : 'border-slate-300 dark:border-slate-600'}`}
-                                                    />
+                                                    <>
+                                                        <input
+                                                            type="text"
+                                                            list={attr.values?.length > 0 ? `dl-${processed.asin}-${attr.id}` : undefined}
+                                                            value={userAttrs[attr.id] || ''}
+                                                            onChange={e => setUserAttributes(prev => ({ ...prev, [processed.asin]: { ...prev[processed.asin], [attr.id]: e.target.value } }))}
+                                                            placeholder={attr.hint || `Ingresa ${attr.name}`}
+                                                            className={`mt-1 w-full px-2 py-1.5 border rounded-lg text-xs bg-white dark:bg-slate-900 dark:text-white focus:ring-1 focus:ring-primary ${isRequired && isEmpty ? 'border-red-400 dark:border-red-600' : 'border-slate-300 dark:border-slate-600'}`}
+                                                        />
+                                                        {/* catalog_required attributes (BRAND, etc.) only ever return a small
+                                                            sample under `values` — nowhere near the real catalog — so this is a
+                                                            free-text field with those few as suggestions, not a closed list. */}
+                                                        {attr.values?.length > 0 && (
+                                                            <datalist id={`dl-${processed.asin}-${attr.id}`}>
+                                                                {attr.values.slice(0, 20).map((v: any) => (
+                                                                    <option key={v.id} value={v.name} />
+                                                                ))}
+                                                            </datalist>
+                                                        )}
+                                                    </>
                                                 )}
                                             </div>
                                         )})}

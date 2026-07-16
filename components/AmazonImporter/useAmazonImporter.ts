@@ -27,6 +27,16 @@ function sanitizeAttributeValue(def: any, rawValue: string): string | null {
     // required attribute" in Step4 (whose dropdown shows the real options)
     // instead of a publish-time failure.
     if (Array.isArray(def?.values) && def.values.length > 0) {
+        // catalog_required attributes (BRAND is the common case) are the exception —
+        // confirmed live against MLM146240: BRAND's `values` here is only 3 entries
+        // (Agratto, Consul, Midea), which is nowhere near the real catalog of brands.
+        // ML's own hint text confirms free text is the intended input ("Escribe la
+        // marca real del producto o 'Genérica' si no tiene marca"), so snapping to
+        // an exact match against this short sample would reject the vast majority
+        // of real, valid brand names — pass it through as typed instead.
+        if (def.tags?.catalog_required) {
+            return rawValue;
+        }
         const norm = (s: string) => s.trim().toLowerCase();
         const match = def.values.find((v: any) => norm(v.name) === norm(rawValue));
         return match ? match.name : null;
