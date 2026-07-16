@@ -80,6 +80,20 @@ function resolveBarcodeAttributeId(categoryAttrs: any[]): string | null {
     return loose?.id ?? null;
 }
 
+// BRAND/MARCA is required + catalog_required on essentially every ML category, so
+// it must always resolve to something before publish — it can't be left blank for
+// the user to notice and fill in. Amazon's own brand data wins when it's real;
+// when it's missing/junk, "Genérica" is ML's own documented convention for "no
+// real brand" (straight from the attribute's hint text: "Escribe la marca real
+// del producto o 'Genérica' si no tiene marca"). Deliberately not left to the AI
+// to guess from a possibly brand-less title — see the exclusion where this is used.
+function seedBrand(relevant: any[], productBrand: string | undefined): { id: string; value: string } | null {
+    const brandAttr = relevant.find((a: any) => a.id === 'BRAND' || a.id === 'MARCA');
+    if (!brandAttr) return null;
+    const hasRealBrand = !!productBrand && !['unknown', 'n/a', ''].includes(productBrand.toLowerCase());
+    return { id: brandAttr.id, value: hasRealBrand ? productBrand! : 'Genérica' };
+}
+
 // Same "is this actually required" check getBlockingIssues uses — kept in
 // sync so an attribute Step 4 flags as missing is always one it also renders
 // a field for. conditional_required matters in practice: e.g. GTIN_ABSENCE_REASON
@@ -473,10 +487,8 @@ export function useAmazonImporter() {
                     if (relevant.length > 0) {
                         // Seed obvious values from Amazon data before calling AI
                         const seed: Record<string, string> = {};
-                        const brandAttr = relevant.find((a: any) => a.id === 'BRAND' || a.id === 'MARCA');
-                        if (brandAttr && product.brand && !['unknown', 'n/a', ''].includes(product.brand.toLowerCase())) {
-                            seed[brandAttr.id] = product.brand;
-                        }
+                        const brandSeed = seedBrand(relevant, product.brand);
+                        if (brandSeed) seed[brandSeed.id] = brandSeed.value;
                         const conditionAttr = relevant.find((a: any) => a.id === 'ITEM_CONDITION');
                         if (conditionAttr) seed['ITEM_CONDITION'] = 'Nuevo';
 
@@ -503,7 +515,9 @@ export function useAmazonImporter() {
                         const defaultAttrs: Record<string, string> = { ...seed };
                         if (Array.isArray(aiMapped)) {
                             aiMapped.forEach((ma: any) => {
-                                if (ma.id && ma.value_name &&
+                                // BRAND is already deterministically seeded above (real Amazon
+                                // brand or "Genérica") — never let the AI's title-guess replace it.
+                                if (ma.id && ma.value_name && ma.id !== brandSeed?.id &&
                                     !['genérico', 'generic', 'n/a', 'no aplica', 'unknown']
                                         .includes(ma.value_name.toLowerCase())) {
                                     defaultAttrs[ma.id] = ma.value_name;
@@ -571,10 +585,8 @@ export function useAmazonImporter() {
             const relevantIds = new Set(relevant.map((a: any) => a.id));
 
             const seed: Record<string, string> = {};
-            const brandAttr = relevant.find((a: any) => a.id === 'BRAND' || a.id === 'MARCA');
-            if (brandAttr && product.brand && !['unknown', 'n/a', ''].includes(product.brand.toLowerCase())) {
-                seed[brandAttr.id] = product.brand;
-            }
+            const brandSeed = seedBrand(relevant, product.brand);
+            if (brandSeed) seed[brandSeed.id] = brandSeed.value;
             const conditionAttr = relevant.find((a: any) => a.id === 'ITEM_CONDITION');
             if (conditionAttr) seed['ITEM_CONDITION'] = 'Nuevo';
 
@@ -590,7 +602,9 @@ export function useAmazonImporter() {
                 const defaultAttrs: Record<string, string> = { ...seed };
                 if (Array.isArray(aiMapped)) {
                     aiMapped.forEach((ma: any) => {
-                        if (ma.id && ma.value_name &&
+                        // BRAND is already deterministically seeded above (real Amazon
+                        // brand or "Genérica") — never let the AI's title-guess replace it.
+                        if (ma.id && ma.value_name && ma.id !== brandSeed?.id &&
                             !['genérico', 'generic', 'n/a', 'no aplica', 'unknown'].includes(ma.value_name.toLowerCase())) {
                             defaultAttrs[ma.id] = ma.value_name;
                         }
