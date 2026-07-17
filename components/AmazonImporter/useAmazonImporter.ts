@@ -439,7 +439,7 @@ export function useAmazonImporter() {
             .filter(Boolean);
 
         setIsProcessing(true);
-        setProcessingStage('Validando duplicados y palabras prohibidas...');
+        setProcessingStage(`Validando ${processedProducts.length} producto(s)...`);
         setProcessingProgress({ current: 0, total: processedProducts.length });
         setProcessingStartedAt(Date.now());
 
@@ -449,14 +449,14 @@ export function useAmazonImporter() {
         const nextCategoryAttrs: Record<string, any[]> = {};
         const nextUserAttrs: Record<string, any> = {};
 
-        for (const processed of processedProducts) {
+        // Records everything for ONE product: duplicate/forbidden-word validation,
+        // then its category attributes + AI-mapped values. Each product only ever
+        // writes its OWN asin key into the shared result maps, so the worker pool
+        // below can run several at once without any two touching the same entry.
+        const processOne = async (processed: any) => {
             const product = loadedProducts.find(p => p.asin === processed.asin);
-            if (!product) {
-                setProcessingProgress(prev => prev ? { ...prev, current: prev.current + 1 } : prev);
-                continue;
-            }
+            if (!product) return;
 
-            setProcessingStage(`Validando ${editedTitles[product.asin] || product.title || product.asin}...`);
             const catId = selectedCategories[product.asin]?.id;
 
             const dupCheck = await meliService.checkDuplicate(product.asin);
@@ -478,62 +478,69 @@ export function useAmazonImporter() {
             }
 
             if (catId) {
-                try {
-                    const attrs = await meliService.getCategoryAttributes(catId);
-                    const relevant = pickRelevantAttributes(attrs, 40);
+                const attrs = await meliService.getCategoryAttributes(catId);
+                const relevant = pickRelevantAttributes(attrs, 40);
 
-                    nextCategoryAttrs[product.asin] = relevant;
+                nextCategoryAttrs[product.asin] = relevant;
 
-                    if (relevant.length > 0) {
-                        // Seed obvious values from Amazon data before calling AI
-                        const seed: Record<string, string> = {};
-                        const brandSeed = seedBrand(relevant, product.brand);
-                        if (brandSeed) seed[brandSeed.id] = brandSeed.value;
-                        const conditionAttr = relevant.find((a: any) => a.id === 'ITEM_CONDITION');
-                        if (conditionAttr) seed['ITEM_CONDITION'] = 'Nuevo';
+                if (relevant.length > 0) {
+                    // Seed obvious values from Amazon data before calling AI
+                    const seed: Record<string, string> = {};
+                    const brandSeed = seedBrand(relevant, product.brand);
+                    if (brandSeed) seed[brandSeed.id] = brandSeed.value;
+                    const conditionAttr = relevant.find((a: any) => a.id === 'ITEM_CONDITION');
+                    if (conditionAttr) seed['ITEM_CONDITION'] = 'Nuevo';
 
-                        // Add product code (UPC/EAN/GTIN) from Amazon if available
-                        const amazonAttrs = product.attributes || {};
-                        const barcode = amazonAttrs.item_barcode?.[0]?.value || amazonAttrs.ean?.[0]?.value;
-                        console.log(`[Melidrop] Amazon attrs for ${product.asin}:`, amazonAttrs);
-                        console.log(`[Melidrop] Barcode extracted: ${barcode}`);
+                    // Add product code (UPC/EAN/GTIN) from Amazon if available
+                    const amazonAttrs = product.attributes || {};
+                    const barcode = amazonAttrs.item_barcode?.[0]?.value || amazonAttrs.ean?.[0]?.value;
+                    const codeAttrId = resolveBarcodeAttributeId(relevant);
+                    if (barcode && codeAttrId) seed[codeAttrId] = barcode;
 
-                        const codeAttrId = resolveBarcodeAttributeId(relevant);
-                        console.log(`[Melidrop] Resolved code attribute for this category: ${codeAttrId}`);
-
-                        if (barcode && codeAttrId) {
-                            seed[codeAttrId] = barcode;
-                            console.log(`[Melidrop] Seeded ${codeAttrId} = ${barcode}`);
-                        }
-
-                        const aiMapped = await aiImporterService.mapAttributes(
-                            product.title,
-                            product.description || '',
-                            product.attributes || {},
-                            relevant
-                        );
-                        const defaultAttrs: Record<string, string> = { ...seed };
-                        if (Array.isArray(aiMapped)) {
-                            aiMapped.forEach((ma: any) => {
-                                // BRAND is already deterministically seeded above (real Amazon
-                                // brand or "Genérica") — never let the AI's title-guess replace it.
-                                if (ma.id && ma.value_name && ma.id !== brandSeed?.id &&
-                                    !['genérico', 'generic', 'n/a', 'no aplica', 'unknown']
-                                        .includes(ma.value_name.toLowerCase())) {
-                                    defaultAttrs[ma.id] = ma.value_name;
-                                }
-                            });
-                        }
-                        const current = userAttributes[product.asin] || {};
-                        nextUserAttrs[product.asin] = { ...defaultAttrs, ...current };
+                    const aiMapped = await aiImporterService.mapAttributes(
+                        product.title,
+                        product.description || '',
+                        product.attributes || {},
+                        relevant
+                    );
+                    const defaultAttrs: Record<string, string> = { ...seed };
+                    if (Array.isArray(aiMapped)) {
+                        aiMapped.forEach((ma: any) => {
+                            // BRAND is already deterministically seeded above (real Amazon
+                            // brand or "Genérica") — never let the AI's title-guess replace it.
+                            if (ma.id && ma.value_name && ma.id !== brandSeed?.id &&
+                                !['genérico', 'generic', 'n/a', 'no aplica', 'unknown']
+                                    .includes(ma.value_name.toLowerCase())) {
+                                defaultAttrs[ma.id] = ma.value_name;
+                            }
+                        });
                     }
-                } catch (e) {
-                    console.error(`Failed to map attributes for ${product.asin}:`, e);
+                    const current = userAttributes[product.asin] || {};
+                    nextUserAttrs[product.asin] = { ...defaultAttrs, ...current };
                 }
             }
+        };
 
-            setProcessingProgress(prev => prev ? { ...prev, current: prev.current + 1 } : prev);
-        }
+        // Same bounded worker pool as Steps 2 & 3. This step used to be a fully
+        // sequential per-product loop — with a large batch it was by far the
+        // slowest part of the wizard. Per-item try/catch so one product's failure
+        // (a bad category, an AI hiccup) can't abort the whole batch.
+        const CONCURRENCY = 5;
+        let nextIndex = 0;
+        let completed = 0;
+        const worker = async () => {
+            while (nextIndex < processedProducts.length) {
+                const i = nextIndex++;
+                try {
+                    await processOne(processedProducts[i]);
+                } catch (e) {
+                    console.error(`[Melidrop] Failed to load attributes for ${processedProducts[i]?.asin}:`, e);
+                }
+                completed++;
+                setProcessingProgress(prev => prev ? { ...prev, current: completed } : prev);
+            }
+        };
+        await Promise.all(Array.from({ length: Math.min(CONCURRENCY, processedProducts.length) }, () => worker()));
 
         setValidationResults(nextValidations);
         setPublishingStatus(nextStatus);

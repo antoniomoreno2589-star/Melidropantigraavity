@@ -28,6 +28,10 @@ class MeliService {
     private baseUrl = 'https://api.mercadolibre.com';
     private statsCache: any = null;
     private lastStatsFetch: number = 0;
+    // Category attribute schemas are stable for the life of the page, and a large
+    // import batch keeps hitting the same handful of categories — this turns dozens
+    // of identical /categories/{id}/attributes calls into one per distinct category.
+    private categoryAttrsCache = new Map<string, any[]>();
 
     public getCredentials(): MeliCredentials | null {
         const stored = localStorage.getItem('melidrop_meli_credentials');
@@ -1201,10 +1205,16 @@ class MeliService {
     }
 
     async getCategoryAttributes(categoryId: string): Promise<any[]> {
+        const cached = this.categoryAttrsCache.get(categoryId);
+        if (cached) return cached;
         try {
             const response = await this.fetchWithAuth(`/categories/${categoryId}/attributes`);
             if (!response.ok) return [];
-            return await response.json();
+            const data = await response.json();
+            // Only cache genuine successes — a transient failure returns [] uncached
+            // so the next call retries instead of being stuck with an empty schema.
+            this.categoryAttrsCache.set(categoryId, data);
+            return data;
         } catch (e) {
             return [];
         }
