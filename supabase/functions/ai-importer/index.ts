@@ -8,6 +8,15 @@ const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
 const MODEL = 'claude-haiku-4-5-20251001';
 const CLIPDROP_API_KEY = Deno.env.get('CLIPDROP_API_KEY') || '';
 
+const GEMINI_API_KEY = Deno.env.get('GEMINI_API_KEY') || '';
+// gemini-2.5-flash still shows up in the model-list endpoint but returned a live
+// 404 ("no longer available to new users") for this key — the list endpoint
+// doesn't reflect real per-key availability. Using Google's own "-latest" alias
+// instead of a pinned version number so this doesn't need a code change the next
+// time a specific version gets retired.
+const GEMINI_MODEL = 'gemini-flash-latest';
+const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
+
 async function callClaude(prompt: string, imageUrl?: string): Promise<string> {
   const content: any[] = [];
 
@@ -41,10 +50,74 @@ async function callClaude(prompt: string, imageUrl?: string): Promise<string> {
   return data.content?.[0]?.text?.trim() || '';
 }
 
+// Fallback for when Claude fails (out of credits, rate-limited, transient outage —
+// callAI() below doesn't distinguish why, it just needs a second opinion). Mirrors
+// callClaude's exact signature/return shape so every existing prompt/parsing call
+// site works unchanged regardless of which provider actually answered.
+async function callGemini(prompt: string, imageUrl?: string): Promise<string> {
+  if (!GEMINI_API_KEY) throw new Error('GEMINI_API_KEY not configured');
+
+  const parts: any[] = [{ text: prompt }];
+
+  if (imageUrl) {
+    try {
+      const imgRes = await fetch(imageUrl);
+      const imgBuffer = await imgRes.arrayBuffer();
+      const base64 = btoa(String.fromCharCode(...new Uint8Array(imgBuffer)));
+      const mimeType = (imgRes.headers.get('content-type') || 'image/jpeg').split(';')[0];
+      parts.push({ inline_data: { mime_type: mimeType, data: base64 } });
+    } catch (e) { console.error("Gemini img error:", e); }
+  }
+
+  const response = await fetch(`${GEMINI_URL}?key=${GEMINI_API_KEY}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      contents: [{ parts }],
+      generationConfig: { temperature: 0.1, maxOutputTokens: 1024 }
+    })
+  });
+
+  if (!response.ok) {
+    const err = await response.text();
+    throw new Error(`Gemini error ${response.status}: ${err}`);
+  }
+  const data = await response.json();
+  return data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || '';
+}
+
+// Single entry point every action below calls instead of callClaude directly —
+// tries Claude first (it's the primary, better-quality model), and on ANY failure
+// (credits exhausted, rate limit, outage) retries the exact same prompt against
+// Gemini's free tier instead of failing the whole request. If GEMINI_API_KEY isn't
+// configured yet, this degrades to exactly today's behavior (Claude's error surfaces).
+async function callAI(prompt: string, imageUrl?: string): Promise<string> {
+  try {
+    return await callClaude(prompt, imageUrl);
+  } catch (claudeErr) {
+    console.error('[ai-importer] Claude failed, falling back to Gemini:', claudeErr);
+    try {
+      return await callGemini(prompt, imageUrl);
+    } catch (geminiErr) {
+      throw new Error(`Both AI providers failed. Claude: ${(claudeErr as Error).message} | Gemini: ${(geminiErr as Error).message}`);
+    }
+  }
+}
+
 async function mapAttributes(title: string, description: string, amazonAttrs: any, requiredAttrs: any[]): Promise<any> {
   const attrsForPrompt = requiredAttrs.map(a => {
-    const base: any = { id: a.id, name: a.name, required: !!(a.tags?.required || a.tags?.new_required) };
-    if (a.values && a.values.length > 0) base.allowed_values = a.values.slice(0, 30).map((v: any) => v.name);
+    const base: any = { id: a.id, name: a.name, required: !!(a.tags?.required || a.tags?.new_required || a.tags?.conditional_required) };
+    // BRAND/MARCA's `values` here is only ever a tiny, non-exhaustive sample of ML's
+    // real brand catalog (confirmed live against a real category: 3 entries for a
+    // catalog that has thousands of real brands) — sending it as allowed_values told
+    // the model those were the ONLY valid options, which fought rule 6 below and
+    // caused real brand names to get omitted or replaced with an unrelated sample
+    // entry. Scoped to BRAND/MARCA specifically — other catalog_required attributes
+    // (e.g. PRODUCT_TYPE) can genuinely be a small, complete list, so their
+    // allowed_values constraint stays as-is.
+    if (a.values && a.values.length > 0 && a.id !== 'BRAND' && a.id !== 'MARCA') {
+      base.allowed_values = a.values.slice(0, 60).map((v: any) => v.name);
+    }
     if (a.hint) base.hint = a.hint;
     return base;
   });
@@ -73,15 +146,15 @@ ${JSON.stringify(attrsForPrompt)}
 
 INSTRUCCIONES:
 1. Responde ÚNICAMENTE con un JSON array: [{"id": "ATTR_ID", "value_name": "valor"}]
-2. Para atributos con "allowed_values", usa EXACTAMENTE uno de esos valores (el más apropiado).
-3. Para atributos requeridos (required: true) SIEMPRE proporciona un valor, aunque sea inferido del tipo de producto.
+2. Para atributos con "allowed_values", usa EXACTAMENTE uno de esos valores tal cual aparece en la lista, letra por letra — cópialo, no lo redactes de nuevo. NUNCA inventes ni combines opciones (ej. si la lista tiene "12-18 meses" y "18-24 meses", NO generes "12-24 meses" — elige la que mejor aplique de las que SÍ están en la lista). Si ninguna aplica bien, omite el atributo en vez de inventar una.
+3. Para atributos requeridos (required: true) SIEMPRE proporciona un valor, aunque sea inferido del tipo de producto — salvo que tenga "allowed_values" y ninguno aplique (ver regla 2).
 4. Para atributos opcionales sin datos claros, puedes omitirlos.
 5. Traduce valores al español. Ejemplo: "Black" → "Negro", "New" → "Nuevo".
 6. Para BRAND/MARCA usa: "${brand || 'extrae del título'}".
 7. NO pongas "N/A", "Desconocido" ni valores inventados para campos de texto libre.
 8. NO expliques nada. Solo el JSON array.`;
 
-  const raw = await callClaude(prompt);
+  const raw = await callAI(prompt);
   try {
     const jsonMatch = raw.match(/\[[\s\S]*\]/);
     return JSON.parse(jsonMatch?.[0] || '[]');
@@ -106,13 +179,13 @@ Descripción/características: "${description.substring(0, 400)}"
 
 Un título corto y natural SIEMPRE es mejor que uno largo con relleno artificial.`;
 
-  const result = await callClaude(prompt);
+  const result = await callAI(prompt);
   return result.replace(/^["']|["']$/g, '').replace(/^[\s\-–—,.:;|]+/, '').substring(0, 60).trim();
 }
 
 async function cleanImage(imageUrl: string): Promise<{ hadContactInfo: boolean; cleanedImageBase64: string; mimeType: string }> {
   const checkPrompt = `Does this image contain contact information such as phone numbers, email addresses, WhatsApp numbers, website URLs, social media usernames, QR codes, or text watermarks with seller contact details? Reply with only YES or NO.`;
-  const answer = await callClaude(checkPrompt, imageUrl);
+  const answer = await callAI(checkPrompt, imageUrl);
   const hadContactInfo = answer.toUpperCase().includes('YES');
 
   if (!hadContactInfo) return { hadContactInfo: false, cleanedImageBase64: '', mimeType: '' };
@@ -145,7 +218,7 @@ async function cleanImage(imageUrl: string): Promise<{ hadContactInfo: boolean; 
 
 async function detectCategory(title: string, description: string, productType: string, siteId: string): Promise<any> {
   const prompt = `Categoria ML para: "${title}". Responde solo JSON: {"category_name": "...", "search_term": "...", "confidence": 0.9}`;
-  const raw = await callClaude(prompt);
+  const raw = await callAI(prompt);
   try { const m = raw.match(/\{[\s\S]*\}/); return JSON.parse(m?.[0] || '{}'); } catch { return {}; }
 }
 
