@@ -25,6 +25,7 @@ export function Step4Attributes({
     getBlockingIssues,
     refetchProductPrice,
     removeProduct,
+    aiCreditsExhausted,
     setStep,
 }: Props) {
     // Products that still need attention before we can move to publishing.
@@ -101,6 +102,19 @@ export function Step4Attributes({
 
     return (
         <div className="space-y-4">
+            {aiCreditsExhausted && (
+                <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-2xl p-4 flex items-start gap-3">
+                    <span className="material-symbols-outlined text-red-500 flex-shrink-0">error</span>
+                    <div className="text-sm">
+                        <p className="font-black text-red-700 dark:text-red-400">Sin créditos de IA</p>
+                        <p className="text-red-600 dark:text-red-400 mt-0.5">
+                            La cuenta de Anthropic (Claude) que usa Melidrop se quedó sin crédito, así que algunos atributos no se pudieron completar automáticamente — revísalos manualmente abajo. Agrega crédito en{' '}
+                            <a href="https://console.anthropic.com/settings/billing" target="_blank" rel="noopener noreferrer" className="underline font-bold">console.anthropic.com</a>{' '}
+                            y vuelve a intentar.
+                        </p>
+                    </div>
+                </div>
+            )}
             {processedProducts.map(processed => {
                 const val = validationResults[processed.asin];
                 const allAttrs = categoryAttributes[processed.asin] || [];

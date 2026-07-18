@@ -295,6 +295,7 @@ export const Step2Asins: React.FC<Props> = ({
 export const Step3AI: React.FC<Props> = ({
     isProcessing, processingStage, processingProgress,
     processingStartedAt, lastRunDurationMs,
+    aiCreditsExhausted,
     processedProducts,
     editedTitles, setEditedTitles,
     selectedCategories, setSelectedCategories,
@@ -341,6 +342,20 @@ export const Step3AI: React.FC<Props> = ({
                         ⏱ {formatDuration(elapsedMs)} transcurridos{etaMs != null ? ` · ~${formatDuration(etaMs)} restantes` : ''}
                     </p>
                 )}
+            </div>
+        )}
+
+        {aiCreditsExhausted && (
+            <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-2xl p-4 flex items-start gap-3">
+                <span className="material-symbols-outlined text-red-500 flex-shrink-0">error</span>
+                <div className="text-sm">
+                    <p className="font-black text-red-700 dark:text-red-400">Sin créditos de IA</p>
+                    <p className="text-red-600 dark:text-red-400 mt-0.5">
+                        La cuenta de Anthropic (Claude) que usa Melidrop se quedó sin crédito, así que los títulos y categorías no se pudieron generar automáticamente para algunos productos — revísalos manualmente abajo antes de publicar. Agrega crédito en{' '}
+                        <a href="https://console.anthropic.com/settings/billing" target="_blank" rel="noopener noreferrer" className="underline font-bold">console.anthropic.com</a>{' '}
+                        y vuelve a intentar.
+                    </p>
+                </div>
             </div>
         )}
 

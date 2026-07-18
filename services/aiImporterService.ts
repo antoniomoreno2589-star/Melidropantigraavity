@@ -1,6 +1,20 @@
 const EDGE_URL = 'https://gbdrxwfywxvyoxroqcut.supabase.co/functions/v1/ai-importer';
 const ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdiZHJ4d2Z5d3h2eW94cm9xY3V0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjkxMzU1MTQsImV4cCI6MjA4NDcxMTUxNH0.8bGbL6bKSfGShizUiijZIJqRdyO_72hecEujK3vYvr4';
 
+// Every AI-dependent step (title, category, attributes, image cleanup) falls back
+// to a silent default on failure — useful so one bad call doesn't abort a whole
+// batch, but it also means a real problem (e.g. the Anthropic account behind this
+// edge function running out of credits) produced no visible signal at all: titles
+// silently stayed in English, attributes silently stayed empty. This flag lets the
+// UI show an actual warning for that specific, actionable case instead of staying
+// silent. Self-healing: a later successful call clears it, so the warning doesn't
+// linger after the user tops up credits and re-runs.
+export const aiServiceStatus = { creditsExhausted: false };
+
+function isCreditsExhaustedError(message: string): boolean {
+    return /credit balance is too low/i.test(message);
+}
+
 async function callAI(action: string, params: any): Promise<any> {
     const res = await fetch(EDGE_URL, {
         method: 'POST',
@@ -8,7 +22,12 @@ async function callAI(action: string, params: any): Promise<any> {
         body: JSON.stringify({ action, params })
     });
     const data = await res.json();
-    if (!data.success) throw new Error(data.error || 'AI Importer error');
+    if (!data.success) {
+        const errMsg = data.error || 'AI Importer error';
+        if (isCreditsExhaustedError(errMsg)) aiServiceStatus.creditsExhausted = true;
+        throw new Error(errMsg);
+    }
+    aiServiceStatus.creditsExhausted = false;
     return data.data;
 }
 

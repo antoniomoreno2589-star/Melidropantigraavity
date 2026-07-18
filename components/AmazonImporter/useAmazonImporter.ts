@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { amazonService } from '../../services/amazonService';
-import { aiImporterService, ProcessedProduct } from '../../services/aiImporterService';
+import { aiImporterService, aiServiceStatus, ProcessedProduct } from '../../services/aiImporterService';
 import { meliService } from '../../services/meliService';
 import { api } from '../../services/api';
 import { supabase } from '../../services/supabase';
@@ -144,6 +144,10 @@ export function useAmazonImporter() {
     // show a live ticking timer plus "última corrida: Xm Ys" afterward.
     const [processingStartedAt, setProcessingStartedAt] = useState<number | null>(null);
     const [lastRunDurationMs, setLastRunDurationMs] = useState<number | null>(null);
+    // Mirrors aiImporterService.aiServiceStatus.creditsExhausted into React state
+    // right after a batch of AI calls finishes, so Step 3/4 can show a real warning
+    // instead of titles/attributes silently staying empty with no explanation.
+    const [aiCreditsExhausted, setAiCreditsExhausted] = useState(false);
 
     // ── Step 4: Attributes & Validation ───────────────────────────────
     const [categoryAttributes, setCategoryAttributes] = useState<Record<string, any[]>>({});
@@ -375,6 +379,7 @@ export function useAmazonImporter() {
         };
 
         await Promise.all(Array.from({ length: Math.min(CONCURRENCY, validProducts.length) }, () => worker()));
+        setAiCreditsExhausted(aiServiceStatus.creditsExhausted);
 
         const processedWithCategories = results.filter((r): r is { processed: any; mlPredictions: any } => r !== null);
         const failedCount = validProducts.length - processedWithCategories.length;
@@ -541,6 +546,7 @@ export function useAmazonImporter() {
             }
         };
         await Promise.all(Array.from({ length: Math.min(CONCURRENCY, processedProducts.length) }, () => worker()));
+        setAiCreditsExhausted(aiServiceStatus.creditsExhausted);
 
         setValidationResults(nextValidations);
         setPublishingStatus(nextStatus);
@@ -621,6 +627,7 @@ export function useAmazonImporter() {
                     const kept = Object.fromEntries(Object.entries(prev[asin] || {}).filter(([id]) => relevantIds.has(id)));
                     return { ...prev, [asin]: { ...defaultAttrs, ...kept } };
                 });
+                setAiCreditsExhausted(aiServiceStatus.creditsExhausted);
             } else {
                 setUserAttributes(prev => {
                     const kept = Object.fromEntries(Object.entries(prev[asin] || {}).filter(([id]) => relevantIds.has(id)));
@@ -1425,6 +1432,7 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
         processingProgress,
         processingStartedAt,
         lastRunDurationMs,
+        aiCreditsExhausted,
         isProcessing,
         handleProcessWithAI,
         // Step 4
