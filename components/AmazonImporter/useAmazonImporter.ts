@@ -94,6 +94,43 @@ function seedBrand(relevant: any[], productBrand: string | undefined): { id: str
     return { id: brandAttr.id, value: hasRealBrand ? productBrand! : 'Genérica' };
 }
 
+// Amazon's Catalog API exposes a real UPC/EAN/GTIN two different ways: as a direct
+// item_barcode/ean/upc/gtin attribute, or nested inside
+// externally_assigned_product_identifier — confirmed live against a real product
+// (item_barcode and ean both null, but externally_assigned_product_identifier had
+// a real UPC and EAN) that only the second form had anything, and nothing was
+// reading it. GTIN preferred over EAN over UPC, matching resolveBarcodeAttributeId's
+// own priority order for which code type ML trusts most.
+const BARCODE_TYPE_PRIORITY = ['gtin', 'ean', 'upc', 'isbn'];
+function extractAmazonBarcode(amazonAttrs: any): string | null {
+    for (const key of ['gtin', 'ean', 'upc', 'item_barcode']) {
+        const value = amazonAttrs?.[key]?.[0]?.value;
+        if (value) return value;
+    }
+    const external: any[] = amazonAttrs?.externally_assigned_product_identifier || [];
+    for (const type of BARCODE_TYPE_PRIORITY) {
+        const match = external.find((id: any) => (id?.type || '').toLowerCase() === type);
+        if (match?.value) return match.value;
+    }
+    return null;
+}
+
+// EMPTY_GTIN_REASON only matters once extractAmazonBarcode above has genuinely come
+// up empty — at that point "El producto no tiene código registrado" is honestly
+// true for the overwhelming majority of Amazon-sourced products (a mass-market
+// item was never going to have a "pieza artesanal" or "kit" reason instead), and
+// there's no reliable signal to guess which of the other options would apply. Matched
+// by name against this category's own real values (not a hardcoded id) since the
+// exact option set is fetched fresh per category. Deliberately not left to the AI —
+// same reasoning as seedBrand, see the exclusion where this is used.
+function seedEmptyGtinReason(relevant: any[], hasBarcode: boolean): { id: string; value: string } | null {
+    if (hasBarcode) return null;
+    const reasonAttr = relevant.find((a: any) => a.id === 'EMPTY_GTIN_REASON');
+    const noCodeOption = reasonAttr?.values?.find((v: any) => /no tiene c[oó]digo registrado/i.test(v.name || ''));
+    if (!reasonAttr || !noCodeOption) return null;
+    return { id: reasonAttr.id, value: noCodeOption.name };
+}
+
 // Same "is this actually required" check getBlockingIssues uses — kept in
 // sync so an attribute Step 4 flags as missing is always one it also renders
 // a field for. conditional_required matters in practice: e.g. GTIN_ABSENCE_REASON
@@ -498,9 +535,11 @@ export function useAmazonImporter() {
 
                     // Add product code (UPC/EAN/GTIN) from Amazon if available
                     const amazonAttrs = product.attributes || {};
-                    const barcode = amazonAttrs.item_barcode?.[0]?.value || amazonAttrs.ean?.[0]?.value;
+                    const barcode = extractAmazonBarcode(amazonAttrs);
                     const codeAttrId = resolveBarcodeAttributeId(relevant);
                     if (barcode && codeAttrId) seed[codeAttrId] = barcode;
+                    const gtinReasonSeed = seedEmptyGtinReason(relevant, !!barcode);
+                    if (gtinReasonSeed) seed[gtinReasonSeed.id] = gtinReasonSeed.value;
 
                     const aiMapped = await aiImporterService.mapAttributes(
                         product.title,
@@ -511,9 +550,9 @@ export function useAmazonImporter() {
                     const defaultAttrs: Record<string, string> = { ...seed };
                     if (Array.isArray(aiMapped)) {
                         aiMapped.forEach((ma: any) => {
-                            // BRAND is already deterministically seeded above (real Amazon
-                            // brand or "Genérica") — never let the AI's title-guess replace it.
-                            if (ma.id && ma.value_name && ma.id !== brandSeed?.id &&
+                            // BRAND and EMPTY_GTIN_REASON are already deterministically seeded
+                            // above — never let the AI's guess replace either.
+                            if (ma.id && ma.value_name && ma.id !== brandSeed?.id && ma.id !== gtinReasonSeed?.id &&
                                 !['genérico', 'generic', 'n/a', 'no aplica', 'unknown']
                                     .includes(ma.value_name.toLowerCase())) {
                                 defaultAttrs[ma.id] = ma.value_name;
@@ -604,9 +643,11 @@ export function useAmazonImporter() {
             if (conditionAttr) seed['ITEM_CONDITION'] = 'Nuevo';
 
             const amazonAttrs = product.attributes || {};
-            const barcode = amazonAttrs.item_barcode?.[0]?.value || amazonAttrs.ean?.[0]?.value;
+            const barcode = extractAmazonBarcode(amazonAttrs);
             const codeAttrId = resolveBarcodeAttributeId(relevant);
             if (barcode && codeAttrId) seed[codeAttrId] = barcode;
+            const gtinReasonSeed = seedEmptyGtinReason(relevant, !!barcode);
+            if (gtinReasonSeed) seed[gtinReasonSeed.id] = gtinReasonSeed.value;
 
             if (processed) {
                 const aiMapped = await aiImporterService.mapAttributes(
@@ -615,9 +656,9 @@ export function useAmazonImporter() {
                 const defaultAttrs: Record<string, string> = { ...seed };
                 if (Array.isArray(aiMapped)) {
                     aiMapped.forEach((ma: any) => {
-                        // BRAND is already deterministically seeded above (real Amazon
-                        // brand or "Genérica") — never let the AI's title-guess replace it.
-                        if (ma.id && ma.value_name && ma.id !== brandSeed?.id &&
+                        // BRAND and EMPTY_GTIN_REASON are already deterministically seeded
+                        // above — never let the AI's guess replace either.
+                        if (ma.id && ma.value_name && ma.id !== brandSeed?.id && ma.id !== gtinReasonSeed?.id &&
                             !['genérico', 'generic', 'n/a', 'no aplica', 'unknown'].includes(ma.value_name.toLowerCase())) {
                             defaultAttrs[ma.id] = ma.value_name;
                         }
@@ -668,7 +709,7 @@ export function useAmazonImporter() {
 
         // Extract product code from Amazon attributes (UPC, EAN, GTIN)
         const amazonAttrs = product.attributes || {};
-        const barcode = amazonAttrs.item_barcode?.[0]?.value || amazonAttrs.ean?.[0]?.value;
+        const barcode = extractAmazonBarcode(amazonAttrs);
         const userHasBarcode = barcode && Object.values(attrs).includes(barcode);
         const barcodeAttrId = resolveBarcodeAttributeId(categoryAttributes[processed.asin] || []);
 
