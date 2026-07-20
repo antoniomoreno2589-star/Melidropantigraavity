@@ -7,16 +7,29 @@ import { supabase } from '../services/supabase';
 interface TestProduct extends Product {
     isPublishedToReal: boolean;
     creationDate: string; // Format YYYY-MM-DD for easier filtering
+    updatedDate: string;  // Same format, backed by test_products.updated_at
+    subStatus: string[];  // ML's real sub_status array (e.g. ["deleted"] when ML itself removed the listing)
     prepTime: string;
     category: string;
 }
 
+type SandboxStatusFilter = 'all' | 'published' | 'not_published' | 'active' | 'paused' | 'under_review' | 'inactive' | 'deleted_by_ml';
+
+// ML represents "removed by Mercado Libre" as status=closed plus a "deleted"
+// sub_status entry — the same shape a seller-initiated close/delete can leave,
+// so this is best-effort (Melidrop's own deleteItem rows vanish from this
+// table immediately on delete, so they can't be mistaken for this bucket).
+const isDeletedByMl = (p: TestProduct): boolean =>
+    p.status === 'closed' && Array.isArray(p.subStatus) && p.subStatus.includes('deleted');
+
 export const TestProductsPage = () => {
     const [activeTab, setActiveTab] = useState<'config' | 'products'>('products');
+    const [searchField, setSearchField] = useState<'title' | 'asin' | 'sku'>('title');
     const [searchQuery, setSearchQuery] = useState('');
     const [selectedIds, setSelectedIds] = useState<string[]>([]);
     const [isSyncing, setIsSyncing] = useState(false);
-    const [filterStatus, setFilterStatus] = useState<'all' | 'published' | 'not_published' | 'active' | 'paused' | 'under_review'>('all');
+    const [filterStatus, setFilterStatus] = useState<SandboxStatusFilter>('all');
+    const [dateFilterType, setDateFilterType] = useState<'created' | 'updated'>('created');
     const [filterDate, setFilterDate] = useState<string>('');
     const [showFilters, setShowFilters] = useState(false);
     const [currentPage, setCurrentPage] = useState(1);
@@ -96,12 +109,14 @@ export const TestProductsPage = () => {
 
     // Derived State: Filtered Products logic
     const filteredProducts = useMemo(() => {
+        const q = searchQuery.toLowerCase();
         return testProducts.filter(p => {
-            // 1. Search filter (Search glass functionality)
-            const matchesSearch = p.title.toLowerCase().includes(searchQuery.toLowerCase()) || 
-                                 p.asin.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                                 p.sku.toLowerCase().includes(searchQuery.toLowerCase());
-            
+            // 1. Search filter, scoped to whichever field the dropdown has selected
+            const matchesSearch = !q ? true
+                : searchField === 'asin' ? p.asin.toLowerCase().includes(q)
+                : searchField === 'sku' ? p.sku.toLowerCase().includes(q)
+                : p.title.toLowerCase().includes(q);
+
             // 2. Status filter
             let matchesStatus = true;
             if (filterStatus === 'published') matchesStatus = p.isPublishedToReal;
@@ -109,19 +124,36 @@ export const TestProductsPage = () => {
             else if (filterStatus === 'active') matchesStatus = p.status === 'active';
             else if (filterStatus === 'paused') matchesStatus = p.status === 'paused';
             else if (filterStatus === 'under_review') matchesStatus = ['under_review', 'not_yet_active', 'payment_required'].includes(p.status);
+            else if (filterStatus === 'inactive') matchesStatus = ['inactive', 'closed'].includes(p.status) && !isDeletedByMl(p);
+            else if (filterStatus === 'deleted_by_ml') matchesStatus = isDeletedByMl(p);
 
-            // 3. Date filter
-            const matchesDate = filterDate ? p.creationDate === filterDate : true;
+            // 3. Date filter — against creation or last-update date, per the dropdown
+            const dateValue = dateFilterType === 'updated' ? p.updatedDate : p.creationDate;
+            const matchesDate = filterDate ? dateValue === filterDate : true;
 
             return matchesSearch && matchesStatus && matchesDate;
         });
-    }, [testProducts, searchQuery, filterStatus, filterDate]);
+    }, [testProducts, searchField, searchQuery, filterStatus, dateFilterType, filterDate]);
+
+    // Counts for the status pill row — always over the full catalog, not the
+    // currently filtered/searched subset, same as ML's own seller panel.
+    const statusCounts = useMemo(() => {
+        const counts = { active: 0, paused: 0, review: 0, inactive: 0, deletedByMl: 0 };
+        for (const p of testProducts) {
+            if (isDeletedByMl(p)) { counts.deletedByMl++; continue; }
+            if (p.status === 'active') counts.active++;
+            else if (p.status === 'paused') counts.paused++;
+            else if (['under_review', 'not_yet_active', 'payment_required'].includes(p.status)) counts.review++;
+            else if (['inactive', 'closed'].includes(p.status)) counts.inactive++;
+        }
+        return counts;
+    }, [testProducts]);
 
     // Jumping back to page 1 on a new search/filter avoids landing on a page
     // that no longer has any rows once the filtered set shrinks.
     useEffect(() => {
         setCurrentPage(1);
-    }, [searchQuery, filterStatus, filterDate]);
+    }, [searchField, searchQuery, filterStatus, dateFilterType, filterDate]);
 
     const totalPages = Math.max(1, Math.ceil(filteredProducts.length / PAGE_SIZE));
 
@@ -155,8 +187,13 @@ export const TestProductsPage = () => {
                     try {
                         const token = await resolveItemToken(p);
                         const item = await meliService.getItem(p.meliId!, token);
-                        if (item?.status && item.status !== p.status) {
-                            await api.testProducts.update(p.id, { status: item.status });
+                        if (item?.status) {
+                            const subStatus = Array.isArray(item.sub_status) ? item.sub_status : [];
+                            const changed = item.status !== p.status
+                                || JSON.stringify(subStatus) !== JSON.stringify(p.subStatus || []);
+                            if (changed) {
+                                await api.testProducts.update(p.id, { status: item.status, sub_status: subStatus });
+                            }
                         }
                     } catch (e) {
                         console.error(`[Melidrop] Failed to refresh status for ${p.asin}:`, e);
@@ -416,15 +453,22 @@ export const TestProductsPage = () => {
             case 'active': return 'Productos activos';
             case 'paused': return 'Productos pausados';
             case 'under_review': return 'En revisión';
+            case 'inactive': return 'Inactivos';
+            case 'deleted_by_ml': return 'Eliminados por Mercado Libre';
             default: return 'Todos los productos';
         }
     };
 
     // Now that handleSync pulls ML's real status instead of a hardcoded 'active',
     // this needs to cover the actual states ML uses — a plain active/paused split
-    // would show "Pausado" for an item that's really just pending review.
-    const statusBadge = (status: string): { label: string; cls: string } => {
-        switch (status) {
+    // would show "Pausado" for an item that's really just pending review. Checked
+    // before the plain status switch so a closed+deleted item reads as "Eliminado
+    // por ML" instead of just "Cerrado".
+    const statusBadge = (p: TestProduct): { label: string; cls: string } => {
+        if (isDeletedByMl(p)) {
+            return { label: 'Eliminado por ML', cls: 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400' };
+        }
+        switch (p.status) {
             case 'active':
                 return { label: 'Activo', cls: 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400' };
             case 'paused':
@@ -438,7 +482,7 @@ export const TestProductsPage = () => {
             case 'inactive':
                 return { label: 'Inactivo', cls: 'bg-slate-200 text-slate-600 dark:bg-slate-700 dark:text-slate-300' };
             default:
-                return { label: status || 'Desconocido', cls: 'bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400' };
+                return { label: p.status || 'Desconocido', cls: 'bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400' };
         }
     };
 
@@ -568,94 +612,128 @@ export const TestProductsPage = () => {
                     </div>
                 ) : (
                     <div className="max-w-7xl mx-auto flex flex-col gap-4 animate-fade-in pb-20">
-                        {/* Search & Filters BAR */}
-                        <div className="bg-surface-light dark:bg-surface-dark p-4 rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm flex flex-col md:flex-row justify-between items-center gap-4 relative">
-                            <div className="relative w-full md:w-80">
-                                <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-slate-400">search</span>
-                                <input 
-                                    value={searchQuery}
-                                    onChange={(e) => setSearchQuery(e.target.value)}
-                                    className="w-full pl-10 pr-4 py-2 rounded-lg border-slate-200 dark:border-slate-600 bg-background-light dark:bg-background-dark text-sm focus:ring-primary focus:border-primary" 
-                                    placeholder="Buscar título, ASIN o SKU..." 
-                                />
-                            </div>
-                            
-                            <div className="flex flex-wrap items-center gap-2 w-full md:w-auto">
-                                {/* Date Filter */}
-                                <div className="flex items-center gap-2 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 px-3 py-1.5 rounded-lg">
-                                    <span className="material-symbols-outlined text-[18px] text-slate-400">calendar_today</span>
-                                    <input 
-                                        type="date" 
-                                        value={filterDate}
-                                        onChange={(e) => setFilterDate(e.target.value)}
-                                        className="bg-transparent border-none text-xs font-bold text-slate-600 dark:text-slate-300 focus:ring-0 p-0"
-                                    />
-                                    {filterDate && (
-                                        <button onClick={() => setFilterDate('')} className="text-slate-400 hover:text-red-500">
-                                            <span className="material-symbols-outlined text-[16px]">close</span>
-                                        </button>
-                                    )}
-                                </div>
-
-                                {/* Status Filter Dropdown */}
-                                <div className="relative">
-                                    <button 
-                                        onClick={() => setShowFilters(!showFilters)}
-                                        className={`flex items-center gap-2 px-4 py-2 text-sm font-bold rounded-lg transition-all border ${showFilters || filterStatus !== 'all' ? 'bg-primary/10 border-primary text-primary' : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300'}`}
+                        {/* Search & Filters BAR — laid out like ML's own seller panel: field-scoped
+                            search, then a date-type filter with an overflow funnel, then a status
+                            count row underneath acting as one-click filters. */}
+                        <div className="bg-surface-light dark:bg-surface-dark p-4 rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm flex flex-col gap-3">
+                            <div className="flex flex-col md:flex-row items-stretch md:items-center gap-3">
+                                {/* Search: field selector + text, like ML's "Título ▾ | Escribir..." bar */}
+                                <div className="flex items-center flex-1 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg overflow-hidden focus-within:ring-1 focus-within:ring-primary focus-within:border-primary">
+                                    <select
+                                        value={searchField}
+                                        onChange={(e) => setSearchField(e.target.value as any)}
+                                        className="bg-transparent border-none border-r border-slate-200 dark:border-slate-700 text-sm font-bold text-slate-600 dark:text-slate-300 pl-3 pr-8 py-2 focus:ring-0 cursor-pointer"
                                     >
-                                        <span className="material-symbols-outlined text-[20px]">filter_list</span>
-                                        {getFilterLabel()}
-                                    </button>
-                                    
-                                    {showFilters && (
-                                        <div className="absolute top-full right-0 mt-2 w-64 bg-white dark:bg-slate-800 rounded-xl shadow-xl border border-slate-200 dark:border-slate-700 z-50 overflow-hidden">
-                                            <button 
-                                                onClick={() => { setFilterStatus('all'); setShowFilters(false); }}
-                                                className={`w-full text-left px-4 py-2.5 text-xs hover:bg-slate-50 dark:hover:bg-slate-700 ${filterStatus === 'all' ? 'font-black text-primary bg-primary/5' : 'text-slate-600 dark:text-slate-300'}`}
-                                            >
-                                                Todos los productos
-                                            </button>
-                                            <button 
-                                                onClick={() => { setFilterStatus('published'); setShowFilters(false); }}
-                                                className={`w-full text-left px-4 py-2.5 text-xs hover:bg-slate-50 dark:hover:bg-slate-700 ${filterStatus === 'published' ? 'font-black text-primary bg-primary/5' : 'text-slate-600 dark:text-slate-300'}`}
-                                            >
-                                                Publicados en MercadoLibre
-                                            </button>
-                                            <button 
-                                                onClick={() => { setFilterStatus('not_published'); setShowFilters(false); }}
-                                                className={`w-full text-left px-4 py-2.5 text-xs hover:bg-slate-50 dark:hover:bg-slate-700 ${filterStatus === 'not_published' ? 'font-black text-primary bg-primary/5' : 'text-slate-600 dark:text-slate-300'}`}
-                                            >
-                                                No publicados en MercadoLibre
-                                            </button>
-                                            <button 
-                                                onClick={() => { setFilterStatus('active'); setShowFilters(false); }}
-                                                className={`w-full text-left px-4 py-2.5 text-xs hover:bg-slate-50 dark:hover:bg-slate-700 ${filterStatus === 'active' ? 'font-black text-primary bg-primary/5' : 'text-slate-600 dark:text-slate-300'}`}
-                                            >
-                                                Productos activos
-                                            </button>
-                                            <button
-                                                onClick={() => { setFilterStatus('paused'); setShowFilters(false); }}
-                                                className={`w-full text-left px-4 py-2.5 text-xs hover:bg-slate-50 dark:hover:bg-slate-700 ${filterStatus === 'paused' ? 'font-black text-primary bg-primary/5' : 'text-slate-600 dark:text-slate-300'}`}
-                                            >
-                                                Productos pausados
-                                            </button>
-                                            <button
-                                                onClick={() => { setFilterStatus('under_review'); setShowFilters(false); }}
-                                                className={`w-full text-left px-4 py-2.5 text-xs hover:bg-slate-50 dark:hover:bg-slate-700 ${filterStatus === 'under_review' ? 'font-black text-primary bg-primary/5' : 'text-slate-600 dark:text-slate-300'}`}
-                                            >
-                                                En revisión
-                                            </button>
-                                        </div>
-                                    )}
+                                        <option value="title">Título</option>
+                                        <option value="asin">ASIN</option>
+                                        <option value="sku">SKU</option>
+                                    </select>
+                                    <input
+                                        value={searchQuery}
+                                        onChange={(e) => setSearchQuery(e.target.value)}
+                                        className="flex-1 min-w-0 border-none bg-transparent px-3 py-2 text-sm focus:ring-0"
+                                        placeholder="Escribir..."
+                                    />
+                                    <span className="material-symbols-outlined text-slate-400 px-3">search</span>
                                 </div>
 
-                                <button 
-                                    onClick={handleSync}
-                                    disabled={isSyncing}
-                                    className="flex items-center gap-2 px-4 py-2 text-sm font-bold text-primary hover:bg-primary/10 rounded-lg transition-all border border-primary/20 disabled:opacity-50"
+                                <div className="flex flex-wrap items-center gap-2">
+                                    {/* Date filter: date-type selector + date, like ML's "Actualización ▾ | dd/mm/aaaa" */}
+                                    <div className="flex items-center bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg overflow-hidden">
+                                        <select
+                                            value={dateFilterType}
+                                            onChange={(e) => setDateFilterType(e.target.value as any)}
+                                            className="bg-transparent border-none border-r border-slate-200 dark:border-slate-700 text-xs font-bold text-slate-600 dark:text-slate-300 pl-3 pr-6 py-2 focus:ring-0 cursor-pointer"
+                                        >
+                                            <option value="created">Creación</option>
+                                            <option value="updated">Actualización</option>
+                                        </select>
+                                        <input
+                                            type="date"
+                                            value={filterDate}
+                                            onChange={(e) => setFilterDate(e.target.value)}
+                                            className="bg-transparent border-none text-xs font-bold text-slate-600 dark:text-slate-300 focus:ring-0 px-2 py-2"
+                                        />
+                                        {filterDate && (
+                                            <button onClick={() => setFilterDate('')} className="text-slate-400 hover:text-red-500 pr-2">
+                                                <span className="material-symbols-outlined text-[16px]">close</span>
+                                            </button>
+                                        )}
+                                    </div>
+
+                                    {/* Overflow filters (Publicados / No publicados) — native ML statuses live as pills below */}
+                                    <div className="relative">
+                                        <button
+                                            onClick={() => setShowFilters(!showFilters)}
+                                            title={getFilterLabel()}
+                                            className={`flex items-center justify-center size-9 rounded-lg transition-all border ${showFilters || filterStatus === 'published' || filterStatus === 'not_published' ? 'bg-primary/10 border-primary text-primary' : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-400 hover:text-slate-600 dark:hover:text-slate-300'}`}
+                                        >
+                                            <span className="material-symbols-outlined text-[20px]">filter_alt</span>
+                                        </button>
+
+                                        {showFilters && (
+                                            <div className="absolute top-full right-0 mt-2 w-64 bg-white dark:bg-slate-800 rounded-xl shadow-xl border border-slate-200 dark:border-slate-700 z-50 overflow-hidden">
+                                                <button
+                                                    onClick={() => { setFilterStatus('all'); setShowFilters(false); }}
+                                                    className={`w-full text-left px-4 py-2.5 text-xs hover:bg-slate-50 dark:hover:bg-slate-700 ${filterStatus === 'all' ? 'font-black text-primary bg-primary/5' : 'text-slate-600 dark:text-slate-300'}`}
+                                                >
+                                                    Todos los productos
+                                                </button>
+                                                <button
+                                                    onClick={() => { setFilterStatus('published'); setShowFilters(false); }}
+                                                    className={`w-full text-left px-4 py-2.5 text-xs hover:bg-slate-50 dark:hover:bg-slate-700 ${filterStatus === 'published' ? 'font-black text-primary bg-primary/5' : 'text-slate-600 dark:text-slate-300'}`}
+                                                >
+                                                    Publicados en MercadoLibre
+                                                </button>
+                                                <button
+                                                    onClick={() => { setFilterStatus('not_published'); setShowFilters(false); }}
+                                                    className={`w-full text-left px-4 py-2.5 text-xs hover:bg-slate-50 dark:hover:bg-slate-700 ${filterStatus === 'not_published' ? 'font-black text-primary bg-primary/5' : 'text-slate-600 dark:text-slate-300'}`}
+                                                >
+                                                    No publicados en MercadoLibre
+                                                </button>
+                                            </div>
+                                        )}
+                                    </div>
+
+                                    <button
+                                        onClick={handleSync}
+                                        disabled={isSyncing}
+                                        className="flex items-center gap-2 px-4 py-2 text-sm font-bold text-primary hover:bg-primary/10 rounded-lg transition-all border border-primary/20 disabled:opacity-50 whitespace-nowrap"
+                                    >
+                                        <span className={`material-symbols-outlined text-[20px] ${isSyncing ? 'animate-spin' : ''}`}>sync</span>
+                                        {isSyncing ? 'Sincronizando...' : 'Sincronizar Test'}
+                                    </button>
+                                </div>
+                            </div>
+
+                            {/* Status counts — same buckets ML's own panel shows, click to filter */}
+                            <div className="flex flex-wrap items-center gap-x-5 gap-y-2 pt-3 border-t border-slate-100 dark:border-slate-800 text-xs">
+                                {([
+                                    { key: 'active', label: 'Activa', count: statusCounts.active },
+                                    { key: 'paused', label: 'Pausada', count: statusCounts.paused },
+                                    { key: 'under_review', label: 'Revisando', count: statusCounts.review },
+                                    { key: 'inactive', label: 'Inactiva', count: statusCounts.inactive },
+                                ] as { key: SandboxStatusFilter; label: string; count: number }[]).map(s => (
+                                    <button
+                                        key={s.key}
+                                        onClick={() => setFilterStatus(prev => prev === s.key ? 'all' : s.key)}
+                                        className={`font-bold flex items-baseline gap-1.5 transition-colors ${filterStatus === s.key ? 'text-primary' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'}`}
+                                    >
+                                        {s.label} <span className={filterStatus === s.key ? 'text-primary' : 'text-slate-400 dark:text-slate-500'}>{s.count}</span>
+                                    </button>
+                                ))}
+                                <button
+                                    onClick={() => setFilterStatus(prev => prev === 'deleted_by_ml' ? 'all' : 'deleted_by_ml')}
+                                    className={`font-bold flex items-baseline gap-1.5 transition-colors ${filterStatus === 'deleted_by_ml' ? 'text-primary' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'}`}
                                 >
-                                    <span className={`material-symbols-outlined text-[20px] ${isSyncing ? 'animate-spin' : ''}`}>sync</span>
-                                    {isSyncing ? 'Sincronizando...' : 'Sincronizar Test'}
+                                    Eliminada por Mercado Libre
+                                    <span
+                                        title="Publicaciones cerradas y marcadas como eliminadas por Mercado Libre según el sub-estado que devuelve su API (no las que tú borraste desde aquí). Usa 'Sincronizar Test' para actualizar este dato."
+                                        className="material-symbols-outlined text-[14px] text-slate-400 cursor-help"
+                                    >
+                                        info
+                                    </span>
+                                    <span className={filterStatus === 'deleted_by_ml' ? 'text-primary' : 'text-slate-400 dark:text-slate-500'}>{statusCounts.deletedByMl}</span>
                                 </button>
                             </div>
                         </div>
@@ -691,7 +769,7 @@ export const TestProductsPage = () => {
                                             </tr>
                                         ) : (
                                             paginatedProducts.map(p => {
-                                                const badge = statusBadge(p.status);
+                                                const badge = statusBadge(p);
                                                 return (
                                                 <tr key={p.id} className={`hover:bg-slate-50 dark:hover:bg-slate-800/30 transition-colors group ${selectedIds.includes(p.id) ? 'bg-primary/5' : ''}`}>
                                                     <td className="px-6 py-4">

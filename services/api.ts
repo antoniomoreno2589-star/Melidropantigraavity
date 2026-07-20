@@ -490,7 +490,9 @@ export const api = {
                 meliId: p.meli_id,
                 publishPayload: p.publish_payload,
                 isPublishedToReal: p.is_published_to_real,
-                creationDate: new Date(p.created_at).toISOString().split('T')[0]
+                creationDate: new Date(p.created_at).toISOString().split('T')[0],
+                updatedDate: p.updated_at ? new Date(p.updated_at).toISOString().split('T')[0] : new Date(p.created_at).toISOString().split('T')[0],
+                subStatus: Array.isArray(p.sub_status) ? p.sub_status : []
             }));
         },
 
