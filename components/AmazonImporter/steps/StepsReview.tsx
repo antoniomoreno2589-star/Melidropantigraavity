@@ -270,7 +270,7 @@ export function Step4Attributes({
                                             field the blocking check upstream could still see and flag, with no
                                             way to fix it in the form (that's what this was hiding). */}
                                         {attrs.map((attr: any) => {
-                                            const isRequired = attr.tags?.required || attr.tags?.new_required || attr.tags?.conditional_required;
+                                            const isRequired = attr.tags?.required || attr.tags?.new_required || attr.tags?.conditional_required || attr.tags?.catalog_required;
                                             const isEmpty = !userAttrs[attr.id]?.toString().trim();
                                             return (
                                             <div key={attr.id}>

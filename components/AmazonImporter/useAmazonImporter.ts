@@ -135,8 +135,11 @@ function seedEmptyGtinReason(relevant: any[], hasBarcode: boolean): { id: string
 // sync so an attribute Step 4 flags as missing is always one it also renders
 // a field for. conditional_required matters in practice: e.g. GTIN_ABSENCE_REASON
 // (the "motivo" ML demands when a product has no GTIN) carries only this tag.
+// catalog_required matters too and can appear ALONE (e.g. NAME/"Nombre" in some
+// categories carries only this tag) — confirmed live that ML's publish validation
+// enforces it even with no required/new_required/conditional_required tag present.
 function isRequiredAttr(a: any): boolean {
-    return !!(a.tags?.required || a.tags?.new_required || a.tags?.conditional_required);
+    return !!(a.tags?.required || a.tags?.new_required || a.tags?.conditional_required || a.tags?.catalog_required);
 }
 
 // ML's category attribute lists can run well past what's comfortable to show
@@ -1223,7 +1226,14 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
     // equation rather than just hoping the same thing works on attempt N+1.
     const uploadProductImage = async (img: { url: string; cleanedUrl?: string }, token?: string): Promise<string | null> => {
         if (img.cleanedUrl) {
-            const id = await retryUpload(() => meliService.uploadImageBinary(img.cleanedUrl!, token), 4, 'cleaned-image upload', img.url);
+            // Clipdrop's cleaned output isn't guaranteed to clear ML's 500x250 minimum
+            // (unlike the normal path below, nothing upscales it) — run it through the
+            // same resize/upscale safeguard before uploading.
+            const uploadCleaned = async (): Promise<string | null> => {
+                const resizedUrl = await resizeImageIfNeeded(img.cleanedUrl!);
+                return meliService.uploadImageBinary(resizedUrl, token);
+            };
+            const id = await retryUpload(uploadCleaned, 4, 'cleaned-image upload', img.url);
             if (!id) console.error(`[Melidrop] Cleaned-image upload failed after all attempts: ${img.url}`);
             return id;
         }

@@ -106,7 +106,7 @@ async function callAI(prompt: string, imageUrl?: string): Promise<string> {
 
 async function mapAttributes(title: string, description: string, amazonAttrs: any, requiredAttrs: any[]): Promise<any> {
   const attrsForPrompt = requiredAttrs.map(a => {
-    const base: any = { id: a.id, name: a.name, required: !!(a.tags?.required || a.tags?.new_required || a.tags?.conditional_required) };
+    const base: any = { id: a.id, name: a.name, required: !!(a.tags?.required || a.tags?.new_required || a.tags?.conditional_required || a.tags?.catalog_required) };
     // BRAND/MARCA's `values` here is only ever a tiny, non-exhaustive sample of ML's
     // real brand catalog (confirmed live against a real category: 3 entries for a
     // catalog that has thousands of real brands) — sending it as allowed_values told
