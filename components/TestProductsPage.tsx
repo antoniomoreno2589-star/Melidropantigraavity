@@ -19,6 +19,8 @@ export const TestProductsPage = () => {
     const [filterStatus, setFilterStatus] = useState<'all' | 'published' | 'not_published' | 'active' | 'paused' | 'under_review'>('all');
     const [filterDate, setFilterDate] = useState<string>('');
     const [showFilters, setShowFilters] = useState(false);
+    const [currentPage, setCurrentPage] = useState(1);
+    const PAGE_SIZE = 20;
 
     const [testProducts, setTestProducts] = useState<TestProduct[]>([]);
     const [isLoading, setIsLoading] = useState(true);
@@ -115,6 +117,26 @@ export const TestProductsPage = () => {
         });
     }, [testProducts, searchQuery, filterStatus, filterDate]);
 
+    // Jumping back to page 1 on a new search/filter avoids landing on a page
+    // that no longer has any rows once the filtered set shrinks.
+    useEffect(() => {
+        setCurrentPage(1);
+    }, [searchQuery, filterStatus, filterDate]);
+
+    const totalPages = Math.max(1, Math.ceil(filteredProducts.length / PAGE_SIZE));
+
+    // Deleting the last item(s) on a page can leave currentPage past the new
+    // last page — pull it back instead of showing an empty table with a
+    // non-empty filtered count.
+    useEffect(() => {
+        if (currentPage > totalPages) setCurrentPage(totalPages);
+    }, [totalPages, currentPage]);
+
+    const paginatedProducts = useMemo(() => {
+        const start = (currentPage - 1) * PAGE_SIZE;
+        return filteredProducts.slice(start, start + PAGE_SIZE);
+    }, [filteredProducts, currentPage]);
+
     // Handlers
     const handleSync = async () => {
         setIsSyncing(true);
@@ -153,11 +175,15 @@ export const TestProductsPage = () => {
         }
     };
 
+    // Scoped to the current page, not every filtered row — with pagination in
+    // place, checking the header box while only 20 rows are on screen should
+    // only ever select those 20, not silently pull in off-screen pages too.
     const handleSelectAll = (e: React.ChangeEvent<HTMLInputElement>) => {
         if (e.target.checked) {
-            setSelectedIds(filteredProducts.map(p => p.id));
+            setSelectedIds(prev => Array.from(new Set([...prev, ...paginatedProducts.map(p => p.id)])));
         } else {
-            setSelectedIds([]);
+            const pageIds = new Set(paginatedProducts.map(p => p.id));
+            setSelectedIds(prev => prev.filter(id => !pageIds.has(id)));
         }
     };
 
@@ -641,10 +667,10 @@ export const TestProductsPage = () => {
                                     <thead className="bg-slate-50 dark:bg-slate-800/50 border-b border-slate-200 dark:border-slate-700 text-slate-500 dark:text-slate-400 font-semibold uppercase tracking-wider text-[10px]">
                                         <tr>
                                             <th className="px-6 py-4 w-12">
-                                                <input 
-                                                    type="checkbox" 
-                                                    className="rounded h-4 w-4 text-primary focus:ring-primary" 
-                                                    checked={filteredProducts.length > 0 && selectedIds.length === filteredProducts.length}
+                                                <input
+                                                    type="checkbox"
+                                                    className="rounded h-4 w-4 text-primary focus:ring-primary"
+                                                    checked={paginatedProducts.length > 0 && paginatedProducts.every(p => selectedIds.includes(p.id))}
                                                     onChange={handleSelectAll}
                                                 />
                                             </th>
@@ -664,7 +690,7 @@ export const TestProductsPage = () => {
                                                 </td>
                                             </tr>
                                         ) : (
-                                            filteredProducts.map(p => {
+                                            paginatedProducts.map(p => {
                                                 const badge = statusBadge(p.status);
                                                 return (
                                                 <tr key={p.id} className={`hover:bg-slate-50 dark:hover:bg-slate-800/30 transition-colors group ${selectedIds.includes(p.id) ? 'bg-primary/5' : ''}`}>
@@ -735,13 +761,30 @@ export const TestProductsPage = () => {
                             </div>
                             
                             {/* Pagination */}
-                            <div className="p-4 bg-slate-50 dark:bg-slate-800/50 border-t border-slate-200 dark:border-slate-700 flex justify-between items-center text-xs text-slate-500 font-bold">
-                                <div>Mostrando {filteredProducts.length} productos filtrados</div>
-                                <div className="flex gap-2">
-                                    <button className="p-1 rounded border border-slate-200 dark:border-slate-700 opacity-50"><span className="material-symbols-outlined text-[20px]">chevron_left</span></button>
-                                    <button className="p-1 rounded border border-slate-200 dark:border-slate-700 opacity-50"><span className="material-symbols-outlined text-[20px]">chevron_right</span></button>
+                            {filteredProducts.length > 0 && (
+                                <div className="p-4 bg-slate-50 dark:bg-slate-800/50 border-t border-slate-200 dark:border-slate-700 flex justify-between items-center text-xs text-slate-500 font-bold">
+                                    <div>
+                                        Mostrando {((currentPage - 1) * PAGE_SIZE) + 1}–{Math.min(currentPage * PAGE_SIZE, filteredProducts.length)} de {filteredProducts.length} productos filtrados
+                                    </div>
+                                    <div className="flex items-center gap-2">
+                                        <button
+                                            onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                                            disabled={currentPage === 1}
+                                            className="p-1 rounded border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-700 disabled:opacity-50 disabled:hover:bg-transparent transition-colors"
+                                        >
+                                            <span className="material-symbols-outlined text-[20px]">chevron_left</span>
+                                        </button>
+                                        <span className="px-2">Página {currentPage} de {totalPages}</span>
+                                        <button
+                                            onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+                                            disabled={currentPage === totalPages}
+                                            className="p-1 rounded border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-700 disabled:opacity-50 disabled:hover:bg-transparent transition-colors"
+                                        >
+                                            <span className="material-symbols-outlined text-[20px]">chevron_right</span>
+                                        </button>
+                                    </div>
                                 </div>
-                            </div>
+                            )}
                         </div>
 
                         {/* Bulk Actions */}
