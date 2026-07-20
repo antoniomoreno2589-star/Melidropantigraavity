@@ -30,7 +30,23 @@ const ENDPOINTS = {
 // LWA (Login with Amazon) token endpoint
 const LWA_TOKEN_URL = 'https://api.amazon.com/auth/o2/token';
 
+// LWA access tokens are valid ~3600s, but every call to getProduct/searchProducts/
+// updatePrice/estimateDelivery was requesting a brand-new one — a batch import of
+// N ASINs fired up to N (or more, with client-side retries) fresh LWA token
+// exchanges within seconds of each other. LWA's own rate limit is considerably
+// stricter than the Catalog/Pricing APIs it's gating, so this alone was enough to
+// start failing well before those APIs' own limits came into play. Cached
+// per-credential-set (this proxy is multi-tenant) and kept for a warm isolate's
+// lifetime; a cold start just refetches once.
+const tokenCache = new Map<string, { accessToken: string; expiresAt: number }>();
+
 async function getAccessToken(credentials: AmazonCredentials): Promise<string> {
+    const cacheKey = `${credentials.clientId}:${credentials.refreshToken}`;
+    const cached = tokenCache.get(cacheKey);
+    if (cached && Date.now() < cached.expiresAt) {
+        return cached.accessToken;
+    }
+
     console.log('Getting Amazon access token...');
 
     const params = new URLSearchParams({
@@ -56,6 +72,10 @@ async function getAccessToken(credentials: AmazonCredentials): Promise<string> {
 
     const data = await response.json();
     console.log('Access token obtained successfully');
+    // Cache with a 5-minute safety margin so we refresh a little before Amazon
+    // would actually reject it, not exactly at the edge.
+    const expiresInMs = (data.expires_in ?? 3600) * 1000;
+    tokenCache.set(cacheKey, { accessToken: data.access_token, expiresAt: Date.now() + expiresInMs - 5 * 60 * 1000 });
     return data.access_token;
 }
 
@@ -94,6 +114,33 @@ async function makeAmazonRequest(
     return await response.json();
 }
 
+// The Pricing API has its own rate limit separate from Catalog's, and can also
+// momentarily report no current offer even outside any rate limit. A single failed
+// attempt used to be swallowed silently into price: 0 (see getProduct below) with
+// nothing retried — the client had no way to detect it since getProduct still
+// "succeeded", so this exact failure only ever got fixed by a user noticing the
+// wrong price and manually clicking "Reintentar precio" (a fresh attempt). This
+// gives every call that same fresh-attempt chance automatically.
+async function makeAmazonRequestWithRetry(
+    endpoint: string,
+    path: string,
+    accessToken: string,
+    maxAttempts: number = 3
+) {
+    let lastErr: any;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        try {
+            return await makeAmazonRequest(endpoint, path, accessToken);
+        } catch (e) {
+            lastErr = e;
+            if (attempt < maxAttempts) {
+                await new Promise(r => setTimeout(r, 600 * attempt));
+            }
+        }
+    }
+    throw lastErr;
+}
+
 async function getProduct(credentials: AmazonCredentials, asin: string, params?: any) {
     const accessToken = await getAccessToken(credentials);
     const endpoint = ENDPOINTS[credentials.region as keyof typeof ENDPOINTS] || ENDPOINTS.na;
@@ -103,13 +150,14 @@ async function getProduct(credentials: AmazonCredentials, asin: string, params?:
     const catalogPath = `/catalog/2022-04-01/items/${asin}?marketplaceIds=${marketplaceId}&includedData=attributes,images,productTypes,salesRanks,summaries`;
     const catalogData = await makeAmazonRequest(endpoint, catalogPath, accessToken);
 
-    // Get pricing
+    // Get pricing — retried on its own since it fails independently of catalog
+    // (its own rate limit / momentary no-offer gaps), not just once-and-give-up.
     const pricingPath = `/products/pricing/v0/items/${asin}/offers?MarketplaceId=${marketplaceId}&ItemCondition=New`;
     let pricingData = null;
     try {
-        pricingData = await makeAmazonRequest(endpoint, pricingPath, accessToken);
+        pricingData = await makeAmazonRequestWithRetry(endpoint, pricingPath, accessToken, 3);
     } catch (e) {
-        console.warn('Could not fetch pricing data:', e);
+        console.warn('Could not fetch pricing data after retries:', e);
     }
 
     return {
