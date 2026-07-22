@@ -34,6 +34,7 @@ export const TestProductsPage = () => {
     const [showFilters, setShowFilters] = useState(false);
     const [currentPage, setCurrentPage] = useState(1);
     const PAGE_SIZE = 20;
+    const [previewImage, setPreviewImage] = useState<{ url: string; title: string } | null>(null);
 
     const [testProducts, setTestProducts] = useState<TestProduct[]>([]);
     const [isLoading, setIsLoading] = useState(true);
@@ -782,9 +783,17 @@ export const TestProductsPage = () => {
                                                     </td>
                                                     <td className="px-6 py-4 max-w-[300px]">
                                                         <div className="flex items-center gap-3">
-                                                            <div className="size-12 bg-slate-100 dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 overflow-hidden shadow-sm">
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => setPreviewImage({ url: p.imageUrl, title: p.title })}
+                                                                title="Ver imagen en grande"
+                                                                className="group relative size-12 flex-shrink-0 bg-slate-100 dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 overflow-hidden shadow-sm"
+                                                            >
                                                                 <img src={p.imageUrl} className="w-full h-full object-cover" alt={p.title} />
-                                                            </div>
+                                                                <span className="absolute inset-0 bg-black/0 group-hover:bg-black/40 transition-colors flex items-center justify-center">
+                                                                    <span className="material-symbols-outlined text-[16px] text-white opacity-0 group-hover:opacity-100 transition-opacity">zoom_in</span>
+                                                                </span>
+                                                            </button>
                                                             <div>
                                                                 <p className="font-bold text-slate-900 dark:text-white line-clamp-1">{p.title}</p>
                                                                 <span className="text-[10px] font-bold text-slate-400 uppercase">{p.category}</span>
@@ -793,7 +802,16 @@ export const TestProductsPage = () => {
                                                     </td>
                                                     <td className="px-6 py-4">
                                                         <div className="flex flex-col text-xs">
-                                                            <span className="text-primary font-bold">{p.asin}</span>
+                                                            <a
+                                                                href={`https://www.amazon.com/dp/${p.asin}`}
+                                                                target="_blank"
+                                                                rel="noopener noreferrer"
+                                                                title="Ver en Amazon"
+                                                                className="text-primary font-bold hover:underline inline-flex items-center gap-1 w-fit"
+                                                            >
+                                                                {p.asin}
+                                                                <span className="material-symbols-outlined text-[12px]">open_in_new</span>
+                                                            </a>
                                                             <span className="text-slate-500 font-mono tracking-tighter">{p.sku}</span>
                                                         </div>
                                                     </td>
@@ -896,6 +914,29 @@ export const TestProductsPage = () => {
                     </div>
                 )}
             </div>
+
+            {previewImage && (
+                <div
+                    className="fixed inset-0 z-50 flex items-center justify-center p-6 bg-black/70 backdrop-blur-sm"
+                    onClick={() => setPreviewImage(null)}
+                >
+                    <div className="relative max-w-3xl max-h-full" onClick={e => e.stopPropagation()}>
+                        <button
+                            onClick={() => setPreviewImage(null)}
+                            className="absolute -top-4 -right-4 size-9 rounded-full bg-white text-slate-700 shadow-lg flex items-center justify-center hover:bg-slate-100"
+                            title="Cerrar"
+                        >
+                            <span className="material-symbols-outlined text-[20px]">close</span>
+                        </button>
+                        <img
+                            src={previewImage.url}
+                            alt={previewImage.title}
+                            className="max-w-full max-h-[80vh] rounded-xl shadow-2xl object-contain bg-white"
+                        />
+                        <p className="mt-3 text-center text-sm font-bold text-white line-clamp-2">{previewImage.title}</p>
+                    </div>
+                </div>
+            )}
         </div>
     );
 };
