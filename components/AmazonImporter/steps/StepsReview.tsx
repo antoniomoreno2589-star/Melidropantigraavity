@@ -380,6 +380,23 @@ interface Step5Props {
     setAsinInput: (input: string) => void;
 }
 
+// Mirrors the row badge's own if/else priority (published > error > sandboxed
+// > duplicate/blacklisted > pending) one-for-one, just splitting "error" into
+// GTIN-specific vs everything else — so a tile's count always matches exactly
+// what filtering to it reveals below, and never double-counts a row into two
+// buckets.
+type ConsolidatedKey = 'published' | 'sandboxed' | 'duplicate' | 'blacklisted' | 'gtin_error' | 'other_error' | 'pending';
+
+const CONSOLIDATED_TILES: { key: ConsolidatedKey; label: string; icon: string; iconFilled?: boolean; colorCls: string }[] = [
+    { key: 'published', label: 'Publicados', icon: 'check_box', iconFilled: true, colorCls: 'bg-green-100 dark:bg-green-900/20 text-green-600' },
+    { key: 'sandboxed', label: 'Probado en Sandbox', icon: 'science', colorCls: 'bg-blue-100 dark:bg-blue-900/20 text-blue-600' },
+    { key: 'duplicate', label: 'Producto Duplicado', icon: 'content_copy', colorCls: 'bg-yellow-100 dark:bg-yellow-900/20 text-yellow-600' },
+    { key: 'blacklisted', label: 'En Lista Negra', icon: 'remove_circle', colorCls: 'bg-red-100 dark:bg-red-900/20 text-red-600' },
+    { key: 'gtin_error', label: 'Error por GTIN', icon: 'tag', colorCls: 'bg-indigo-100 dark:bg-indigo-900/20 text-indigo-600' },
+    { key: 'other_error', label: 'Otros Errores', icon: 'help', colorCls: 'bg-pink-100 dark:bg-pink-900/20 text-pink-600' },
+    { key: 'pending', label: 'Pendientes', icon: 'hourglass_empty', colorCls: 'bg-slate-100 dark:bg-slate-900/20 text-slate-500' },
+];
+
 export function Step5Publish({
     processedProducts,
     publishingStatus,
@@ -397,6 +414,34 @@ export function Step5Publish({
 }: Step5Props) {
     const [selectedAsins, setSelectedAsins] = useState<Set<string>>(new Set());
     const [isBulkProcessing, setIsBulkProcessing] = useState<boolean>(false);
+    const [activeFilter, setActiveFilter] = useState<ConsolidatedKey | null>(null);
+
+    // Same classification the row badge below computes per-product (published >
+    // error > sandboxed > dry-run error > skipped > pending), reused here so a
+    // tile's count always matches exactly what filtering to it reveals below.
+    const classifyAsin = (asin: string): ConsolidatedKey => {
+        const result = publishResults[asin];
+        const dry = dryRunResults[asin];
+        const val = validationResults[asin];
+
+        if (result?.id) return 'published';
+        if (result?.error) return result.error.toLowerCase().includes('gtin') ? 'gtin_error' : 'other_error';
+        if (dry?.testMeliId) return 'sandboxed';
+        if (dry?.dryError) return dry.dryError.toLowerCase().includes('gtin') ? 'gtin_error' : 'other_error';
+        if (val?.isSkipped) return val.isDuplicate ? 'duplicate' : 'blacklisted';
+        return 'pending';
+    };
+
+    const consolidatedGroups: Record<ConsolidatedKey, string[]> = {
+        published: [], sandboxed: [], duplicate: [], blacklisted: [], gtin_error: [], other_error: [], pending: [],
+    };
+    for (const p of processedProducts) {
+        consolidatedGroups[classifyAsin(p.asin)].push(p.asin);
+    }
+
+    const visibleProducts = activeFilter
+        ? processedProducts.filter((p: any) => consolidatedGroups[activeFilter].includes(p.asin))
+        : processedProducts;
 
     const toggleSelection = (asin: string) => {
         setSelectedAsins(prev => {
@@ -414,9 +459,11 @@ export function Step5Publish({
     // real-published and skipped (duplicate/forbidden-word) products can't be
     // selected here either. Sandbox-tested-only items stay selectable, since
     // "probar" then "publicar real" on the same item is a legitimate flow.
-    const selectableAsins = processedProducts
-        .filter(p => !validationResults[p.asin]?.isSkipped && !publishResults[p.asin]?.id)
-        .map(p => p.asin);
+    // Scoped to visibleProducts so "seleccionar todos" while a Consolidado
+    // filter is active only grabs what's actually on screen.
+    const selectableAsins = visibleProducts
+        .filter((p: any) => !validationResults[p.asin]?.isSkipped && !publishResults[p.asin]?.id)
+        .map((p: any) => p.asin);
 
     const toggleSelectAll = () => {
         if (selectedAsins.size === selectableAsins.length && selectableAsins.length > 0) {
@@ -566,6 +613,16 @@ export function Step5Publish({
 
                 {/* Products Table/List */}
                 <div className="space-y-2">
+                    {activeFilter && (
+                        <div className="flex items-center justify-between px-3 py-2 bg-primary/5 border border-primary/20 rounded-lg text-xs font-bold text-primary">
+                            <span>
+                                Filtrando por: {CONSOLIDATED_TILES.find(t => t.key === activeFilter)?.label} ({visibleProducts.length})
+                            </span>
+                            <button onClick={() => setActiveFilter(null)} className="flex items-center gap-1 hover:underline">
+                                Quitar filtro <span className="material-symbols-outlined text-[16px]">close</span>
+                            </button>
+                        </div>
+                    )}
                     {/* Header */}
                     <div className="flex items-center gap-3 px-4 py-3 bg-slate-50 dark:bg-slate-900/50 rounded-lg border border-slate-200 dark:border-slate-700">
                         <input
@@ -584,7 +641,7 @@ export function Step5Publish({
                     </div>
 
                     {/* Product Rows */}
-                    {processedProducts.map(processed => {
+                    {visibleProducts.map((processed: any) => {
                         const status = publishingStatus[processed.asin];
                         const result = publishResults[processed.asin];
                         const dry = dryRunResults[processed.asin];
@@ -700,6 +757,9 @@ export function Step5Publish({
                             </div>
                         );
                     })}
+                    {visibleProducts.length === 0 && (
+                        <p className="text-sm text-slate-400 italic text-center py-8">Ningún producto coincide con este filtro.</p>
+                    )}
                 </div>
             </div>
 
@@ -707,52 +767,38 @@ export function Step5Publish({
             {Object.keys(publishingStatus).length > 0 && (
                 <div className="space-y-6 animate-fade-in mt-8">
                     <div className="bg-white dark:bg-slate-800 p-8 rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm">
-                        <h3 className="text-base font-black text-slate-900 dark:text-white mb-8 tracking-tight uppercase">Consolidado:</h3>
+                        <div className="flex items-center justify-between mb-8">
+                            <h3 className="text-base font-black text-slate-900 dark:text-white tracking-tight uppercase">Consolidado:</h3>
+                            {activeFilter && (
+                                <button
+                                    onClick={() => setActiveFilter(null)}
+                                    className="text-xs font-bold text-primary hover:underline flex items-center gap-1"
+                                >
+                                    Quitar filtro <span className="material-symbols-outlined text-[16px]">close</span>
+                                </button>
+                            )}
+                        </div>
 
-                        <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-                            <div className="flex flex-col items-center text-center">
-                                <div className="size-12 bg-green-100 dark:bg-green-900/20 text-green-600 rounded-xl mb-3 flex items-center justify-center">
-                                    <span className="material-symbols-outlined filled text-[24px]">check_box</span>
-                                </div>
-                                <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Publicados</span>
-                                <span className="text-xl font-black text-slate-900 dark:text-white mt-1">
-                                    {Object.values(publishingStatus).filter(s => s === 'success').length}
-                                </span>
-                            </div>
-                            <div className="flex flex-col items-center text-center">
-                                <div className="size-12 bg-yellow-100 dark:bg-yellow-900/20 text-yellow-600 rounded-xl mb-3 flex items-center justify-center">
-                                    <span className="material-symbols-outlined text-[24px]">content_copy</span>
-                                </div>
-                                <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Producto Duplicado</span>
-                                <span className="text-xl font-black text-slate-900 dark:text-white mt-1">
-                                    {Object.values(validationResults).filter(v => v.isDuplicate).length}
-                                </span>
-                            </div>
-                            <div className="flex flex-col items-center text-center">
-                                <div className="size-12 bg-red-100 dark:bg-red-900/20 text-red-600 rounded-xl mb-3 flex items-center justify-center">
-                                    <span className="material-symbols-outlined text-[24px]">remove_circle</span>
-                                </div>
-                                <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">En Lista Negra</span>
-                                <span className="text-xl font-black text-slate-900 dark:text-white mt-1">
-                                    {Object.values(validationResults).filter(v => v.hasForbiddenWords).length}
-                                </span>
-                            </div>
-                            <div className="flex flex-col items-center text-center">
-                                <div className="size-12 bg-blue-100 dark:bg-blue-900/20 text-blue-600 rounded-xl mb-3 flex items-center justify-center">
-                                    <span className="material-symbols-outlined text-[24px]">tag</span>
-                                </div>
-                                <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Error por GTIN</span>
-                                <span className="text-xl font-black text-slate-900 dark:text-white mt-1">0</span>
-                            </div>
-                            <div className="flex flex-col items-center text-center">
-                                <div className="size-12 bg-pink-100 dark:bg-pink-900/20 text-pink-600 rounded-xl mb-3 flex items-center justify-center">
-                                    <span className="material-symbols-outlined text-[24px]">help</span>
-                                </div>
-                                <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Otros Errores</span>
-                                <span className="text-xl font-black text-slate-900 dark:text-white mt-1">
-                                    {Object.values(publishingStatus).filter(s => s === 'error').length}
-                                </span>
-                            </div>
+                        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-7 gap-4">
+                            {CONSOLIDATED_TILES.map(tile => {
+                                const count = consolidatedGroups[tile.key].length;
+                                const isActive = activeFilter === tile.key;
+                                return (
+                                    <button
+                                        key={tile.key}
+                                        onClick={() => setActiveFilter(prev => prev === tile.key ? null : tile.key)}
+                                        disabled={count === 0}
+                                        title={`Filtrar por: ${tile.label}`}
+                                        className={`flex flex-col items-center text-center rounded-xl py-2 transition-all ${isActive ? 'ring-2 ring-primary bg-primary/5' : count > 0 ? 'hover:bg-slate-50 dark:hover:bg-slate-900/40' : 'opacity-40 cursor-default'}`}
+                                    >
+                                        <div className={`size-12 ${tile.colorCls} rounded-xl mb-3 flex items-center justify-center`}>
+                                            <span className={`material-symbols-outlined ${tile.iconFilled ? 'filled' : ''} text-[24px]`}>{tile.icon}</span>
+                                        </div>
+                                        <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{tile.label}</span>
+                                        <span className="text-xl font-black text-slate-900 dark:text-white mt-1">{count}</span>
+                                    </button>
+                                );
+                            })}
                         </div>
                     </div>
                 </div>
