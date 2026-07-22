@@ -264,11 +264,19 @@ export function useAmazonImporter() {
             const MAX_ATTEMPTS = 4;
             for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
                 try {
-                    return await amazonService.getProduct(asin);
+                    const result = await amazonService.getProduct(asin);
+                    // amazon-proxy retries the Pricing sub-call internally, but on a busy
+                    // batch that budget can still run out — when it does, getProduct still
+                    // resolves normally with price 0 instead of throwing, so this loop would
+                    // never fire again and the product would silently land in Step 4 needing
+                    // a manual "Reintentar precio" click. Treat a priceless "success" the same
+                    // as a thrown error (unless we're out of attempts) so it gets the same
+                    // retry runway.
+                    if (result.price > 0 || attempt === MAX_ATTEMPTS) return result;
                 } catch (e: any) {
                     if (attempt === MAX_ATTEMPTS) throw e;
-                    await new Promise(r => setTimeout(r, 1200 * attempt));
                 }
+                await new Promise(r => setTimeout(r, 1200 * attempt));
             }
         };
 
@@ -319,14 +327,51 @@ export function useAmazonImporter() {
     // briefly show no active offer and come right back, so "sin precio" from the
     // original Step 2 load doesn't always mean the product can't be priced right
     // now. Only touches price/currency; title/images/category stay as reviewed.
+    // A couple of attempts here (same reasoning as Step 2's fetchOneWithRetry)
+    // means one click — or one pass of handleRetryAllPrices — has a real chance
+    // of fixing it instead of just re-running into the same rate-limit instant.
     const refetchProductPrice = async (asin: string): Promise<void> => {
+        const ATTEMPTS = 2;
+        for (let attempt = 1; attempt <= ATTEMPTS; attempt++) {
+            try {
+                const product = await amazonService.getProduct(asin);
+                if (product.price > 0 || attempt === ATTEMPTS) {
+                    setLoadedProducts(prev => prev.map(p =>
+                        p.asin === asin ? { ...p, price: product.price, currency: product.currency } : p
+                    ));
+                    return;
+                }
+            } catch (e: any) {
+                console.error(`[Melidrop] refetchProductPrice failed for ${asin} (attempt ${attempt}):`, e.message);
+                if (attempt === ATTEMPTS) return;
+            }
+            await new Promise(r => setTimeout(r, 1000 * attempt));
+        }
+    };
+
+    // Bulk version of the above — retries every currently priceless product in
+    // one action instead of the user hunting down each "Reintentar precio"
+    // button one at a time. Kept at a lower concurrency than Step 2's initial
+    // load (3 vs 5): these are ASINs that already failed pricing once, so
+    // piling on more simultaneous requests risks reproducing the same
+    // rate-limit instead of giving it room to clear.
+    const [retryingAllPrices, setRetryingAllPrices] = useState(false);
+    const handleRetryAllPrices = async () => {
+        const targets = loadedProducts.filter(p => !p.price || p.price <= 0);
+        if (targets.length === 0) return;
+        setRetryingAllPrices(true);
         try {
-            const product = await amazonService.getProduct(asin);
-            setLoadedProducts(prev => prev.map(p =>
-                p.asin === asin ? { ...p, price: product.price, currency: product.currency } : p
-            ));
-        } catch (e: any) {
-            console.error(`[Melidrop] refetchProductPrice failed for ${asin}:`, e.message);
+            const CONCURRENCY = 3;
+            let nextIndex = 0;
+            const worker = async () => {
+                while (nextIndex < targets.length) {
+                    const p = targets[nextIndex++];
+                    await refetchProductPrice(p.asin);
+                }
+            };
+            await Promise.all(Array.from({ length: Math.min(CONCURRENCY, targets.length) }, () => worker()));
+        } finally {
+            setRetryingAllPrices(false);
         }
     };
 
@@ -1473,6 +1518,8 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
         loadingAsins,
         handleLoadAsins,
         refetchProductPrice,
+        handleRetryAllPrices,
+        retryingAllPrices,
         removeProduct,
         // Step 3
         processedProducts,

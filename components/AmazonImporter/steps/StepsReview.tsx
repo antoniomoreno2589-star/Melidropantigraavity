@@ -24,6 +24,8 @@ export function Step4Attributes({
     selectCategoryForProduct,
     getBlockingIssues,
     refetchProductPrice,
+    handleRetryAllPrices,
+    retryingAllPrices,
     removeProduct,
     aiCreditsExhausted,
     setStep,
@@ -38,6 +40,8 @@ export function Step4Attributes({
         if (issues.length > 0) blockingByAsin[processed.asin] = issues;
     }
     const blockedCount = Object.keys(blockingByAsin).length;
+    const priceIssueCount = Object.values(blockingByAsin)
+        .filter(issues => issues.some(i => i.startsWith('Sin precio de Amazon'))).length;
 
     // Amazon's pricing API reflects live stock/offers — a single-seller item can
     // briefly show no active offer at load time and be available again minutes
@@ -113,6 +117,24 @@ export function Step4Attributes({
                             y vuelve a intentar.
                         </p>
                     </div>
+                </div>
+            )}
+            {priceIssueCount > 0 && (
+                <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-2xl p-4 flex items-center justify-between gap-3 flex-wrap">
+                    <div className="flex items-start gap-3">
+                        <span className="material-symbols-outlined text-amber-500 flex-shrink-0">price_change</span>
+                        <p className="text-sm text-amber-700 dark:text-amber-400">
+                            <span className="font-black">{priceIssueCount} producto{priceIssueCount !== 1 ? 's' : ''}</span> sin precio de Amazon — puede ser una limitación temporal (rate limit) más que definitiva.
+                        </p>
+                    </div>
+                    <button
+                        onClick={handleRetryAllPrices}
+                        disabled={retryingAllPrices}
+                        className="flex items-center gap-2 px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-xs font-black shadow-sm transition-all disabled:opacity-50 flex-shrink-0"
+                    >
+                        <span className={`material-symbols-outlined text-[18px] ${retryingAllPrices ? 'animate-spin' : ''}`}>{retryingAllPrices ? 'progress_activity' : 'sync'}</span>
+                        {retryingAllPrices ? 'Reintentando...' : `Reintentar ${priceIssueCount} precio${priceIssueCount !== 1 ? 's' : ''}`}
+                    </button>
                 </div>
             )}
             {processedProducts.map(processed => {
