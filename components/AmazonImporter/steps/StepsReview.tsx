@@ -11,6 +11,14 @@ type ValidationResult = {
     isSkipped?: boolean;
 };
 
+type Step4FilterKey = 'errors' | 'complete' | 'skipped';
+
+const STEP4_FILTERS: { key: Step4FilterKey; label: string; colorCls: string }[] = [
+    { key: 'errors', label: 'Con errores', colorCls: 'text-amber-700 dark:text-amber-400 border-amber-200 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 hover:bg-amber-100 dark:hover:bg-amber-900/40' },
+    { key: 'complete', label: 'Completos', colorCls: 'text-green-700 dark:text-green-400 border-green-200 dark:border-green-700 bg-green-50 dark:bg-green-900/20 hover:bg-green-100 dark:hover:bg-green-900/40' },
+    { key: 'skipped', label: 'Descartados', colorCls: 'text-slate-500 dark:text-slate-400 border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/40 hover:bg-slate-100 dark:hover:bg-slate-900/60' },
+];
+
 export function Step4Attributes({
     processedProducts,
     validationResults,
@@ -42,6 +50,20 @@ export function Step4Attributes({
     const blockedCount = Object.keys(blockingByAsin).length;
     const priceIssueCount = Object.values(blockingByAsin)
         .filter(issues => issues.some(i => i.startsWith('Sin precio de Amazon'))).length;
+
+    // Same 3-way split Step 5's "Consolidado" filter uses, scoped to what Step 4
+    // actually cares about — lets the user jump straight to the ASINs that still
+    // need fixing instead of scanning the whole batch by eye.
+    const [activeFilter, setActiveFilter] = useState<Step4FilterKey | null>(null);
+    const step4Groups: Record<Step4FilterKey, string[]> = { errors: [], complete: [], skipped: [] };
+    for (const processed of processedProducts) {
+        if (validationResults[processed.asin]?.isSkipped) step4Groups.skipped.push(processed.asin);
+        else if (blockingByAsin[processed.asin]) step4Groups.errors.push(processed.asin);
+        else step4Groups.complete.push(processed.asin);
+    }
+    const visibleProducts = activeFilter
+        ? processedProducts.filter(p => step4Groups[activeFilter].includes(p.asin))
+        : processedProducts;
 
     // Amazon's pricing API reflects live stock/offers — a single-seller item can
     // briefly show no active offer at load time and be available again minutes
@@ -137,7 +159,40 @@ export function Step4Attributes({
                     </button>
                 </div>
             )}
-            {processedProducts.map(processed => {
+            {processedProducts.length > 0 && (
+                <div className="flex items-center gap-2 flex-wrap">
+                    <button
+                        onClick={() => setActiveFilter(null)}
+                        className={`text-xs font-black px-3 py-1.5 rounded-lg border transition-all ${activeFilter === null ? 'bg-primary text-white border-primary' : 'bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-700 hover:border-primary hover:text-primary'}`}
+                    >
+                        Todos ({processedProducts.length})
+                    </button>
+                    {STEP4_FILTERS.map(f => {
+                        const count = step4Groups[f.key].length;
+                        const isActive = activeFilter === f.key;
+                        return (
+                            <button
+                                key={f.key}
+                                onClick={() => setActiveFilter(prev => prev === f.key ? null : f.key)}
+                                disabled={count === 0}
+                                title={`Filtrar por: ${f.label}`}
+                                className={`text-xs font-black px-3 py-1.5 rounded-lg border transition-all disabled:opacity-40 disabled:cursor-default ${isActive ? 'bg-primary text-white border-primary' : count > 0 ? f.colorCls : 'bg-white dark:bg-slate-900 text-slate-400 dark:text-slate-600 border-slate-200 dark:border-slate-700'}`}
+                            >
+                                {f.label} ({count})
+                            </button>
+                        );
+                    })}
+                </div>
+            )}
+            {activeFilter && (
+                <div className="flex items-center justify-between px-3 py-2 bg-primary/5 border border-primary/20 rounded-lg text-xs font-bold text-primary">
+                    <span>Filtrando por: {STEP4_FILTERS.find(f => f.key === activeFilter)?.label} ({visibleProducts.length})</span>
+                    <button onClick={() => setActiveFilter(null)} className="flex items-center gap-1 hover:underline">
+                        Quitar filtro <span className="material-symbols-outlined text-[16px]">close</span>
+                    </button>
+                </div>
+            )}
+            {visibleProducts.map(processed => {
                 const val = validationResults[processed.asin];
                 const allAttrs = categoryAttributes[processed.asin] || [];
                 const userAttrs = userAttributes[processed.asin] || {};
@@ -344,6 +399,9 @@ export function Step4Attributes({
                     </div>
                 );
             })}
+            {visibleProducts.length === 0 && (
+                <p className="text-sm text-slate-400 italic text-center py-8">Ningún producto coincide con este filtro.</p>
+            )}
 
             {blockedCount > 0 && (
                 <div className="flex items-center gap-2 text-sm font-bold text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700 rounded-xl p-3">
