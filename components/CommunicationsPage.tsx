@@ -26,7 +26,38 @@ interface ChatSession {
     status?: string; // for questions: UNANSWERED, ANSWERED, etc.
     packId?: string | number; // for messages
     counterpartId?: string | number; // for messages: buyerId
+    kind: 'question' | 'message' | 'order' | 'claim';
 }
+
+// A question only has two real states (answered/unanswered) — status IS the
+// pending signal there, same as a fresh order with no conversation yet. A
+// claim is pending while ML still has it open (that's what its own `unread`
+// already encodes). A plain message thread's pending signal is genuinely
+// different from "unread": the seller can have already seen the buyer's
+// message and still owe a reply, so this checks who sent the LAST message
+// instead of reusing the read flag — that's what makes "Pendientes" an
+// actually distinct filter from "No leídos" instead of a copy of it.
+const isPendingReply = (item: ChatSession): boolean => {
+    if (item.kind === 'question' || item.kind === 'order') return item.status === 'UNANSWERED';
+    if (item.kind === 'claim') return item.unread;
+    const last = item.messages[item.messages.length - 1];
+    return last ? !last.isUser : item.unread;
+};
+
+// Single definition of "needs attention" (unread OR awaiting a reply), used
+// for sort priority everywhere on this page instead of 4 separate, slightly
+// different inline versions of the same rule that could silently drift apart.
+const needsAttention = (item: ChatSession): boolean => item.unread === true || isPendingReply(item);
+
+const byAttentionThenDate = (a: ChatSession, b: ChatSession): number => {
+    const aNeeds = needsAttention(a);
+    const bNeeds = needsAttention(b);
+    if (aNeeds && !bNeeds) return -1;
+    if (!aNeeds && bNeeds) return 1;
+    const dateA = a.dateCreated ? a.dateCreated.getTime() : 0;
+    const dateB = b.dateCreated ? b.dateCreated.getTime() : 0;
+    return dateB - dateA;
+};
 
 export const CommunicationsPage = () => {
     const [searchParams] = useSearchParams();
@@ -62,6 +93,15 @@ export const CommunicationsPage = () => {
     };
 
     useEffect(() => {
+        // Without this, switching tabs twice in quick succession leaves two
+        // fetches in flight — if the older one resolves after the newer one
+        // (network jitter, no guarantee they finish in request order), its
+        // setQuestions/setMessages calls fire last and silently overwrite the
+        // fresh, correctly-sorted data with a stale snapshot. That looks
+        // exactly like "recent/unread items don't reliably show at the top"
+        // even though the sort itself is correct — it's the wrong dataset
+        // winning the race, not a bad comparator.
+        let cancelled = false;
         const fetchMeliComms = async () => {
             console.log("CommunicationsPage: Fetching Meli communications...");
             setIsLoading(true);
@@ -96,6 +136,7 @@ export const CommunicationsPage = () => {
                     time: new Date(q.date_created).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
                     unread: q.status === 'UNANSWERED',
                     status: q.status,
+                    kind: 'question' as const,
                     messages: [
                         { id: q.id, text: q.text, time: new Date(q.date_created).toLocaleTimeString(), isUser: false },
                         ...(q.answer ? [{
@@ -105,11 +146,7 @@ export const CommunicationsPage = () => {
                             isUser: true
                         }] : [])
                     ]
-                })).sort((a, b) => {
-                    if (a.unread && !b.unread) return -1;
-                    if (!a.unread && b.unread) return 1;
-                    return b.dateCreated.getTime() - a.dateCreated.getTime();
-                }); // Sort by priority and date
+                })).sort(byAttentionThenDate);
 
                 const formattedMessages: ChatSession[] = (meliMessages || []).map((m: any) => {
                     // Handle pack structure vs conversation structure vs individual message structure
@@ -133,6 +170,7 @@ export const CommunicationsPage = () => {
                         dateCreated: new Date(fromMsg.date || m.date_created || Date.now()),
                         time: fromMsg.date ? new Date(fromMsg.date).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Reciente',
                         unread: isUnread,
+                        kind: 'message' as const,
                         packId: m.pack_id || m.id, // Assuming generic search returns basic pack info
                         counterpartId: isFromMe ? (toUser.id || toUser.user_id) : (fromUser.id || fromUser.user_id),
                         messages: [
@@ -144,11 +182,7 @@ export const CommunicationsPage = () => {
                             }
                         ]
                     };
-                }).sort((a, b) => {
-                    if (a.unread && !b.unread) return -1;
-                    if (!a.unread && b.unread) return 1;
-                    return b.dateCreated.getTime() - a.dateCreated.getTime();
-                });
+                }).sort(byAttentionThenDate);
 
                 // Merge orders that don't have conversations yet
                 const existingPackIds = new Set(formattedMessages.map(m => m.packId?.toString()));
@@ -194,6 +228,7 @@ export const CommunicationsPage = () => {
                         dateCreated: new Date(o.date_created),
                         time: new Date(o.date_created).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
                         unread: true,
+                        kind: 'order' as const,
                         packId: o.pack_id || o.id,
                         counterpartId: o.buyer?.id,
                         messages: [
@@ -206,7 +241,7 @@ export const CommunicationsPage = () => {
                         ],
                         status: 'UNANSWERED' // Set to UNANSWERED/Pending so it sorts to top
                     };
-                }).sort((a, b) => b.dateCreated.getTime() - a.dateCreated.getTime()); // Sort by most recent first
+                }).sort(byAttentionThenDate);
 
                 // Add claims to messages list
                 const formattedClaims: ChatSession[] = (meliClaims || []).map((c: any) => ({
@@ -216,6 +251,7 @@ export const CommunicationsPage = () => {
                     dateCreated: new Date(c.date_created),
                     time: new Date(c.date_created).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
                     unread: c.status === 'opened' || c.status === 'reopened',
+                    kind: 'claim' as const,
                     messages: [
                         { id: c.id, text: `Estado: ${c.status} - Tipo: ${c.type}. Revisa tu cuenta de Mercado Libre.`, time: new Date(c.date_created).toLocaleTimeString(), isUser: false }
                     ]
@@ -246,17 +282,9 @@ export const CommunicationsPage = () => {
                     return true;
                 });
 
-                const finalMessages = [...uniqueMessages, ...formattedClaims, ...orderChats].sort((a, b) => {
-                    const aPending = a.unread === true || a.status === 'UNANSWERED';
-                    const bPending = b.unread === true || b.status === 'UNANSWERED';
+                const finalMessages = [...uniqueMessages, ...formattedClaims, ...orderChats].sort(byAttentionThenDate);
 
-                    if (aPending && !bPending) return -1;
-                    if (!aPending && bPending) return 1;
-                    
-                    const dateA = a.dateCreated || new Date(0);
-                    const dateB = b.dateCreated || new Date(0);
-                    return dateB.getTime() - dateA.getTime();
-                });
+                if (cancelled) return; // a newer fetch (tab switched again) already took over
 
                 setQuestions(formattedQuestions);
                 setMessages(finalMessages);
@@ -270,35 +298,29 @@ export const CommunicationsPage = () => {
                 console.error("CommunicationsPage: Error fetching communications:", err);
                 // No alert to avoid interrupting the flow if some API fails but others work
             } finally {
-                setIsLoading(false);
+                if (!cancelled) setIsLoading(false);
             }
         };
 
         fetchMeliComms();
+        return () => { cancelled = true; };
     }, [activeTab]);
 
     const getFilteredList = () => {
-        let list = activeTab === 'questions' ? questions : messages;
+        const list = activeTab === 'questions' ? questions : messages;
 
-        // Priorizar no leídos primero
-        const prioritized = [...list].sort((a, b) => {
-            const aUnread = a.unread === true || a.status === 'UNANSWERED';
-            const bUnread = b.unread === true || b.status === 'UNANSWERED';
+        // Priorizar los que necesitan atención primero, luego por fecha
+        const prioritized = [...list].sort(byAttentionThenDate);
 
-            if (aUnread && !bUnread) return -1;
-            if (!aUnread && bUnread) return 1;
-
-            const dateA = (a.dateCreated ? a.dateCreated.getTime() : 0);
-            const dateB = (b.dateCreated ? b.dateCreated.getTime() : 0);
-            return dateB - dateA;
-        });
-
-        if (filterStatus === 'pending' || filterStatus === 'unread') {
-            return prioritized.filter(m =>
-                m.unread === true ||
-                m.status === 'UNANSWERED'
-            );
-        }
+        // "No leídos" and "Pendientes" used to be the exact same filter (both
+        // matched unread === true || status === 'UNANSWERED'), so toggling
+        // between them never changed what was shown. They're now genuinely
+        // different: "No leídos" is ML's own read/unread signal, "Pendientes"
+        // is "the seller still owes a reply" (isPendingReply) — a message can
+        // be read but still pending, which is exactly the case the old shared
+        // predicate couldn't distinguish.
+        if (filterStatus === 'unread') return prioritized.filter(m => m.unread === true);
+        if (filterStatus === 'pending') return prioritized.filter(isPendingReply);
 
         return prioritized;
     };
