@@ -1109,27 +1109,58 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
                 }
             }
 
-            // Build production payload to store for "Publicar Real" later
-            const productionPayload = buildItemPayload(processed, false);
+            // testMeliId above is already a REAL sandbox listing at this point (or a
+            // genuine "nothing published" null) — this bookkeeping write is what makes
+            // hard locks #1/#2 durable for future calls. It's isolated in its own
+            // try/catch (with retries) rather than left in the outer try: buildItemPayload
+            // (below) does `loadedProducts.find(...)!` — a non-null assertion that throws
+            // if `loadedProducts` no longer has this asin by the time this second call
+            // runs — and a bare throw here used to fall straight to the outer catch below,
+            // which sets publishResults (a different state slice the sandbox hard locks
+            // never read) and never records testMeliId. That silently erases all evidence
+            // of an ML publish that already succeeded, so the next "Seleccionar fallidos"
+            // retry (or ML's own search lagging behind a fresh publish) would create a
+            // genuine second sandbox listing.
+            let bookkeepingError: string | null = null;
+            try {
+                // Build production payload to store for "Publicar Real" later
+                const productionPayload = buildItemPayload(processed, false);
+                const bookkeepingRow = {
+                    title: payload.title,
+                    asin: processed.asin,
+                    sku: processed.asin,
+                    price_mxn: payload.price,
+                    cost_usd: loadedProducts.find(p => p.asin === processed.asin)?.price || 0,
+                    image_url: processed.images[0]?.url,
+                    category: payload.category_id,
+                    // publishResult IS ML's raw item response on a fresh publish (status
+                    // included directly), or the real status checkDuplicate already read
+                    // on a skip — either way this is what ML actually returned, not an
+                    // assumption. 'active' only as a last resort when nothing published.
+                    status: publishResult?.status || 'active',
+                    publish_payload: productionPayload,
+                    ...(testMeliId ? { meli_id: testMeliId } : {})
+                };
+                let lastErr: any = null;
+                for (let attempt = 0; attempt < 3; attempt++) {
+                    try {
+                        await api.testProducts.create(bookkeepingRow);
+                        lastErr = null;
+                        break;
+                    } catch (e) {
+                        lastErr = e;
+                        if (attempt < 2) await new Promise(r => setTimeout(r, 500 * (attempt + 1)));
+                    }
+                }
+                if (lastErr) throw lastErr;
+            } catch (bkErr: any) {
+                console.error(`[Melidrop] ${asin}: sandbox publish ${testMeliId ? `succeeded (${testMeliId})` : 'did not produce an id'} but bookkeeping write failed after retries:`, bkErr);
+                if (testMeliId) {
+                    bookkeepingError = `Se publicó en sandbox (ID ${testMeliId}) pero no se pudo guardar el registro local: ${bkErr.message}. No reintentes manualmente — recarga la página para confirmar el estado antes de volver a intentar.`;
+                }
+            }
 
-            await api.testProducts.create({
-                title: payload.title,
-                asin: processed.asin,
-                sku: processed.asin,
-                price_mxn: payload.price,
-                cost_usd: loadedProducts.find(p => p.asin === processed.asin)?.price || 0,
-                image_url: processed.images[0]?.url,
-                category: payload.category_id,
-                // publishResult IS ML's raw item response on a fresh publish (status
-                // included directly), or the real status checkDuplicate already read
-                // on a skip — either way this is what ML actually returned, not an
-                // assumption. 'active' only as a last resort when nothing published.
-                status: publishResult?.status || 'active',
-                publish_payload: productionPayload,
-                ...(testMeliId ? { meli_id: testMeliId } : {})
-            });
-
-            let dryError: string | null = null;
+            let dryError: string | null = bookkeepingError;
             if (!testMeliId && publishResult !== null) {
                 const causeDetails: string[] = [];
                 if (publishResult?.cause && Array.isArray(publishResult.cause)) {

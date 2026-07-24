@@ -333,32 +333,47 @@ export const TestProductsPage = () => {
             const product = testProducts.find(p => p.id === id);
             if (meliId && product) {
                 const token = await resolveItemToken(product);
-                await meliService.deleteItem(meliId, token).catch(() => {});
+                // Swallowing a failed remote delete here used to still drop the local
+                // row unconditionally — that row's meli_id is the only thing that lets
+                // a future re-import of this ASIN detect "already in sandbox" without
+                // relying on ML's own catalog search (which can 403 silently on a
+                // stale test-user token after "Regenerar Usuario", or lag behind a
+                // fresh publish). Losing it while the ML listing is still live is a
+                // second, independent way to end up with a genuine duplicate.
+                await meliService.deleteItem(meliId, token);
             }
             await api.testProducts.delete(id);
             setTestProducts(prev => prev.filter(p => p.id !== id));
         } catch (err: any) {
             console.error("Error deleting product:", err);
-            alert("No se pudo eliminar: " + err.message);
+            alert("No se pudo eliminar en MercadoLibre — el producto se mantiene en la lista para evitar una publicación duplicada más adelante. " + err.message);
         }
     };
 
     const handleBulkDelete = async () => {
         if (selectedIds.length === 0) return;
         if (!confirm(`¿Eliminar ${selectedIds.length} producto(s) seleccionado(s)?`)) return;
-        try {
-            const toDelete = testProducts.filter(p => selectedIds.includes(p.id));
-            await Promise.all(toDelete.map(async p => {
+        const toDelete = testProducts.filter(p => selectedIds.includes(p.id));
+        const deletedIds: string[] = [];
+        const failedTitles: string[] = [];
+        await Promise.all(toDelete.map(async p => {
+            try {
                 if (p.meliId) {
                     const token = await resolveItemToken(p);
-                    await meliService.deleteItem(p.meliId, token).catch(() => {});
+                    await meliService.deleteItem(p.meliId, token);
                 }
                 await api.testProducts.delete(p.id);
-            }));
-            setTestProducts(prev => prev.filter(p => !selectedIds.includes(p.id)));
-            setSelectedIds([]);
-        } catch (err: any) {
-            alert("Error al eliminar: " + err.message);
+                deletedIds.push(p.id);
+            } catch (err: any) {
+                // Same reasoning as handleDelete: keep the local row (and its meli_id)
+                // when the ML-side delete fails, instead of silently discarding it.
+                failedTitles.push(p.title);
+            }
+        }));
+        setTestProducts(prev => prev.filter(p => !deletedIds.includes(p.id)));
+        setSelectedIds(prev => prev.filter(id => !deletedIds.includes(id)));
+        if (failedTitles.length > 0) {
+            alert(`No se pudieron eliminar ${failedTitles.length} producto(s) en MercadoLibre — se mantienen en la lista para evitar publicaciones duplicadas:\n${failedTitles.join('\n')}`);
         }
     };
 
@@ -427,23 +442,42 @@ export const TestProductsPage = () => {
 
     const clearSandbox = async () => {
         const confirmClear = window.confirm('¿Estás seguro de limpiar todo el entorno de pruebas? Esta acción eliminará permanentemente todos los productos del catálogo de test, incluyendo sus publicaciones en la cuenta de prueba de MercadoLibre.');
-        if (confirmClear) {
-            try {
-                // Delete each sandbox listing from ML first (using the test user's own
-                // token — these ids don't exist under the real account) so "clear"
-                // actually clears MercadoLibre's test catalog too, not just this table.
-                const toDelete = testProducts.filter(p => p.meliId && !p.isPublishedToReal);
-                await Promise.all(toDelete.map(async p => {
-                    const token = await resolveItemToken(p);
-                    await meliService.deleteItem(p.meliId!, token).catch(() => {});
-                }));
+        if (!confirmClear) return;
+        try {
+            // Delete each sandbox listing from ML first (using the test user's own
+            // token — these ids don't exist under the real account) so "clear"
+            // actually clears MercadoLibre's test catalog too, not just this table.
+            const toDelete = testProducts.filter(p => p.meliId && !p.isPublishedToReal);
+            const failedIds = new Set<string>();
+            await Promise.all(toDelete.map(async p => {
+                const token = await resolveItemToken(p);
+                try {
+                    await meliService.deleteItem(p.meliId!, token);
+                } catch {
+                    failedIds.add(p.id);
+                }
+            }));
+
+            if (failedIds.size === 0) {
                 await api.testProducts.clearAll();
                 setTestProducts([]);
                 setSelectedIds([]);
                 alert('Entorno Sandbox limpiado exitosamente.');
-            } catch (err) {
-                console.error("Clear error:", err);
+                return;
             }
+
+            // Some ML-side deletes failed — only drop the local rows that are
+            // actually gone from ML's sandbox. Keeping the failed ones (with their
+            // meli_id intact) is what stops a future re-import of that ASIN from
+            // slipping past every duplicate check and creating a genuine second
+            // listing under the orphaned id.
+            const toKeep = testProducts.filter(p => failedIds.has(p.id));
+            await Promise.all(testProducts.filter(p => !failedIds.has(p.id)).map(p => api.testProducts.delete(p.id)));
+            setTestProducts(toKeep);
+            setSelectedIds([]);
+            alert(`Se limpió el entorno Sandbox, excepto ${failedIds.size} producto(s) que no se pudieron eliminar en MercadoLibre (se mantienen para evitar duplicados).`);
+        } catch (err) {
+            console.error("Clear error:", err);
         }
     };
 

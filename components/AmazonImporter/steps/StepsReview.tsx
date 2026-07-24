@@ -748,7 +748,11 @@ export function Step5Publish({
                                             <div className="flex items-start gap-2 text-[10px] text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700 rounded-lg p-2">
                                                 <span className="material-symbols-outlined text-[14px] flex-shrink-0 mt-0.5">warning</span>
                                                 <div>
-                                                    <span className="font-bold block">Error al publicar en sandbox:</span>
+                                                    {/* dry.testMeliId can be set alongside dryError: the sandbox publish
+                                                        itself succeeded (badge above already shows "Probado ✓") but the
+                                                        local bookkeeping write that failed is what's being reported here,
+                                                        not the publish — "Error al publicar" would contradict the badge. */}
+                                                    <span className="font-bold block">{dry.testMeliId ? 'Aviso:' : 'Error al publicar en sandbox:'}</span>
                                                     {dry.dryError.split('\n').map((line: string, i: number) => (
                                                         <p key={i} className="font-mono">{line}</p>
                                                     ))}
