@@ -299,14 +299,14 @@ export function Step4Attributes({
                                                 <label className="text-[10px] font-black text-slate-500 uppercase tracking-wider">
                                                     {attr.name} {isRequired && <span className="text-red-500">*</span>}
                                                 </label>
-                                                {attr.values && attr.values.length > 0 && !attr.tags?.catalog_required ? (
+                                                {attr.values && attr.values.length > 0 && attr.value_type === 'list' ? (
                                                     <select
                                                         value={userAttrs[attr.id] || ''}
                                                         onChange={e => setUserAttributes(prev => ({ ...prev, [processed.asin]: { ...prev[processed.asin], [attr.id]: e.target.value } }))}
                                                         className={`mt-1 w-full px-2 py-1.5 border rounded-lg text-xs bg-white dark:bg-slate-900 dark:text-white focus:ring-1 focus:ring-primary ${isRequired && isEmpty ? 'border-red-400 dark:border-red-600' : 'border-slate-300 dark:border-slate-600'}`}
                                                     >
                                                         <option value="">Seleccionar...</option>
-                                                        {attr.values.slice(0, 20).map((v: any) => (
+                                                        {attr.values.slice(0, 100).map((v: any) => (
                                                             <option key={v.id} value={v.name}>{v.name}</option>
                                                         ))}
                                                     </select>
@@ -320,12 +320,15 @@ export function Step4Attributes({
                                                             placeholder={attr.hint || `Ingresa ${attr.name}`}
                                                             className={`mt-1 w-full px-2 py-1.5 border rounded-lg text-xs bg-white dark:bg-slate-900 dark:text-white focus:ring-1 focus:ring-primary ${isRequired && isEmpty ? 'border-red-400 dark:border-red-600' : 'border-slate-300 dark:border-slate-600'}`}
                                                         />
-                                                        {/* catalog_required attributes (BRAND, etc.) only ever return a small
-                                                            sample under `values` — nowhere near the real catalog — so this is a
-                                                            free-text field with those few as suggestions, not a closed list. */}
+                                                        {/* Anything that isn't value_type 'list' (BRAND, COLOR, DIAPER_SIZE, etc.)
+                                                            only carries `values` as suggestions, not a closed catalog — confirmed
+                                                            live that COLOR's real 49 options include "Negro" at position 47, so a
+                                                            free-text field with all of them as autocomplete (not just the first
+                                                            20) is what actually lets a user reach it, and ML accepts typed values
+                                                            outside the list too. */}
                                                         {attr.values?.length > 0 && (
                                                             <datalist id={`dl-${processed.asin}-${attr.id}`}>
-                                                                {attr.values.slice(0, 20).map((v: any) => (
+                                                                {attr.values.slice(0, 100).map((v: any) => (
                                                                     <option key={v.id} value={v.name} />
                                                                 ))}
                                                             </datalist>

@@ -27,14 +27,16 @@ function sanitizeAttributeValue(def: any, rawValue: string): string | null {
     // required attribute" in Step4 (whose dropdown shows the real options)
     // instead of a publish-time failure.
     if (Array.isArray(def?.values) && def.values.length > 0) {
-        // catalog_required attributes (BRAND is the common case) are the exception —
-        // confirmed live against MLM146240: BRAND's `values` here is only 3 entries
-        // (Agratto, Consul, Midea), which is nowhere near the real catalog of brands.
-        // ML's own hint text confirms free text is the intended input ("Escribe la
-        // marca real del producto o 'Genérica' si no tiene marca"), so snapping to
-        // an exact match against this short sample would reject the vast majority
-        // of real, valid brand names — pass it through as typed instead.
-        if (def.tags?.catalog_required) {
+        // value_type is ML's own signal for whether `values` is a strictly enforced
+        // closed catalog or just a suggestion list — 'list' is the only type that
+        // actually is one. Confirmed live: BRAND, COLOR, and even DIAPER_SIZE are
+        // all value_type:'string' despite carrying a `values` array (COLOR's 49
+        // entries include "Negro" — ML accepts it as free text same as any other
+        // string), while GENDER in that same category is genuinely value_type:'list'.
+        // Snapping non-list types to an exact match against what's often a partial
+        // sample (BRAND's `values` here was 3 entries for a catalog of thousands)
+        // would reject valid input; pass it through as typed instead.
+        if (def.value_type !== 'list') {
             return rawValue;
         }
         const norm = (s: string) => s.trim().toLowerCase();

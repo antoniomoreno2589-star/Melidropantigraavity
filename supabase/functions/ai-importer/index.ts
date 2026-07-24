@@ -107,15 +107,16 @@ async function callAI(prompt: string, imageUrl?: string): Promise<string> {
 async function mapAttributes(title: string, description: string, amazonAttrs: any, requiredAttrs: any[]): Promise<any> {
   const attrsForPrompt = requiredAttrs.map(a => {
     const base: any = { id: a.id, name: a.name, required: !!(a.tags?.required || a.tags?.new_required || a.tags?.conditional_required || a.tags?.catalog_required) };
-    // BRAND/MARCA's `values` here is only ever a tiny, non-exhaustive sample of ML's
-    // real brand catalog (confirmed live against a real category: 3 entries for a
-    // catalog that has thousands of real brands) — sending it as allowed_values told
-    // the model those were the ONLY valid options, which fought rule 6 below and
-    // caused real brand names to get omitted or replaced with an unrelated sample
-    // entry. Scoped to BRAND/MARCA specifically — other catalog_required attributes
-    // (e.g. PRODUCT_TYPE) can genuinely be a small, complete list, so their
-    // allowed_values constraint stays as-is.
-    if (a.values && a.values.length > 0 && a.id !== 'BRAND' && a.id !== 'MARCA') {
+    // value_type is ML's real signal for a strictly enforced closed catalog — only
+    // 'list' actually is one. Confirmed live: BRAND, COLOR, and even DIAPER_SIZE are
+    // all value_type:'string' despite carrying a `values` array (that's ML's own UI
+    // showing suggestions, not a hard boundary — COLOR's real 49 options include
+    // "Negro" at position 47), while GENDER in that same category is genuinely
+    // value_type:'list'. Constraining the model to allowed_values for a string-type
+    // attribute made it omit or mismatch real values that simply weren't in that
+    // partial sample (confirmed for BRAND: 3 entries for a catalog of thousands) —
+    // only constrain for the type ML itself enforces.
+    if (a.values && a.values.length > 0 && a.value_type === 'list') {
       base.allowed_values = a.values.slice(0, 60).map((v: any) => v.name);
     }
     if (a.hint) base.hint = a.hint;
