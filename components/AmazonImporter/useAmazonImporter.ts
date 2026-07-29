@@ -751,7 +751,7 @@ export function useAmazonImporter() {
             : Math.ceil(cost * (1 + margin / 100));
     };
 
-    const buildItemPayload = (processed: ProcessedProduct, isSandbox: boolean = false) => {
+    const buildItemPayload = (processed: ProcessedProduct, isSandbox: boolean = false, realDeliveryDays?: number) => {
         const product = loadedProducts.find(p => p.asin === processed.asin)!;
         const catId = selectedCategories[processed.asin]?.id;
         const title = editedTitles[processed.asin] || processed.optimizedTitle;
@@ -811,14 +811,24 @@ export function useAmazonImporter() {
         const availableQty = parseInt(localStorage.getItem('melidrop_default_stock') || '3');
         const warrantyMonths = parseInt(localStorage.getItem('melidrop_warranty_months') || '1');
 
-        // handling_time = días preparación del vendedor + días de entrega Amazon
-        // Reads the same keys that SettingsPage writes
+        // handling_time = días preparación del vendedor + días de entrega Amazon.
+        // realDeliveryDays (from amazonService.estimateDelivery, a real per-ASIN
+        // shipping-time lookup) is the real signal — when handleDryRun successfully
+        // fetches it, use it. Otherwise fall back to the static Settings defaults,
+        // picked by currency as a proxy for "US vs MX" — confirmed live that this
+        // proxy is unreliable on its own: amazon-proxy's getProduct always queries
+        // the Mexico marketplace (no caller ever passes a marketplaceId override),
+        // so currency comes back 'MXN' even for a listing that's explicitly
+        // "vendido por un vendedor extranjero... Envío GRATIS desde EE. UU." —
+        // a real cross-border item silently got the fast 3-day MX default instead
+        // of the slower USA one, understating handling_time to ML buyers.
         const prepDaysStored = parseInt(localStorage.getItem('melidrop_prep_days') || '3');
         const deliveryDaysStored = isUSD
             ? parseInt(localStorage.getItem('melidrop_delivery_days_usa') || '10')
             : parseInt(localStorage.getItem('melidrop_delivery_days_mx') || '3');
+        const deliveryDays = typeof realDeliveryDays === 'number' ? realDeliveryDays : deliveryDaysStored;
         // Sandbox: ML caps at 30 days for test listings
-        const handlingTime = isSandbox ? 30 : (prepDaysStored + deliveryDaysStored);
+        const handlingTime = isSandbox ? 30 : (prepDaysStored + deliveryDays);
 
         // Sanitize title: remove ML-forbidden chars, strip trailing punctuation from truncation
         const safeTitle = title
@@ -999,6 +1009,20 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
                 }
             }
 
+            // Real per-ASIN shipping-time lookup (amazon-proxy's estimateDelivery,
+            // already built and working — just never wired up here before). Not
+            // needed for the sandbox payload (isSandbox hardcodes 30 regardless),
+            // only for the production payload below. Best-effort: a failed/slow
+            // Amazon call here shouldn't block the whole dry run, so this falls
+            // back to buildItemPayload's own static Settings-based default.
+            let realDeliveryDays: number | undefined;
+            try {
+                const { mxDays, usaDays } = await amazonService.estimateDelivery(asin);
+                realDeliveryDays = Math.max(mxDays, usaDays);
+            } catch (e) {
+                console.warn(`[Melidrop] ${asin}: could not fetch real delivery estimate, falling back to Settings default:`, e);
+            }
+
             const payload = buildItemPayload(processed, true);
             const validation = await meliService.validateItem(payload);
 
@@ -1124,7 +1148,7 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
             let bookkeepingError: string | null = null;
             try {
                 // Build production payload to store for "Publicar Real" later
-                const productionPayload = buildItemPayload(processed, false);
+                const productionPayload = buildItemPayload(processed, false, realDeliveryDays);
                 const bookkeepingRow = {
                     title: payload.title,
                     asin: processed.asin,
