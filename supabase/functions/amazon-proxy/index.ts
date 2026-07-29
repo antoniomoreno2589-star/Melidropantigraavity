@@ -208,10 +208,31 @@ async function updatePrice(credentials: AmazonCredentials, sku: string, price: n
     return await makeAmazonRequest(endpoint, pricePath, accessToken, 'PATCH', priceData);
 }
 
-const AMAZON_SELLER_MXN = "AVDBXBAVVSXLQ";
-const AMAZON_SELLER_USA = "A1G99GVHAT2WD8";
 const MARKETPLACE_MXN   = "A1AM78C64UM0Y8";
 const MARKETPLACE_USA   = "ATVPDKIKX0DER";
+
+// Picks the most trustworthy ShippingTime.maximumHours out of a marketplace's
+// raw Offers array. Confirmed live against a real ASIN (B0DDBZLL4N):
+// - Amazon's own "is this Amazon" SellerId is NOT stable — that ASIN's real
+//   IsFulfilledByAmazon:true offer in the US marketplace had SellerId
+//   A6V24G7XMKNBA, not the AMAZON_SELLER_USA/MXN constants this function used
+//   to hardcode, so the match always missed and silently fell through to a
+//   flat default. IsFulfilledByAmazon is the reliable signal instead.
+// - maximumHours:0 shows up on real offers (including that same FBA one) and
+//   is a data gap, not "ships instantly" — treated as invalid, not zero days.
+// Preference order: an FBA offer > the buy box winner (what a buyer actually
+// gets by default) > the longest valid time among all offers (conservative —
+// for a delivery PROMISE, disagreement between real offers should resolve to
+// the slower one, not whichever happened to load first in the array).
+function pickShippingHours(offers: any[]): number | null {
+    const hasValidTime = (o: any) => typeof o?.ShippingTime?.maximumHours === 'number' && o.ShippingTime.maximumHours > 0;
+    const fba = offers.find((o: any) => o.IsFulfilledByAmazon && hasValidTime(o));
+    if (fba) return fba.ShippingTime.maximumHours;
+    const buyBoxWinner = offers.find((o: any) => o.IsBuyBoxWinner && hasValidTime(o));
+    if (buyBoxWinner) return buyBoxWinner.ShippingTime.maximumHours;
+    const validHours = offers.filter(hasValidTime).map((o: any) => o.ShippingTime.maximumHours);
+    return validHours.length > 0 ? Math.max(...validHours) : null;
+}
 
 async function estimateDelivery(credentials: AmazonCredentials, asin: string) {
     const accessToken = await getAccessToken(credentials);
@@ -222,17 +243,8 @@ async function estimateDelivery(credentials: AmazonCredentials, asin: string) {
     try {
         const mxPath = `/products/pricing/v0/items/${asin}/offers?MarketplaceId=${MARKETPLACE_MXN}&ItemCondition=New`;
         const mxData = await makeAmazonRequest(endpoint, mxPath, accessToken);
-        const amazonMxOffer = (mxData?.payload?.Offers ?? []).find((o: any) => o.SellerId === AMAZON_SELLER_MXN);
-        if (amazonMxOffer?.ShippingTime) {
-            const maxHours = amazonMxOffer.ShippingTime.maximumHours ?? 72;
-            mxDays = Math.max(1, Math.ceil(maxHours / 24));
-        } else {
-            // If Amazon isn't a seller, fall back to any FBA offer
-            const anyOffer = mxData?.payload?.Offers?.[0];
-            if (anyOffer?.ShippingTime?.maximumHours) {
-                mxDays = Math.max(1, Math.ceil(anyOffer.ShippingTime.maximumHours / 24));
-            }
-        }
+        const hours = pickShippingHours(mxData?.payload?.Offers ?? []);
+        if (hours !== null) mxDays = Math.max(1, Math.ceil(hours / 24));
     } catch (e) {
         console.warn('Could not fetch MX delivery estimate:', e);
     }
@@ -243,10 +255,10 @@ async function estimateDelivery(credentials: AmazonCredentials, asin: string) {
     try {
         const usaPath = `/products/pricing/v0/items/${asin}/offers?MarketplaceId=${MARKETPLACE_USA}&ItemCondition=New`;
         const usaData = await makeAmazonRequest(endpoint, usaPath, accessToken);
-        const amazonUsaOffer = (usaData?.payload?.Offers ?? []).find((o: any) => o.SellerId === AMAZON_SELLER_USA);
-        if (amazonUsaOffer?.ShippingTime?.maximumHours) {
+        const hours = pickShippingHours(usaData?.payload?.Offers ?? []);
+        if (hours !== null) {
             // Domestic US hours + ~7 days for customs/international transit to Mexico
-            const domesticDays = Math.ceil(amazonUsaOffer.ShippingTime.maximumHours / 24);
+            const domesticDays = Math.ceil(hours / 24);
             usaDays = domesticDays + 7;
         }
     } catch (e) {
