@@ -210,26 +210,59 @@ async function updatePrice(credentials: AmazonCredentials, sku: string, price: n
 
 const MARKETPLACE_MXN = "A1AM78C64UM0Y8";
 
-// Confirmed seller IDs for "Amazon" itself even when an offer is NOT flagged
-// IsFulfilledByAmazon — Amazon also sells cross-border/imported inventory as a
-// plain merchant-fulfilled seller, not just via FBA. Confirmed live: SellerId
-// A1G99GVHAT2WD8 is the current buy box winner in the MX marketplace's own
-// Offers array (IsFulfilledByAmazon:false, 527,462 feedback ratings — no real
-// 3rd-party merchant runs that volume), and the actual amazon.com.mx page for
-// that same offer shows "Vendido por Amazon Estados Unidos" / "Servicio al
-// cliente: Amazon" — cross-referenced directly against the live page, not
-// guessed. Best-effort: Amazon can introduce further seller accounts for
-// other operating modes (e.g. a genuinely local MX-fulfilled one) at any time.
-const KNOWN_AMAZON_SELLER_IDS = new Set([
-    'A1G99GVHAT2WD8', // Amazon Estados Unidos — cross-border seller into MX
-]);
+// Owner-defined 4-level tiebreak for picking "the" winning offer out of an
+// ASIN's Offers array. Confirmed live this is needed, not optional: for a
+// real ASIN, TWO offers (a China merchant and an "Amazon Estados Unidos"
+// cross-border one) both had IsBuyBoxWinner:true simultaneously — Amazon's
+// own Summary.BuyBoxPrices pointed at the cheaper China one, but the actual
+// amazon.com.mx retail page featured the Amazon one as the default "Agregar
+// al carrito" offer instead. IsBuyBoxWinner alone can't be trusted to be
+// unique, so ship-from-country, then Prime, then FBA break the tie.
+const SHIP_FROM_PRIORITY = ['MX', 'US'];
+
+function isPrimeOffer(o: any): boolean {
+    return !!(o?.PrimeInformation?.IsNationalPrime ?? o?.PrimeInformation?.IsPrime);
+}
+
+function pickWinningOffer(offers: any[]): any | null {
+    if (offers.length === 0) return null;
+
+    // 1) Buy box winner(s) — narrow to those if any exist, otherwise consider
+    // every offer (a defensive fallback for the case none are flagged at all;
+    // not something confirmed to happen live, just cheap to guard against).
+    let candidates = offers.filter((o: any) => o.IsBuyBoxWinner);
+    if (candidates.length === 0) candidates = offers;
+    if (candidates.length === 1) return candidates[0];
+
+    // 2) Ship-from country: MX first, then US, then leave the full remaining
+    // set alone for "any other country" (no preference among those).
+    for (const country of SHIP_FROM_PRIORITY) {
+        const inCountry = candidates.filter((o: any) => o.ShipsFrom?.Country === country);
+        if (inCountry.length > 0) {
+            candidates = inCountry;
+            break;
+        }
+    }
+    if (candidates.length === 1) return candidates[0];
+
+    // 3) Prime eligibility.
+    const primeCandidates = candidates.filter(isPrimeOffer);
+    if (primeCandidates.length > 0) candidates = primeCandidates;
+    if (candidates.length === 1) return candidates[0];
+
+    // 4) Fulfilled by Amazon (FBA).
+    const fbaCandidates = candidates.filter((o: any) => o.IsFulfilledByAmazon);
+    if (fbaCandidates.length > 0) candidates = fbaCandidates;
+
+    // Still tied after all 4 criteria — deterministic, arbitrary pick.
+    return candidates[0];
+}
 
 // Fixed business rule (owner-defined, confirmed against real Offers data —
-// Amazon's own ShippingTime.maximumHours is unreliable: real buy-box-winning
-// offers can report 0 hours, a data gap, not "ships instantly"). ShipsFrom.Country
-// and IsBuyBoxWinner are the two fields actually trustworthy in every offer
-// Amazon returns, so base delivery days off whichever country the CURRENT buy
-// box winner ships from — that's the offer a real buyer actually gets.
+// Amazon's own ShippingTime.maximumHours is unreliable: real offers can
+// report 0 hours, a data gap, not "ships instantly"). ShipsFrom.Country is
+// the trustworthy field instead, so base delivery days off wherever the
+// winning offer (picked above) ships from.
 const EUROPE_COUNTRIES = new Set([
     'DE', 'GB', 'FR', 'IT', 'ES', 'NL', 'BE', 'PL', 'SE', 'AT', 'IE', 'PT',
     'DK', 'FI', 'NO', 'CH', 'CZ', 'GR', 'HU', 'RO'
@@ -248,24 +281,13 @@ async function estimateDelivery(credentials: AmazonCredentials, asin: string) {
     const accessToken = await getAccessToken(credentials);
     const endpoint = ENDPOINTS[credentials.region as keyof typeof ENDPOINTS] || ENDPOINTS.na;
 
-    // Single call to the same marketplace getProduct already queries — Amazon
-    // itself (FBA or not) is identified directly within its own Offers array,
-    // no separate USA-marketplace lookup needed.
+    // Same marketplace getProduct already queries by default.
     let shipsFromCountry: string | null = null;
     try {
         const path = `/products/pricing/v0/items/${asin}/offers?MarketplaceId=${MARKETPLACE_MXN}&ItemCondition=New`;
         const data = await makeAmazonRequest(endpoint, path, accessToken);
-        const offers = data?.payload?.Offers ?? [];
-
-        const amazonOffer = offers.find((o: any) => o.IsFulfilledByAmazon || KNOWN_AMAZON_SELLER_IDS.has(o.SellerId));
-        if (amazonOffer) {
-            shipsFromCountry = amazonOffer.ShipsFrom?.Country ?? 'US';
-        } else {
-            // Amazon isn't selling this ASIN itself — fall back to whichever
-            // 3rd-party merchant currently wins the buy box.
-            const buyBoxWinner = offers.find((o: any) => o.IsBuyBoxWinner);
-            shipsFromCountry = buyBoxWinner?.ShipsFrom?.Country ?? null;
-        }
+        const winner = pickWinningOffer(data?.payload?.Offers ?? []);
+        shipsFromCountry = winner?.ShipsFrom?.Country ?? null;
     } catch (e) {
         console.warn('Could not fetch delivery estimate:', e);
     }
