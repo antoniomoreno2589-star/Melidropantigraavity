@@ -37,12 +37,79 @@ interface AmazonOffers {
     soldByAmazon: boolean;
     amazonStock: number | null;
     shippingDays: number | null;
+    winningOfferPrice: number | null; // "Valores Fijos" mode: price from pickWinningOffer, not LowestPrices
+    shipsFromCountry: string | null;  // "Valores Fijos" mode: feeds daysForShipsFromCountry
 }
 
 interface ShippingResult {
     days: number | null;
     available: boolean | null; // false = Oxylabs confirmed unavailable; null = unknown
     hasBuyBox?: boolean | null; // false = Scrape.do confirmed no buybox; null = not checked
+}
+
+// Owner-defined 4-level tiebreak for picking "the" winning offer out of an
+// ASIN's Offers array — ported from amazon-proxy so "Actualización con
+// Valores Fijos" (API-only, no scraper) can pick price/shipping origin the
+// same way the importer already does. Confirmed live this is needed, not
+// optional: for a real ASIN, TWO offers (a China merchant and an "Amazon
+// Estados Unidos" cross-border one) both had IsBuyBoxWinner:true
+// simultaneously — Amazon's own Summary.BuyBoxPrices pointed at the cheaper
+// China offer, but the actual amazon.com.mx retail page featured the Amazon
+// one as the default "Agregar al carrito" offer instead. IsBuyBoxWinner
+// alone can't be trusted to be unique, so ship-from-country, then Prime,
+// then FBA break the tie. Also confirmed live: IsBuyBoxWinner can be false
+// on EVERY offer even when the product has real, purchasable, Prime/FBA
+// offers (B0F353HHBW) — so absence of IsBuyBoxWinner is NOT used anywhere
+// as an "unavailable" signal, only as the first tiebreak criterion.
+const SHIP_FROM_PRIORITY = ['MX', 'US'];
+
+function isPrimeOffer(o: any): boolean {
+    return !!(o?.PrimeInformation?.IsNationalPrime ?? o?.PrimeInformation?.IsPrime);
+}
+
+function pickWinningOffer(offers: any[]): any | null {
+    if (!offers || offers.length === 0) return null;
+
+    let candidates = offers.filter((o: any) => o.IsBuyBoxWinner);
+    if (candidates.length === 0) candidates = offers;
+    if (candidates.length === 1) return candidates[0];
+
+    for (const country of SHIP_FROM_PRIORITY) {
+        const inCountry = candidates.filter((o: any) => o.ShipsFrom?.Country === country);
+        if (inCountry.length > 0) {
+            candidates = inCountry;
+            break;
+        }
+    }
+    if (candidates.length === 1) return candidates[0];
+
+    const primeCandidates = candidates.filter(isPrimeOffer);
+    if (primeCandidates.length > 0) candidates = primeCandidates;
+    if (candidates.length === 1) return candidates[0];
+
+    const fbaCandidates = candidates.filter((o: any) => o.IsFulfilledByAmazon);
+    if (fbaCandidates.length > 0) candidates = fbaCandidates;
+
+    return candidates[0];
+}
+
+// Fixed business rule (owner-defined, confirmed against real Offers data —
+// Amazon's own ShippingTime.maximumHours is unreliable: real offers can
+// report 0 hours, a data gap, not "ships instantly"). ShipsFrom.Country is
+// the trustworthy field instead, so base delivery days off wherever the
+// winning offer (picked above) ships from.
+const EUROPE_COUNTRIES = new Set([
+    'DE', 'GB', 'FR', 'IT', 'ES', 'NL', 'BE', 'PL', 'SE', 'AT', 'IE', 'PT',
+    'DK', 'FI', 'NO', 'CH', 'CZ', 'GR', 'HU', 'RO'
+]);
+
+function daysForShipsFromCountry(country: string | null | undefined): number | null {
+    if (!country) return null;
+    if (country === 'MX') return 2;
+    if (country === 'US') return 8;
+    if (country === 'CN') return 18;
+    if (EUROPE_COUNTRIES.has(country)) return 23;
+    return null; // unrecognized origin — caller falls back to its own default
 }
 
 function findAllSpanishDates(text: string): number[] {
@@ -936,9 +1003,9 @@ async function fetchAmazonOffers(
         });
         if (!res.ok) {
             if (res.status === 404 || res.status === 400) {
-                return { price: null, sellerCount: 0, soldByAmazon: false, amazonStock: 0, shippingDays: null };
+                return { price: null, sellerCount: 0, soldByAmazon: false, amazonStock: 0, shippingDays: null, winningOfferPrice: null, shipsFromCountry: null };
             }
-            return { price: null, sellerCount: 0, soldByAmazon: false, amazonStock: null, shippingDays: null };
+            return { price: null, sellerCount: 0, soldByAmazon: false, amazonStock: null, shippingDays: null, winningOfferPrice: null, shipsFromCountry: null };
         }
         const data = await res.json();
         const summary = data?.payload?.Summary;
@@ -959,6 +1026,12 @@ async function fetchAmazonOffers(
             ?? amazonOffer?.BuyingPrice?.ListingPrice?.Amount
             ?? null;
 
+        // "Valores Fijos" mode: same winning offer as the importer uses, so price
+        // and shipping origin always agree on which offer is "the" one.
+        const winningOffer = pickWinningOffer(allOffers);
+        const winningOfferPrice = winningOffer?.ListingPrice?.Amount ?? null;
+        const shipsFromCountry = winningOffer?.ShipsFrom?.Country ?? null;
+
         // ShippingTime.maximumHours: 0 means FBA Prime (ships immediately from warehouse),
         // which doesn't tell us customer delivery time — treat as null and use configured default.
         // Only use positive values (non-FBA merchants who declare a ship window).
@@ -968,10 +1041,10 @@ async function fetchAmazonOffers(
             ? Math.ceil(maxHours / 24)
             : null;
 
-        console.log(`[fetchAmazonOffers] asin=${asin} price=${price} sellerCount=${sellerCount} soldByAmazon=${soldByAmazon} amazonStock=${amazonStock} shippingDays=${shippingDays}(maxHours=${maxHours})`);
-        return { price, sellerCount, soldByAmazon, amazonStock, shippingDays };
+        console.log(`[fetchAmazonOffers] asin=${asin} price=${price} sellerCount=${sellerCount} soldByAmazon=${soldByAmazon} amazonStock=${amazonStock} shippingDays=${shippingDays}(maxHours=${maxHours}) winningOfferPrice=${winningOfferPrice} shipsFromCountry=${shipsFromCountry}`);
+        return { price, sellerCount, soldByAmazon, amazonStock, shippingDays, winningOfferPrice, shipsFromCountry };
     } catch {
-        return { price: null, sellerCount: 0, soldByAmazon: false, amazonStock: null, shippingDays: null };
+        return { price: null, sellerCount: 0, soldByAmazon: false, amazonStock: null, shippingDays: null, winningOfferPrice: null, shipsFromCountry: null };
     }
 }
 
@@ -1046,7 +1119,7 @@ async function fetchOffersBatch(
                 if (!asin) return;
                 const statusCode = resp?.status?.statusCode ?? 0;
                 if (statusCode === 404 || statusCode === 400) {
-                    offers[asin] = { price: null, sellerCount: 0, soldByAmazon: false, amazonStock: 0, shippingDays: null };
+                    offers[asin] = { price: null, sellerCount: 0, soldByAmazon: false, amazonStock: 0, shippingDays: null, winningOfferPrice: null, shipsFromCountry: null };
                     return;
                 }
                 if (statusCode !== 200) return;
@@ -1066,12 +1139,17 @@ async function fetchOffersBatch(
                     ?? amazonOff?.ListingPrice?.Amount
                     ?? amazonOff?.BuyingPrice?.ListingPrice?.Amount
                     ?? null;
+                // "Valores Fijos" mode: same winning offer as the importer uses, so price
+                // and shipping origin always agree on which offer is "the" one.
+                const winningOff      = pickWinningOffer(allOffs);
+                const winningOffPrice = winningOff?.ListingPrice?.Amount ?? null;
+                const shipsFromCountry = winningOff?.ShipsFrom?.Country ?? null;
                 const shippingOff  = amazonOff ?? allOffs[0] ?? null;
                 const maxHours     = shippingOff?.ShippingTime?.maximumHours;
                 const shippingDays = (maxHours !== undefined && maxHours !== null && maxHours > 0)
                     ? Math.ceil(maxHours / 24) : null;
-                console.log(`[fetchOffersBatch] asin=${asin} price=${price} sellers=${sellerCount} soldByAmazon=${soldByAmazon} stock=${amazonStock}`);
-                offers[asin] = { price, sellerCount, soldByAmazon, amazonStock, shippingDays };
+                console.log(`[fetchOffersBatch] asin=${asin} price=${price} sellers=${sellerCount} soldByAmazon=${soldByAmazon} stock=${amazonStock} winningOfferPrice=${winningOffPrice} shipsFromCountry=${shipsFromCountry}`);
+                offers[asin] = { price, sellerCount, soldByAmazon, amazonStock, shippingDays, winningOfferPrice: winningOffPrice, shipsFromCountry };
             });
         } catch (e) {
             console.error(`[fetchOffersBatch] chunk error:`, e);
@@ -1355,6 +1433,10 @@ Deno.serve(async (req) => {
             const mxRules         = settings.mx             ?? [];
             const freqHours       = settings.sync_frequency_hours ?? 24;
             const prepDays        = settings.prep_days ?? settings.handling_time_mx ?? 3;
+            // "Actualización Real" (default, unchanged): Scrape.do + LowestPrices, as before.
+            // "Actualización con Valores Fijos": Amazon API only, no scraper — price and
+            // handling time both come from the same pickWinningOffer tiebreak.
+            const updateMode: 'real' | 'fixed' = settings.update_mode === 'fixed' ? 'fixed' : 'real';
 
             if (!meliCreds?.token || !amazonCreds?.refreshToken) continue;
 
@@ -1481,7 +1563,9 @@ Deno.serve(async (req) => {
             const MAX_SCRAPES_PER_RUN = 5;
             // Delivery time is stable — re-scrape domestic MXN products every 7 days.
             const STALE_MS = 7 * 24 * 60 * 60 * 1000;
-            const staleForScraping = (products as any[]).filter(p => {
+            // "Valores Fijos" mode never scrapes — handling time comes from
+            // daysForShipsFromCountry(offers.shipsFromCountry) further down instead.
+            const staleForScraping = updateMode !== 'real' ? [] : (products as any[]).filter(p => {
                 const ua = p.shipping_days_updated_at;
                 // First time (never scraped before) → scrape ALL products regardless of currency.
                 // If Scrape.do can't determine delivery, the fallback default kicks in afterward.
@@ -1524,7 +1608,7 @@ Deno.serve(async (req) => {
                 }
             }
 
-            console.log(`[amazon-ml-updater] Processing batch: ${products.length} products, syncParams=${JSON.stringify(syncParams)}`);
+            console.log(`[amazon-ml-updater] Processing batch: ${products.length} products, mode=${updateMode}, syncParams=${JSON.stringify(syncParams)}`);
 
             for (const product of products) {
                 const currency = (product as any).currency ?? 'USD';
@@ -1532,16 +1616,22 @@ Deno.serve(async (req) => {
                 const sku      = (product as any).sku;
                 const productId = (product as any).id;
                 const updatePayload: Record<string, unknown> = {};
-                const debug: any = { sku, meliId, currency };
+                const debug: any = { sku, meliId, currency, updateMode };
 
                 const offers       = asinOffers[sku];
                 const sellerCount   = offers?.sellerCount ?? null;
                 const soldByAmazon  = offers?.soldByAmazon ?? null;
                 const amazonStock   = offers?.amazonStock ?? null;
+                // price===null && sellerCount===0 alone is already conclusive (zero offers
+                // exist) — requiring amazonStock===0 too used to miss it: confirmed live
+                // that a genuinely-zero-offers ASIN (B0CVSGS543) can come back HTTP 200
+                // with an empty Offers array rather than 404, which leaves amazonStock as
+                // null (no Amazon offer to read QuantityOnHand from), not 0. That silently
+                // failed this check. Critical for "Valores Fijos" mode, which has no
+                // scraper safety net and relies on this as its only pause signal.
                 const isUnavailableOnAmazon = offers !== undefined
                     && offers.price === null
-                    && offers.sellerCount === 0
-                    && offers.amazonStock === 0;
+                    && offers.sellerCount === 0;
 
                 const existingPauseReason = (product as any).pause_reason ?? null;
                 let cachedShippingDays = (product as any).shipping_days ?? null;
@@ -1549,7 +1639,7 @@ Deno.serve(async (req) => {
                 let noBuyBox = false;
                 let pauseReasonToWrite: string | null | undefined = undefined;
 
-                const scrapeResult = scrapeResultMap.get(sku) ?? null;
+                const scrapeResult = updateMode === 'real' ? (scrapeResultMap.get(sku) ?? null) : null;
                 if (scrapeResult !== null) {
                     debug.scrapeResult = scrapeResult;
                     scrapedAvailable = scrapeResult.available;
@@ -1557,6 +1647,26 @@ Deno.serve(async (req) => {
                     pauseReasonToWrite = noBuyBox ? 'sin_buybox' : null;
                     if (!noBuyBox && scrapeResult.days !== null) {
                         cachedShippingDays = scrapeResult.days;
+                    }
+                } else if (updateMode === 'fixed') {
+                    // No scraper in this mode, ever — and confirmed live (B0F353HHBW) that
+                    // Amazon's IsBuyBoxWinner flag can be false on every offer of a perfectly
+                    // available, Prime/FBA product, so it's not used as a substitute "no
+                    // buybox" signal either. Ignore any stale 'sin_buybox' pause_reason left
+                    // over from a previous Real-mode run — that signal only ever came from
+                    // the scraper — so a product paused for that reason before self-heals
+                    // (via the reactivation branch below) once this mode takes over.
+                    noBuyBox = false;
+                    const fixedDays = daysForShipsFromCountry(offers?.shipsFromCountry ?? null);
+                    if (fixedDays !== null) {
+                        cachedShippingDays = fixedDays;
+                        debug.shipsFromCountry = offers?.shipsFromCountry ?? null;
+                    } else if (cachedShippingDays === null) {
+                        // Unrecognized/missing ship-from-country — same manual fallback Real
+                        // mode uses for cross-border defaults.
+                        cachedShippingDays = currency === 'MXN'
+                            ? ((settings as any).amazon_delivery_mx ?? null)
+                            : ((settings as any).amazon_delivery_cross_border ?? (settings as any).amazon_delivery_usa ?? null);
                     }
                 } else {
                     noBuyBox = (existingPauseReason === 'sin_buybox');
@@ -1592,7 +1702,12 @@ Deno.serve(async (req) => {
                 }
 
                 if (syncParams.price) {
-                    const amazonPrice = offers?.price ?? null;
+                    // "Valores Fijos" prices off the same winning offer used for handling
+                    // time (buybox→país→Prime→FBA), not Summary.LowestPrices — so the two
+                    // can never disagree about which offer is "the" one for this ASIN.
+                    const amazonPrice = updateMode === 'fixed'
+                        ? (offers?.winningOfferPrice ?? null)
+                        : (offers?.price ?? null);
                     debug.amazonPrice = amazonPrice;
                     if (amazonPrice) {
                         const newMxn     = calculateMxnPrice(amazonPrice, currency, exchangeRate, usaRules, mxRules);
@@ -1646,6 +1761,13 @@ Deno.serve(async (req) => {
                         if (updatePayload.status)             dbUpdate.status               = updatePayload.status;
                         if (sellerCount !== null)             dbUpdate.amazon_seller_count  = sellerCount;
                         if (soldByAmazon !== null)            dbUpdate.sold_by_amazon       = soldByAmazon;
+                        // Real mode's scrape loop persists shipping_days itself, separately,
+                        // before this loop runs. Fixed mode has no such loop — persist here
+                        // instead, so the "Días Prep." column reflects what ML actually got.
+                        if (updateMode === 'fixed' && cachedShippingDays !== null) {
+                            dbUpdate.shipping_days = cachedShippingDays;
+                            dbUpdate.shipping_days_updated_at = new Date().toISOString();
+                        }
                         dbUpdate.amazon_available = !isUnavailableOnAmazon;
                         await supabase.from("products").update(dbUpdate).eq("meli_id", meliId);
                         updated++;

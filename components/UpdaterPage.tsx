@@ -57,6 +57,10 @@ export const UpdaterPage: React.FC = () => {
         const saved = localStorage.getItem('melidrop_sync_params');
         return saved ? JSON.parse(saved) : { price: true, stock: true, shipping: false, description: false };
     });
+    const [updateMode, setUpdateMode] = useState<'real' | 'fixed'>(() => {
+        const saved = localStorage.getItem('melidrop_update_mode');
+        return saved === 'fixed' ? 'fixed' : 'real';
+    });
     const [defaultStock, setDefaultStock] = useState<number>(() =>
         parseInt(localStorage.getItem('melidrop_default_stock') || '3')
     );
@@ -496,6 +500,7 @@ export const UpdaterPage: React.FC = () => {
         localStorage.setItem('melidrop_auto_promos', autoPromos.toString());
         localStorage.setItem('melidrop_allow_price_decrease', allowPriceDecrease.toString());
         localStorage.setItem('melidrop_sync_frequency_hours', syncFreqHours.toString());
+        localStorage.setItem('melidrop_update_mode', updateMode);
         const { data: { user } } = await supabase.auth.getUser();
         if (user) {
             const { data: existing } = await supabase.from('user_connections').select('margin_rules').eq('user_id', user.id).maybeSingle();
@@ -509,6 +514,7 @@ export const UpdaterPage: React.FC = () => {
                     auto_promos: autoPromos,
                     allow_price_decrease: allowPriceDecrease,
                     sync_frequency_hours: syncFreqHours,
+                    update_mode: updateMode,
                 }
             }, { onConflict: 'user_id' });
         }
@@ -590,6 +596,37 @@ export const UpdaterPage: React.FC = () => {
                         </div>
                     </div>
                     <div className="p-6 space-y-6">
+                        <div>
+                            <label className="text-xs font-black text-slate-500 uppercase mb-3 block">Tipo de Actualización</label>
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                <button
+                                    type="button"
+                                    onClick={() => setUpdateMode('real')}
+                                    className={`text-left p-4 rounded-xl border-2 transition-all ${updateMode === 'real' ? 'border-primary bg-primary/5' : 'border-slate-200 dark:border-slate-700 hover:border-slate-300'}`}
+                                >
+                                    <p className="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                                        🔎 Actualización Real
+                                        {updateMode === 'real' && <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-primary text-white uppercase">Activo</span>}
+                                    </p>
+                                    <p className="text-xs text-slate-500 mt-1">
+                                        Lee la página real de Amazon (scraper) para precio, stock y tiempo de entrega. Más preciso, más lento — hasta 5 productos por corrida.
+                                    </p>
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => setUpdateMode('fixed')}
+                                    className={`text-left p-4 rounded-xl border-2 transition-all ${updateMode === 'fixed' ? 'border-primary bg-primary/5' : 'border-slate-200 dark:border-slate-700 hover:border-slate-300'}`}
+                                >
+                                    <p className="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                                        ⚡ Valores Fijos
+                                        {updateMode === 'fixed' && <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-primary text-white uppercase">Activo</span>}
+                                    </p>
+                                    <p className="text-xs text-slate-500 mt-1">
+                                        Solo API oficial de Amazon, sin scraper. Precio y tiempo de entrega según la oferta ganadora (buybox → país → Prime → FBA) y una tabla fija de días por país (MX 2 · US 8 · CN 18 · Europa 23).
+                                    </p>
+                                </button>
+                            </div>
+                        </div>
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                             <div>
                                 <label className="text-xs font-black text-slate-500 uppercase mb-3 block">Parámetros a Sincronizar</label>
