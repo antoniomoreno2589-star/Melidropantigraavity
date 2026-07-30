@@ -469,13 +469,28 @@ export const api = {
 
     testProducts: {
         async list(): Promise<any[]> {
-            const { data, error } = await supabase
-                .from('test_products')
-                .select('*')
-                .order('created_at', { ascending: false });
+            // Supabase/PostgREST caps a single request at 1000 rows by default —
+            // confirmed live that a catalog past that size (2,578 rows for the
+            // active account) was silently truncated to the first 1000, hiding
+            // everything imported after that with no error or warning. Page
+            // through in 1000-row chunks instead of a single unbounded query.
+            const PAGE_SIZE = 1000;
+            let allRows: any[] = [];
+            let from = 0;
+            while (true) {
+                const { data, error } = await supabase
+                    .from('test_products')
+                    .select('*')
+                    .order('created_at', { ascending: false })
+                    .range(from, from + PAGE_SIZE - 1);
 
-            if (error) throw error;
-            return data.map(p => ({
+                if (error) throw error;
+                allRows = allRows.concat(data);
+                if (data.length < PAGE_SIZE) break;
+                from += PAGE_SIZE;
+            }
+
+            return allRows.map(p => ({
                 id: p.id,
                 title: p.title,
                 asin: p.asin,
