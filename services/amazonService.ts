@@ -162,6 +162,15 @@ class AmazonService {
             const primaryImage = uniqueImages[0] ?? null;
 
             const pricing = result.pricing?.payload;
+            // amazon-proxy already picks the ASIN's actual winning offer (same
+            // owner-defined tiebreak estimateDelivery uses: buy box → ship-from
+            // country → Prime → FBA) — confirmed live that Summary.LowestPrices
+            // can point at a cheaper offer than the one amazon.com.mx actually
+            // features as the default purchase option, so price the resale
+            // calculation off the winning offer instead. Summary.LowestPrices
+            // stays as the fallback for when no offer could be picked at all
+            // (e.g. the pricing fetch failed after retries).
+            const winningOffer = result.winningOffer;
             const bulletPoints: string[] = attributes?.bullet_point?.map((bp: any) => bp.value) || [];
             const description = bulletPoints.join('\n');
 
@@ -176,8 +185,8 @@ class AmazonService {
                 title,
                 description,
                 bulletPoints,
-                price: pricing?.Summary?.LowestPrices?.[0]?.ListingPrice?.Amount || 0,
-                currency: pricing?.Summary?.LowestPrices?.[0]?.ListingPrice?.CurrencyCode || 'USD',
+                price: winningOffer?.ListingPrice?.Amount ?? pricing?.Summary?.LowestPrices?.[0]?.ListingPrice?.Amount ?? 0,
+                currency: winningOffer?.ListingPrice?.CurrencyCode ?? pricing?.Summary?.LowestPrices?.[0]?.ListingPrice?.CurrencyCode ?? 'USD',
                 imageUrl: primaryImage,
                 images: uniqueImages.slice(0, 10),
                 brand,

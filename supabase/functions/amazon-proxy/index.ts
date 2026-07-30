@@ -160,9 +160,17 @@ async function getProduct(credentials: AmazonCredentials, asin: string, params?:
         console.warn('Could not fetch pricing data after retries:', e);
     }
 
+    // Same owner-defined tiebreak estimateDelivery uses below — the price
+    // Melidrop bases its resale price on should come from the ASIN's actual
+    // winning offer, not just Summary.LowestPrices (confirmed live that can
+    // point at a cheaper offer than the one the real amazon.com.mx page
+    // actually features as the default purchase option).
+    const winningOffer = pickWinningOffer(pricingData?.payload?.Offers ?? []);
+
     return {
         catalog: catalogData,
-        pricing: pricingData
+        pricing: pricingData,
+        winningOffer
     };
 }
 
@@ -211,13 +219,15 @@ async function updatePrice(credentials: AmazonCredentials, sku: string, price: n
 const MARKETPLACE_MXN = "A1AM78C64UM0Y8";
 
 // Owner-defined 4-level tiebreak for picking "the" winning offer out of an
-// ASIN's Offers array. Confirmed live this is needed, not optional: for a
-// real ASIN, TWO offers (a China merchant and an "Amazon Estados Unidos"
-// cross-border one) both had IsBuyBoxWinner:true simultaneously — Amazon's
-// own Summary.BuyBoxPrices pointed at the cheaper China one, but the actual
-// amazon.com.mx retail page featured the Amazon one as the default "Agregar
-// al carrito" offer instead. IsBuyBoxWinner alone can't be trusted to be
-// unique, so ship-from-country, then Prime, then FBA break the tie.
+// ASIN's Offers array — used by both getProduct (price) and estimateDelivery
+// (shipping origin), so the two always agree on which offer is "the" one.
+// Confirmed live this is needed, not optional: for a real ASIN, TWO offers (a
+// China merchant and an "Amazon Estados Unidos" cross-border one) both had
+// IsBuyBoxWinner:true simultaneously — Amazon's own Summary.BuyBoxPrices
+// pointed at the cheaper China offer, but the actual amazon.com.mx retail
+// page featured the Amazon one as the default "Agregar al carrito" offer
+// instead. IsBuyBoxWinner alone can't be trusted to be unique, so
+// ship-from-country, then Prime, then FBA break the tie.
 const SHIP_FROM_PRIORITY = ['MX', 'US'];
 
 function isPrimeOffer(o: any): boolean {
