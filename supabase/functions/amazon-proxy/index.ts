@@ -210,6 +210,20 @@ async function updatePrice(credentials: AmazonCredentials, sku: string, price: n
 
 const MARKETPLACE_MXN = "A1AM78C64UM0Y8";
 
+// Confirmed seller IDs for "Amazon" itself even when an offer is NOT flagged
+// IsFulfilledByAmazon — Amazon also sells cross-border/imported inventory as a
+// plain merchant-fulfilled seller, not just via FBA. Confirmed live: SellerId
+// A1G99GVHAT2WD8 is the current buy box winner in the MX marketplace's own
+// Offers array (IsFulfilledByAmazon:false, 527,462 feedback ratings — no real
+// 3rd-party merchant runs that volume), and the actual amazon.com.mx page for
+// that same offer shows "Vendido por Amazon Estados Unidos" / "Servicio al
+// cliente: Amazon" — cross-referenced directly against the live page, not
+// guessed. Best-effort: Amazon can introduce further seller accounts for
+// other operating modes (e.g. a genuinely local MX-fulfilled one) at any time.
+const KNOWN_AMAZON_SELLER_IDS = new Set([
+    'A1G99GVHAT2WD8', // Amazon Estados Unidos — cross-border seller into MX
+]);
+
 // Fixed business rule (owner-defined, confirmed against real Offers data —
 // Amazon's own ShippingTime.maximumHours is unreliable: real buy-box-winning
 // offers can report 0 hours, a data gap, not "ships instantly"). ShipsFrom.Country
@@ -234,20 +248,29 @@ async function estimateDelivery(credentials: AmazonCredentials, asin: string) {
     const accessToken = await getAccessToken(credentials);
     const endpoint = ENDPOINTS[credentials.region as keyof typeof ENDPOINTS] || ENDPOINTS.na;
 
-    // Same marketplace getProduct already queries by default — the buy box a
-    // Melidrop import actually sees, so this needs only the one Amazon call.
-    let deliveryDays: number | null = null;
+    // Single call to the same marketplace getProduct already queries — Amazon
+    // itself (FBA or not) is identified directly within its own Offers array,
+    // no separate USA-marketplace lookup needed.
     let shipsFromCountry: string | null = null;
     try {
         const path = `/products/pricing/v0/items/${asin}/offers?MarketplaceId=${MARKETPLACE_MXN}&ItemCondition=New`;
         const data = await makeAmazonRequest(endpoint, path, accessToken);
-        const buyBoxWinner = (data?.payload?.Offers ?? []).find((o: any) => o.IsBuyBoxWinner);
-        shipsFromCountry = buyBoxWinner?.ShipsFrom?.Country ?? null;
-        deliveryDays = daysForShipsFromCountry(shipsFromCountry ?? undefined);
+        const offers = data?.payload?.Offers ?? [];
+
+        const amazonOffer = offers.find((o: any) => o.IsFulfilledByAmazon || KNOWN_AMAZON_SELLER_IDS.has(o.SellerId));
+        if (amazonOffer) {
+            shipsFromCountry = amazonOffer.ShipsFrom?.Country ?? 'US';
+        } else {
+            // Amazon isn't selling this ASIN itself — fall back to whichever
+            // 3rd-party merchant currently wins the buy box.
+            const buyBoxWinner = offers.find((o: any) => o.IsBuyBoxWinner);
+            shipsFromCountry = buyBoxWinner?.ShipsFrom?.Country ?? null;
+        }
     } catch (e) {
         console.warn('Could not fetch delivery estimate:', e);
     }
 
+    const deliveryDays = daysForShipsFromCountry(shipsFromCountry ?? undefined);
     return { deliveryDays, shipsFromCountry };
 }
 
