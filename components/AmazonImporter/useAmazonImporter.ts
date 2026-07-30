@@ -812,16 +812,15 @@ export function useAmazonImporter() {
         const warrantyMonths = parseInt(localStorage.getItem('melidrop_warranty_months') || '1');
 
         // handling_time = días preparación del vendedor + días de entrega Amazon.
-        // realDeliveryDays (from amazonService.estimateDelivery, a real per-ASIN
-        // shipping-time lookup) is the real signal — when handleDryRun successfully
-        // fetches it, use it. Otherwise fall back to the static Settings defaults,
-        // picked by currency as a proxy for "US vs MX" — confirmed live that this
-        // proxy is unreliable on its own: amazon-proxy's getProduct always queries
-        // the Mexico marketplace (no caller ever passes a marketplaceId override),
-        // so currency comes back 'MXN' even for a listing that's explicitly
-        // "vendido por un vendedor extranjero... Envío GRATIS desde EE. UU." —
-        // a real cross-border item silently got the fast 3-day MX default instead
-        // of the slower USA one, understating handling_time to ML buyers.
+        // realDeliveryDays (from amazonService.estimateDelivery) is the real
+        // signal — a fixed number of days set by the ASIN's actual buy box
+        // winner's ship-from country (MX/US/CN/Europe), not Amazon's own
+        // ShippingTime hours (confirmed unreliable — real offers can report 0)
+        // and not the currency-based guess this used to make (confirmed
+        // unreliable too — amazon-proxy's getProduct always queries the Mexico
+        // marketplace, so currency comes back 'MXN' regardless of true origin).
+        // Falls back to the static Settings defaults below when the estimate
+        // call fails or the origin country isn't one of the 4 defined buckets.
         const prepDaysStored = parseInt(localStorage.getItem('melidrop_prep_days') || '3');
         const deliveryDaysStored = isUSD
             ? parseInt(localStorage.getItem('melidrop_delivery_days_usa') || '10')
@@ -1009,16 +1008,18 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
                 }
             }
 
-            // Real per-ASIN shipping-time lookup (amazon-proxy's estimateDelivery,
-            // already built and working — just never wired up here before). Not
-            // needed for the sandbox payload (isSandbox hardcodes 30 regardless),
-            // only for the production payload below. Best-effort: a failed/slow
-            // Amazon call here shouldn't block the whole dry run, so this falls
-            // back to buildItemPayload's own static Settings-based default.
+            // Real per-ASIN delivery estimate (amazon-proxy's estimateDelivery) —
+            // days fixed by owner-defined rule off the buy box winner's ShipsFrom
+            // country (MX/US/CN/Europe), not Amazon's own unreliable ShippingTime
+            // hours. Not needed for the sandbox payload (isSandbox hardcodes 30
+            // regardless), only for the production payload below. Best-effort: a
+            // failed/slow Amazon call, or an origin country outside the 4 defined
+            // buckets, shouldn't block the whole dry run — falls back to
+            // buildItemPayload's own static Settings-based default.
             let realDeliveryDays: number | undefined;
             try {
-                const { mxDays, usaDays } = await amazonService.estimateDelivery(asin);
-                realDeliveryDays = Math.max(mxDays, usaDays);
+                const { deliveryDays } = await amazonService.estimateDelivery(asin);
+                if (typeof deliveryDays === 'number') realDeliveryDays = deliveryDays;
             } catch (e) {
                 console.warn(`[Melidrop] ${asin}: could not fetch real delivery estimate, falling back to Settings default:`, e);
             }

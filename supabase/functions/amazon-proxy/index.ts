@@ -208,64 +208,47 @@ async function updatePrice(credentials: AmazonCredentials, sku: string, price: n
     return await makeAmazonRequest(endpoint, pricePath, accessToken, 'PATCH', priceData);
 }
 
-const MARKETPLACE_MXN   = "A1AM78C64UM0Y8";
-const MARKETPLACE_USA   = "ATVPDKIKX0DER";
+const MARKETPLACE_MXN = "A1AM78C64UM0Y8";
 
-// Picks the most trustworthy ShippingTime.maximumHours out of a marketplace's
-// raw Offers array. Confirmed live against a real ASIN (B0DDBZLL4N):
-// - Amazon's own "is this Amazon" SellerId is NOT stable — that ASIN's real
-//   IsFulfilledByAmazon:true offer in the US marketplace had SellerId
-//   A6V24G7XMKNBA, not the AMAZON_SELLER_USA/MXN constants this function used
-//   to hardcode, so the match always missed and silently fell through to a
-//   flat default. IsFulfilledByAmazon is the reliable signal instead.
-// - maximumHours:0 shows up on real offers (including that same FBA one) and
-//   is a data gap, not "ships instantly" — treated as invalid, not zero days.
-// Preference order: an FBA offer > the buy box winner (what a buyer actually
-// gets by default) > the longest valid time among all offers (conservative —
-// for a delivery PROMISE, disagreement between real offers should resolve to
-// the slower one, not whichever happened to load first in the array).
-function pickShippingHours(offers: any[]): number | null {
-    const hasValidTime = (o: any) => typeof o?.ShippingTime?.maximumHours === 'number' && o.ShippingTime.maximumHours > 0;
-    const fba = offers.find((o: any) => o.IsFulfilledByAmazon && hasValidTime(o));
-    if (fba) return fba.ShippingTime.maximumHours;
-    const buyBoxWinner = offers.find((o: any) => o.IsBuyBoxWinner && hasValidTime(o));
-    if (buyBoxWinner) return buyBoxWinner.ShippingTime.maximumHours;
-    const validHours = offers.filter(hasValidTime).map((o: any) => o.ShippingTime.maximumHours);
-    return validHours.length > 0 ? Math.max(...validHours) : null;
+// Fixed business rule (owner-defined, confirmed against real Offers data —
+// Amazon's own ShippingTime.maximumHours is unreliable: real buy-box-winning
+// offers can report 0 hours, a data gap, not "ships instantly"). ShipsFrom.Country
+// and IsBuyBoxWinner are the two fields actually trustworthy in every offer
+// Amazon returns, so base delivery days off whichever country the CURRENT buy
+// box winner ships from — that's the offer a real buyer actually gets.
+const EUROPE_COUNTRIES = new Set([
+    'DE', 'GB', 'FR', 'IT', 'ES', 'NL', 'BE', 'PL', 'SE', 'AT', 'IE', 'PT',
+    'DK', 'FI', 'NO', 'CH', 'CZ', 'GR', 'HU', 'RO'
+]);
+
+function daysForShipsFromCountry(country: string | undefined): number | null {
+    if (!country) return null;
+    if (country === 'MX') return 2;
+    if (country === 'US') return 8;
+    if (country === 'CN') return 18;
+    if (EUROPE_COUNTRIES.has(country)) return 23;
+    return null; // unrecognized origin — caller falls back to its own default
 }
 
 async function estimateDelivery(credentials: AmazonCredentials, asin: string) {
     const accessToken = await getAccessToken(credentials);
     const endpoint = ENDPOINTS[credentials.region as keyof typeof ENDPOINTS] || ENDPOINTS.na;
 
-    // --- Amazon MX delivery estimate ---
-    let mxDays = 3; // sensible default
+    // Same marketplace getProduct already queries by default — the buy box a
+    // Melidrop import actually sees, so this needs only the one Amazon call.
+    let deliveryDays: number | null = null;
+    let shipsFromCountry: string | null = null;
     try {
-        const mxPath = `/products/pricing/v0/items/${asin}/offers?MarketplaceId=${MARKETPLACE_MXN}&ItemCondition=New`;
-        const mxData = await makeAmazonRequest(endpoint, mxPath, accessToken);
-        const hours = pickShippingHours(mxData?.payload?.Offers ?? []);
-        if (hours !== null) mxDays = Math.max(1, Math.ceil(hours / 24));
+        const path = `/products/pricing/v0/items/${asin}/offers?MarketplaceId=${MARKETPLACE_MXN}&ItemCondition=New`;
+        const data = await makeAmazonRequest(endpoint, path, accessToken);
+        const buyBoxWinner = (data?.payload?.Offers ?? []).find((o: any) => o.IsBuyBoxWinner);
+        shipsFromCountry = buyBoxWinner?.ShipsFrom?.Country ?? null;
+        deliveryDays = daysForShipsFromCountry(shipsFromCountry ?? undefined);
     } catch (e) {
-        console.warn('Could not fetch MX delivery estimate:', e);
+        console.warn('Could not fetch delivery estimate:', e);
     }
 
-    // --- Amazon USA → Mexico estimate ---
-    // SP-API does not expose cross-border delivery times — use Amazon Global typical range
-    let usaDays = 10;
-    try {
-        const usaPath = `/products/pricing/v0/items/${asin}/offers?MarketplaceId=${MARKETPLACE_USA}&ItemCondition=New`;
-        const usaData = await makeAmazonRequest(endpoint, usaPath, accessToken);
-        const hours = pickShippingHours(usaData?.payload?.Offers ?? []);
-        if (hours !== null) {
-            // Domestic US hours + ~7 days for customs/international transit to Mexico
-            const domesticDays = Math.ceil(hours / 24);
-            usaDays = domesticDays + 7;
-        }
-    } catch (e) {
-        console.warn('Could not fetch USA offers, using default:', e);
-    }
-
-    return { mxDays, usaDays };
+    return { deliveryDays, shipsFromCountry };
 }
 
 serve(async (req) => {

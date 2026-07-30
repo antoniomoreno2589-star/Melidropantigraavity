@@ -461,8 +461,12 @@ export const SettingsPage = () => {
             }
             if (!sampleAsin) { setDetectStatus('❌ No hay productos con ASIN en tu catálogo. Importa uno primero.'); return; }
 
-            const { mxDays, usaDays } = await amazonService.estimateDelivery(sampleAsin);
-            setDetectStatus(`✅ Amazon MX entrega en ~${mxDays} día(s) · Amazon USA entrega en ~${usaDays} día(s). El actualizador usará estos tiempos automáticamente por producto.`);
+            const { deliveryDays, shipsFromCountry } = await amazonService.estimateDelivery(sampleAsin);
+            setDetectStatus(
+                deliveryDays !== null
+                    ? `✅ El ganador de la BuyBox de este producto envía desde ${shipsFromCountry} — se usarán ~${deliveryDays} día(s) de Amazon. Esto se calcula automáticamente por producto al probar/publicar, no hace falta guardarlo aquí.`
+                    : `⚠️ No se pudo determinar el país de origen del vendedor (${shipsFromCountry ?? 'desconocido'}) — se usará el valor por defecto de abajo para este producto.`
+            );
         } catch (e: any) {
             setDetectStatus(`❌ Error: ${e.message}`);
         } finally {

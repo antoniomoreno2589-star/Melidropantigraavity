@@ -231,12 +231,12 @@ class AmazonService {
         }
     }
 
-    async estimateDelivery(asin: string): Promise<{ mxDays: number; usaDays: number }> {
+    async estimateDelivery(asin: string): Promise<{ deliveryDays: number | null; shipsFromCountry: string | null }> {
         if (!this.isAuthenticated()) {
             throw new Error('Not authenticated with Amazon');
         }
         const result = await this.callProxy('estimateDelivery', { asin });
-        return result as { mxDays: number; usaDays: number };
+        return result as { deliveryDays: number | null; shipsFromCountry: string | null };
     }
 }
 
