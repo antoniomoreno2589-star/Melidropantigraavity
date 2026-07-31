@@ -103,12 +103,22 @@ const EUROPE_COUNTRIES = new Set([
     'DK', 'FI', 'NO', 'CH', 'CZ', 'GR', 'HU', 'RO'
 ]);
 
-function daysForShipsFromCountry(country: string | null | undefined): number | null {
+interface FixedDeliveryDaysOverride {
+    MX?: number;
+    US?: number;
+    CN?: number;
+    EU?: number;
+}
+
+// Owner-editable via the Días de Entrega por País de Origen table in
+// Actualización → Valores Fijos (margin_rules.fixed_delivery_days). Falls
+// back to the original owner-defined defaults when unset.
+function daysForShipsFromCountry(country: string | null | undefined, override?: FixedDeliveryDaysOverride | null): number | null {
     if (!country) return null;
-    if (country === 'MX') return 2;
-    if (country === 'US') return 8;
-    if (country === 'CN') return 18;
-    if (EUROPE_COUNTRIES.has(country)) return 23;
+    if (country === 'MX') return override?.MX ?? 2;
+    if (country === 'US') return override?.US ?? 8;
+    if (country === 'CN') return override?.CN ?? 18;
+    if (EUROPE_COUNTRIES.has(country)) return override?.EU ?? 23;
     return null; // unrecognized origin — caller falls back to its own default
 }
 
@@ -1657,7 +1667,7 @@ Deno.serve(async (req) => {
                     // the scraper — so a product paused for that reason before self-heals
                     // (via the reactivation branch below) once this mode takes over.
                     noBuyBox = false;
-                    const fixedDays = daysForShipsFromCountry(offers?.shipsFromCountry ?? null);
+                    const fixedDays = daysForShipsFromCountry(offers?.shipsFromCountry ?? null, (settings as any).fixed_delivery_days ?? null);
                     if (fixedDays !== null) {
                         cachedShippingDays = fixedDays;
                         debug.shipsFromCountry = offers?.shipsFromCountry ?? null;
