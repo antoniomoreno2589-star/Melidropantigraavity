@@ -1094,18 +1094,7 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
                         if (imageIds.length > 0) {
                             (testPayload as any).pictures = imageIds.map((id: string) => ({ id }));
                         }
-                        publishResult = await meliService.publishItem(testPayload, false, testToken);
-
-                        // Some categories reject the hardcoded WARRANTY_TYPE free-text
-                        // value — they expect one of a fixed set of value_ids instead.
-                        // sale_terms are optional enrichment, not required to publish,
-                        // so drop them and retry rather than fail the whole listing.
-                        if (publishResult?.error && publishResult.cause?.some((c: any) => c.message?.toLowerCase().includes('sale term'))) {
-                            console.log(`[Melidrop] Category rejects sale_terms — retrying without them`);
-                            const noTermsPayload = { ...testPayload };
-                            delete (noTermsPayload as any).sale_terms;
-                            publishResult = await meliService.publishItem(noTermsPayload, false, testToken);
-                        }
+                        publishResult = await meliService.publishItemWithFallbacks(testPayload, false, testToken);
 
                         if (publishResult?.id) {
                             testMeliId = publishResult.id;
@@ -1454,29 +1443,7 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
             // Log attributes being sent for debugging
             console.log(`[Melidrop] Publishing ${asin} with attributes:`, publishPayload.attributes?.map((a: any) => `${a.id}="${a.value_name}"`));
 
-            let result = await meliService.publishItem(publishPayload, isDraft, publishToken);
-
-            // Some ML categories require family_name and reject title when it's provided.
-            // Retry without title, using the original title as family_name instead.
-            if (result.error && result.cause?.some((c: any) => c.message?.includes('family_name'))) {
-                console.log(`[Melidrop] Category requires family_name — retrying without title`);
-                const familyPayload = { ...publishPayload };
-                const originalTitle = familyPayload.title;
-                delete familyPayload.title;
-                familyPayload.family_name = originalTitle;
-                result = await meliService.publishItem(familyPayload, isDraft, publishToken);
-            }
-
-            // Some categories reject the hardcoded WARRANTY_TYPE free-text value —
-            // they expect one of a fixed set of value_ids instead. sale_terms are
-            // optional enrichment, not required to publish, so drop them and retry
-            // rather than fail the whole listing over a warranty label.
-            if (result.error && result.cause?.some((c: any) => c.message?.toLowerCase().includes('sale term'))) {
-                console.log(`[Melidrop] Category rejects sale_terms — retrying without them`);
-                const noTermsPayload = { ...publishPayload };
-                delete (noTermsPayload as any).sale_terms;
-                result = await meliService.publishItem(noTermsPayload, isDraft, publishToken);
-            }
+            let result = await meliService.publishItemWithFallbacks(publishPayload, isDraft, publishToken);
 
             console.log(`[Melidrop] Publication response for ${asin}:`, result);
 

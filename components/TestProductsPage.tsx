@@ -273,7 +273,7 @@ export const TestProductsPage = () => {
             const descriptionText = payload?.description?.plain_text;
             const itemPayload = { ...payload, description: undefined };
 
-            const result = await meliService.publishItem(itemPayload, false);
+            const result = await meliService.publishItemWithFallbacks(itemPayload, false);
 
             if (result.error) {
                 const causes: string[] = [];
@@ -410,7 +410,7 @@ export const TestProductsPage = () => {
 
                 const descriptionText = product.publishPayload?.description?.plain_text;
                 const itemPayload = { ...product.publishPayload, description: undefined };
-                const result = await meliService.publishItem(itemPayload, false);
+                const result = await meliService.publishItemWithFallbacks(itemPayload, false);
 
                 if (result.error) {
                     const causes = result.cause?.map((c: any) => c.message || c.code).join(', ') || result.error;

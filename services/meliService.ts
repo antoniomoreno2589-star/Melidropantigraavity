@@ -1082,6 +1082,43 @@ class MeliService {
         return data;
     }
 
+    // ML rejects some categories' listings for reasons that have a known, safe
+    // fallback — retry once with an adjusted payload instead of failing the
+    // whole publish. Shared by every call site that publishes an item
+    // (AmazonImporter's initial publish, TestProductsPage's publish-to-real
+    // and bulk-publish) so a fix here covers all of them — confirmed live
+    // that publishing a sandbox-tested product to the real account can hit
+    // body.required_fields/family_name even when the sandbox publish of the
+    // same payload didn't, so every publish call site needs this, not just one.
+    async publishItemWithFallbacks(itemData: any, isDraft: boolean = false, customToken?: string): Promise<any> {
+        let payload = itemData;
+        let result = await this.publishItem(payload, isDraft, customToken);
+
+        // Some ML categories require family_name and reject title when it's provided.
+        // Retry without title, using the original title as family_name instead.
+        if (result.error && result.cause?.some((c: any) => c.message?.includes('family_name'))) {
+            console.log('[Melidrop] Category requires family_name — retrying without title');
+            const originalTitle = payload.title;
+            payload = { ...payload };
+            delete payload.title;
+            payload.family_name = originalTitle;
+            result = await this.publishItem(payload, isDraft, customToken);
+        }
+
+        // Some categories reject the hardcoded WARRANTY_TYPE free-text value —
+        // they expect one of a fixed set of value_ids instead. sale_terms are
+        // optional enrichment, not required to publish, so drop them and retry
+        // rather than fail the whole listing over a warranty label.
+        if (result.error && result.cause?.some((c: any) => c.message?.toLowerCase().includes('sale term'))) {
+            console.log('[Melidrop] Category rejects sale_terms — retrying without them');
+            payload = { ...payload };
+            delete (payload as any).sale_terms;
+            result = await this.publishItem(payload, isDraft, customToken);
+        }
+
+        return result;
+    }
+
     async postDescription(meliId: string, descriptionText: string, customToken?: string): Promise<void> {
         try {
             // First attempt: plain_text format
