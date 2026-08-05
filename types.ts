@@ -18,6 +18,9 @@ export interface Product {
   amazonAvailable?: boolean | null;  // false = product not found/unavailable on Amazon
   pauseReason?: string | null;       // 'sin_buybox' = paused because no buybox detected
   shippingDays?: number | null;      // Amazon-scraped delivery days (null = not yet synced)
+  shippingSyncBlocked?: boolean;     // true = ML rejected the last shipping.handling_time update
+                                      // (active bid/offer, listing under review, etc.) — the
+                                      // displayed shippingDays is stale until ML allows it again
 }
 
 export interface Order {
