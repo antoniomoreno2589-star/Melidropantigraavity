@@ -1190,11 +1190,18 @@ async function getValidMeliToken(creds: any): Promise<string> {
     return refreshMeliToken(creds);
 }
 
+interface MeliUpdateResult {
+    ok: boolean;
+    error?: string;
+    cause?: any[];
+    strippedFields?: string[];
+}
+
 async function updateMeliItem(
     meliId: string,
     payload: Record<string, unknown>,
     token: string
-): Promise<{ ok: boolean; error?: string }> {
+): Promise<MeliUpdateResult> {
     const res = await fetch(`${MELI_API}/items/${meliId}`, {
         method:  "PUT",
         headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
@@ -1203,9 +1210,54 @@ async function updateMeliItem(
     if (!res.ok) {
         const body = await res.text().catch(() => `HTTP ${res.status}`);
         console.error(`[amazon-ml-updater] ML update failed for ${meliId}: ${res.status} - ${body}`);
-        return { ok: false, error: `ML ${res.status}: ${body.slice(0, 300)}` };
+        let cause: any[] | undefined;
+        try { cause = JSON.parse(body)?.cause; } catch { /* not JSON, leave undefined */ }
+        return { ok: false, error: `ML ${res.status}: ${body.slice(0, 300)}`, cause };
     }
     return { ok: true };
+}
+
+// PUT /items validates the whole payload atomically — confirmed live that an
+// item with an active bid/offer (has_bids:true) rejects shipping.handling_time
+// as field_not_updatable, and that alone fails the ENTIRE request, blocking
+// price/stock from updating too even though those parts were perfectly valid
+// (a batch of 6 came back "0 actualizados, 6 errores" purely from this).
+// Strip whichever top-level field(s) ML names as locked and retry, so the
+// rest of the payload still lands instead of failing 0-for-N.
+async function updateMeliItemWithFallbacks(
+    meliId: string,
+    payload: Record<string, unknown>,
+    token: string
+): Promise<MeliUpdateResult> {
+    let body: Record<string, unknown> = payload;
+    let result = await updateMeliItem(meliId, body, token);
+    const allStripped: string[] = [];
+
+    let attempts = 0;
+    while (!result.ok && attempts < 5) {
+        const lockedFields = (result.cause ?? [])
+            .filter((c: any) => c.code === 'field_not_updatable')
+            .flatMap((c: any) => c.references ?? [])
+            .map((ref: string) => ref.split('.')[0]);
+
+        const strippable = [...new Set(lockedFields)].filter((f: string) => f in body);
+        if (strippable.length === 0) break; // nothing we know how to fix — surface the error as-is
+
+        console.log(`[amazon-ml-updater] meliId=${meliId} ML locked field(s) [${strippable.join(', ')}] — retrying without them`);
+        body = { ...body };
+        for (const f of strippable) delete body[f];
+        allStripped.push(...strippable);
+
+        if (Object.keys(body).length === 0) {
+            // Every field in this update was locked — nothing left to send.
+            return { ok: true, strippedFields: allStripped };
+        }
+
+        result = await updateMeliItem(meliId, body, token);
+        attempts++;
+    }
+
+    return { ...result, strippedFields: allStripped.length > 0 ? allStripped : undefined };
 }
 
 async function updateMeliDescription(
@@ -1700,7 +1752,7 @@ Deno.serve(async (req) => {
                     // ML rejects status:"active" combined with price/stock in the same payload.
                     // Send reactivation as a standalone PUT, then let the main update handle price/stock.
                     console.log(`[amazon-ml-updater] meliId=${meliId} reactivating — Amazon product available again`);
-                    const reactivateResult = await updateMeliItem(meliId, { status: "active" }, mlToken);
+                    const reactivateResult = await updateMeliItemWithFallbacks(meliId, { status: "active" }, mlToken);
                     if (reactivateResult.ok) {
                         await supabase.from("products").update({ status: "active", pause_reason: null }).eq("meli_id", meliId);
                         console.log(`[amazon-ml-updater] meliId=${meliId} reactivation succeeded`);
@@ -1761,20 +1813,26 @@ Deno.serve(async (req) => {
 
                 if (Object.keys(updatePayload).length > 0) {
                     console.log(`[amazon-ml-updater] meliId=${meliId}, sku=${sku}, payload=${JSON.stringify(updatePayload)}`);
-                    const result = await updateMeliItem(meliId, updatePayload, mlToken);
+                    const result = await updateMeliItemWithFallbacks(meliId, updatePayload, mlToken);
                     debug.mlResult = result.ok ? "ok" : `error: ${result.error}`;
-                    console.log(`[amazon-ml-updater] meliId=${meliId} result=${result.ok ? 'SUCCESS' : `FAILED: ${result.error}`}`);
+                    if (result.strippedFields?.length) debug.strippedFields = result.strippedFields;
+                    console.log(`[amazon-ml-updater] meliId=${meliId} result=${result.ok ? 'SUCCESS' : `FAILED: ${result.error}`}${result.strippedFields?.length ? ` (stripped: ${result.strippedFields.join(', ')})` : ''}`);
                     if (result.ok) {
+                        // A field ML reported as locked (e.g. shipping.handling_time on an
+                        // item with an active bid) never actually reached ML — only record
+                        // the fields that weren't stripped, so Supabase doesn't claim a
+                        // value was applied when it wasn't.
+                        const stripped = new Set(result.strippedFields ?? []);
                         const dbUpdate: any = { last_updated: new Date().toISOString() };
-                        if (updatePayload.price)              dbUpdate.price_mxn           = updatePayload.price;
-                        if (updatePayload.available_quantity) dbUpdate.stock_meli           = updatePayload.available_quantity;
-                        if (updatePayload.status)             dbUpdate.status               = updatePayload.status;
+                        if (updatePayload.price && !stripped.has('price'))                            dbUpdate.price_mxn           = updatePayload.price;
+                        if (updatePayload.available_quantity && !stripped.has('available_quantity'))  dbUpdate.stock_meli           = updatePayload.available_quantity;
+                        if (updatePayload.status && !stripped.has('status'))                          dbUpdate.status               = updatePayload.status;
                         if (sellerCount !== null)             dbUpdate.amazon_seller_count  = sellerCount;
                         if (soldByAmazon !== null)            dbUpdate.sold_by_amazon       = soldByAmazon;
                         // Real mode's scrape loop persists shipping_days itself, separately,
                         // before this loop runs. Fixed mode has no such loop — persist here
                         // instead, so the "Días Prep." column reflects what ML actually got.
-                        if (updateMode === 'fixed' && cachedShippingDays !== null) {
+                        if (updateMode === 'fixed' && cachedShippingDays !== null && !stripped.has('shipping')) {
                             dbUpdate.shipping_days = cachedShippingDays;
                             dbUpdate.shipping_days_updated_at = new Date().toISOString();
                         }
