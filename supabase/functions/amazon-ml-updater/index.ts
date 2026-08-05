@@ -39,6 +39,9 @@ interface AmazonOffers {
     shippingDays: number | null;
     winningOfferPrice: number | null; // "Valores Fijos" mode: price from pickWinningOffer, not LowestPrices
     shipsFromCountry: string | null;  // "Valores Fijos" mode: feeds daysForShipsFromCountry
+    currency: string | null;          // real currency of the offer this data came from — may differ
+                                       // from the product's stored currency when the marketplace
+                                       // fallback (below) had to use the OTHER marketplace
 }
 
 interface ShippingResult {
@@ -1013,9 +1016,9 @@ async function fetchAmazonOffers(
         });
         if (!res.ok) {
             if (res.status === 404 || res.status === 400) {
-                return { price: null, sellerCount: 0, soldByAmazon: false, amazonStock: 0, shippingDays: null, winningOfferPrice: null, shipsFromCountry: null };
+                return { price: null, sellerCount: 0, soldByAmazon: false, amazonStock: 0, shippingDays: null, winningOfferPrice: null, shipsFromCountry: null, currency: null };
             }
-            return { price: null, sellerCount: 0, soldByAmazon: false, amazonStock: null, shippingDays: null, winningOfferPrice: null, shipsFromCountry: null };
+            return { price: null, sellerCount: 0, soldByAmazon: false, amazonStock: null, shippingDays: null, winningOfferPrice: null, shipsFromCountry: null, currency: null };
         }
         const data = await res.json();
         const summary = data?.payload?.Summary;
@@ -1035,6 +1038,13 @@ async function fetchAmazonOffers(
             ?? amazonOffer?.ListingPrice?.Amount
             ?? amazonOffer?.BuyingPrice?.ListingPrice?.Amount
             ?? null;
+        // Real currency of whichever offer `price` came from — the marketplace
+        // fallback (main handler) can end up using an offer from a different
+        // marketplace than the product's stored currency implies.
+        const currency = lowestNew?.ListingPrice?.CurrencyCode
+            ?? amazonOffer?.ListingPrice?.CurrencyCode
+            ?? amazonOffer?.BuyingPrice?.ListingPrice?.CurrencyCode
+            ?? null;
 
         // "Valores Fijos" mode: same winning offer as the importer uses, so price
         // and shipping origin always agree on which offer is "the" one.
@@ -1051,10 +1061,10 @@ async function fetchAmazonOffers(
             ? Math.ceil(maxHours / 24)
             : null;
 
-        console.log(`[fetchAmazonOffers] asin=${asin} price=${price} sellerCount=${sellerCount} soldByAmazon=${soldByAmazon} amazonStock=${amazonStock} shippingDays=${shippingDays}(maxHours=${maxHours}) winningOfferPrice=${winningOfferPrice} shipsFromCountry=${shipsFromCountry}`);
-        return { price, sellerCount, soldByAmazon, amazonStock, shippingDays, winningOfferPrice, shipsFromCountry };
+        console.log(`[fetchAmazonOffers] asin=${asin} price=${price} sellerCount=${sellerCount} soldByAmazon=${soldByAmazon} amazonStock=${amazonStock} shippingDays=${shippingDays}(maxHours=${maxHours}) winningOfferPrice=${winningOfferPrice} shipsFromCountry=${shipsFromCountry} currency=${currency}`);
+        return { price, sellerCount, soldByAmazon, amazonStock, shippingDays, winningOfferPrice, shipsFromCountry, currency };
     } catch {
-        return { price: null, sellerCount: 0, soldByAmazon: false, amazonStock: null, shippingDays: null, winningOfferPrice: null, shipsFromCountry: null };
+        return { price: null, sellerCount: 0, soldByAmazon: false, amazonStock: null, shippingDays: null, winningOfferPrice: null, shipsFromCountry: null, currency: null };
     }
 }
 
@@ -1129,7 +1139,7 @@ async function fetchOffersBatch(
                 if (!asin) return;
                 const statusCode = resp?.status?.statusCode ?? 0;
                 if (statusCode === 404 || statusCode === 400) {
-                    offers[asin] = { price: null, sellerCount: 0, soldByAmazon: false, amazonStock: 0, shippingDays: null, winningOfferPrice: null, shipsFromCountry: null };
+                    offers[asin] = { price: null, sellerCount: 0, soldByAmazon: false, amazonStock: 0, shippingDays: null, winningOfferPrice: null, shipsFromCountry: null, currency: null };
                     return;
                 }
                 if (statusCode !== 200) return;
@@ -1149,6 +1159,13 @@ async function fetchOffersBatch(
                     ?? amazonOff?.ListingPrice?.Amount
                     ?? amazonOff?.BuyingPrice?.ListingPrice?.Amount
                     ?? null;
+                // Real currency of whichever offer `price` came from — the marketplace
+                // fallback (main handler) can end up using an offer from a different
+                // marketplace than the product's stored currency implies.
+                const offerCurrency = lowestNew?.ListingPrice?.CurrencyCode
+                    ?? amazonOff?.ListingPrice?.CurrencyCode
+                    ?? amazonOff?.BuyingPrice?.ListingPrice?.CurrencyCode
+                    ?? null;
                 // "Valores Fijos" mode: same winning offer as the importer uses, so price
                 // and shipping origin always agree on which offer is "the" one.
                 const winningOff      = pickWinningOffer(allOffs);
@@ -1158,8 +1175,8 @@ async function fetchOffersBatch(
                 const maxHours     = shippingOff?.ShippingTime?.maximumHours;
                 const shippingDays = (maxHours !== undefined && maxHours !== null && maxHours > 0)
                     ? Math.ceil(maxHours / 24) : null;
-                console.log(`[fetchOffersBatch] asin=${asin} price=${price} sellers=${sellerCount} soldByAmazon=${soldByAmazon} stock=${amazonStock} winningOfferPrice=${winningOffPrice} shipsFromCountry=${shipsFromCountry}`);
-                offers[asin] = { price, sellerCount, soldByAmazon, amazonStock, shippingDays, winningOfferPrice: winningOffPrice, shipsFromCountry };
+                console.log(`[fetchOffersBatch] asin=${asin} price=${price} sellers=${sellerCount} soldByAmazon=${soldByAmazon} stock=${amazonStock} winningOfferPrice=${winningOffPrice} shipsFromCountry=${shipsFromCountry} currency=${offerCurrency}`);
+                offers[asin] = { price, sellerCount, soldByAmazon, amazonStock, shippingDays, winningOfferPrice: winningOffPrice, shipsFromCountry, currency: offerCurrency };
             });
         } catch (e) {
             console.error(`[fetchOffersBatch] chunk error:`, e);
@@ -1602,6 +1619,33 @@ Deno.serve(async (req) => {
             ]);
             const asinOffers: Record<string, AmazonOffers> = { ...usdOffers, ...mxnOffers };
 
+            // Confirmed live (B0BP7P2VD9): a product's stored `currency` can point at
+            // the wrong marketplace — tagged USD (→ queried USA, 0 offers there) while
+            // a real, live, buybox-winning Amazon offer existed in MX the whole time.
+            // That false "0 offers" reads as isUnavailableOnAmazon and auto-pauses a
+            // listing that's actually for sale. Before trusting a 0-offer result,
+            // double-check the OTHER marketplace — only for the ASINs that came back
+            // empty, so the common (correctly-tagged) case pays no extra cost.
+            const zeroOfferAsins = (products as any[])
+                .map((p: any) => p.sku)
+                .filter((sku: string) => (asinOffers[sku]?.sellerCount ?? 0) === 0);
+            if (zeroOfferAsins.length > 0) {
+                const usdSet = new Set(usdAsins);
+                const recheckUsd = zeroOfferAsins.filter((sku: string) => !usdSet.has(sku)); // was queried MXN → try USA
+                const recheckMxn = zeroOfferAsins.filter((sku: string) => usdSet.has(sku));  // was queried USA → try MXN
+                console.log(`[amazon-ml-updater] ${zeroOfferAsins.length} ASIN(s) came back with 0 offers — double-checking the other marketplace before pausing`);
+                const [recheckUsdOffers, recheckMxnOffers] = await Promise.all([
+                    recheckUsd.length ? fetchOffersBatch(endpoint, accessToken, recheckUsd, MARKETPLACE_USA, AMAZON_SELLER_USA) : Promise.resolve({}),
+                    recheckMxn.length ? fetchOffersBatch(endpoint, accessToken, recheckMxn, MARKETPLACE_MXN, AMAZON_SELLER_MXN) : Promise.resolve({}),
+                ]);
+                for (const [sku, offer] of Object.entries({ ...recheckUsdOffers, ...recheckMxnOffers })) {
+                    if ((offer as AmazonOffers).sellerCount > 0) {
+                        console.log(`[amazon-ml-updater] sku=${sku} had 0 offers on its labeled-currency marketplace but ${(offer as AmazonOffers).sellerCount} on the other — using that instead`);
+                        asinOffers[sku] = offer as AmazonOffers;
+                    }
+                }
+            }
+
             const asinImages: Record<string, string[]> = {};
             if (syncParams.photos) {
                 const imageRequests = (products as any[]).map(p => ({
@@ -1772,7 +1816,12 @@ Deno.serve(async (req) => {
                         : (offers?.price ?? null);
                     debug.amazonPrice = amazonPrice;
                     if (amazonPrice) {
-                        const newMxn     = calculateMxnPrice(amazonPrice, currency, exchangeRate, usaRules, mxRules);
+                        // Use the offer's real currency when the marketplace fallback above
+                        // had to pull it from a different market than `currency` implies —
+                        // otherwise a MXN-priced offer could get the USD exchange-rate
+                        // multiplier applied to it (or vice versa), badly mispricing the item.
+                        const priceCurrency = offers?.currency ?? currency;
+                        const newMxn     = calculateMxnPrice(amazonPrice, priceCurrency, exchangeRate, usaRules, mxRules);
                         const currentMxn = (product as any).price_mxn ?? 0;
                         debug.newMxn     = newMxn;
                         debug.currentMxn = currentMxn;
@@ -1835,6 +1884,23 @@ Deno.serve(async (req) => {
                         if (updateMode === 'fixed' && cachedShippingDays !== null && !stripped.has('shipping')) {
                             dbUpdate.shipping_days = cachedShippingDays;
                             dbUpdate.shipping_days_updated_at = new Date().toISOString();
+                        }
+                        // Confirmed live: ML can reject shipping.handling_time as
+                        // field_not_updatable for reasons unrelated to Melidrop (an active
+                        // bid/offer on the item, or the listing sitting in under_review
+                        // waiting on a patch) — only flag it when a shipping update was
+                        // actually attempted this cycle, so the UI can explain why the
+                        // displayed value is stale instead of leaving it unexplained.
+                        // Clears itself automatically once ML accepts the field again.
+                        if (updatePayload.shipping) {
+                            dbUpdate.shipping_sync_blocked = stripped.has('shipping');
+                        }
+                        // Confirmed live (B0BP7P2VD9): self-heal a wrong stored currency so
+                        // future cycles route to the right marketplace directly instead of
+                        // needing the zero-offer fallback above on every single run.
+                        if (offers?.currency && offers.currency !== currency) {
+                            console.log(`[amazon-ml-updater] meliId=${meliId} correcting stored currency ${currency} → ${offers.currency}`);
+                            dbUpdate.currency = offers.currency;
                         }
                         dbUpdate.amazon_available = !isUnavailableOnAmazon;
                         await supabase.from("products").update(dbUpdate).eq("meli_id", meliId);
