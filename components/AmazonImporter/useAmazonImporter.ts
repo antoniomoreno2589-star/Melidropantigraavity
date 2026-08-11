@@ -1490,10 +1490,19 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
                 }
 
                 // Persist the product to Supabase so the updater knows its currency
-                // and description without having to re-fetch from Amazon.
+                // and description without having to re-fetch from Amazon. This save
+                // is what puts the item under in_updater=true — miss it and the
+                // listing never gets its post-publish handling_time fix (or any
+                // future price/stock/shipping sync), invisibly, since it silently
+                // used to only console.warn. Surface it as a UI warning instead:
+                // publish itself succeeded (ML listing is real), only the internal
+                // tracking write failed, so the row keeps its "Publicado" badge.
                 if (result.id) {
                     const { data: { user } } = await supabase.auth.getUser();
-                    if (user) {
+                    if (!user) {
+                        console.error('[Melidrop] No session after publish — skipping products upsert');
+                        result.sync_warning = 'No se guardó en el catálogo interno (no se encontró la sesión). Precio, stock y tiempo de preparación no se sincronizarán solos — revisa manualmente en Mercado Libre.';
+                    } else {
                         const product = loadedProducts.find(p => p.asin === asin);
                         const { error: sbErr } = await supabase.from('products').upsert({
                             user_id:          user.id,
@@ -1511,16 +1520,24 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
                             in_updater:       !isDraft,
                             published_by_app: true,
                         }, { onConflict: 'meli_id' });
-                        if (sbErr) console.warn('[Melidrop] Supabase upsert error:', sbErr.message);
 
-                        // Fire-and-forget: trigger updater to scrape real Amazon delivery days
-                        // and update shipping.handling_time immediately after publish
-                        if (!isDraft && !sbErr) {
+                        if (sbErr) {
+                            console.error('[Melidrop] Supabase upsert error:', sbErr.message);
+                            result.sync_warning = `No se guardó en el catálogo interno: precio, stock y tiempo de preparación no se sincronizarán solos. (${sbErr.message})`;
+                        } else if (!isDraft) {
+                            // Fire-and-forget: trigger updater to scrape real Amazon delivery days
+                            // and update shipping.handling_time immediately after publish
                             supabase.functions.invoke('amazon-ml-updater', {
                                 body: { force: true, userId: user.id, asin }
                             }).catch(err => console.warn('[Melidrop] Post-publish updater trigger failed:', err));
                         }
                     }
+
+                    // Mutating `result` above doesn't itself trigger a re-render —
+                    // replace it with a fresh reference so any warning just set
+                    // actually reaches the UI instead of sitting unread until some
+                    // unrelated state update happens to repaint this row.
+                    setPublishResults(prev => ({ ...prev, [asin]: { ...result } }));
                 }
             }
         } catch (e: any) {

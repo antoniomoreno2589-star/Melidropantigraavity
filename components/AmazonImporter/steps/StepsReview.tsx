@@ -784,8 +784,8 @@ export function Step5Publish({
                                     </div>
                                 </div>
 
-                                {/* Expanded details - show on error, skip, or dry run issue */}
-                                {(result?.error || val?.isSkipped || dry?.dryError) && (
+                                {/* Expanded details - show on error, skip, dry run issue, or a post-publish warning */}
+                                {(result?.error || val?.isSkipped || dry?.dryError || result?.sync_warning || result?.description_warning) && (
                                     <div className="px-4 py-3 bg-slate-50 dark:bg-slate-900/30 border border-t-0 border-slate-200 dark:border-slate-700 rounded-b-lg space-y-2">
                                         {val?.isSkipped && (
                                             <div className="flex items-center gap-2 text-xs">
@@ -813,6 +813,19 @@ export function Step5Publish({
                                                     <span className="font-bold block">{dry.testMeliId ? 'Aviso:' : 'Error al publicar en sandbox:'}</span>
                                                     {dry.dryError.split('\n').map((line: string, i: number) => (
                                                         <p key={i} className="font-mono">{line}</p>
+                                                    ))}
+                                                </div>
+                                            </div>
+                                        )}
+                                        {/* Publish itself succeeded (badge above stays "Publicado") — these
+                                            flag a follow-up step (description, catalog tracking) that didn't. */}
+                                        {(result?.sync_warning || result?.description_warning) && (
+                                            <div className="flex items-start gap-2 text-[10px] text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700 rounded-lg p-2">
+                                                <span className="material-symbols-outlined text-[14px] flex-shrink-0 mt-0.5">warning</span>
+                                                <div>
+                                                    <span className="font-bold block">Aviso:</span>
+                                                    {[result?.sync_warning, result?.description_warning].filter(Boolean).map((msg: string, i: number) => (
+                                                        <p key={i} className="font-mono">{msg}</p>
                                                     ))}
                                                 </div>
                                             </div>
