@@ -159,8 +159,34 @@ export const CatalogTable: React.FC = () => {
         console.error('Error updating stock:', err);
         alert('Error al actualizar cantidad');
       }
-    } else {
-      alert(`Actualizando ${action} a "${value}" para ${selectedIds.length} productos.`);
+    } else if (action === 'handling_time' || action === 'listing_type' || action === 'shipping') {
+      // These edit Mercado Libre directly (unlike quantity/status above, which
+      // only touch our Supabase cache) — there's no "handling_time" or
+      // "listing_type_id" column on `products` for a background sync to pick
+      // up later, so without a real API call here this button did nothing
+      // but show a fake success alert.
+      const targets = products.filter(p => selectedIds.includes(p.id) && p.meliId);
+      const skipped = selectedIds.length - targets.length;
+      const payload =
+        action === 'handling_time' ? { shipping: { handling_time: parseInt(value) } } :
+        action === 'listing_type'  ? { listing_type_id: value } :
+                                      { shipping: { mode: value } };
+
+      const errors: string[] = [];
+      let okCount = 0;
+      for (const p of targets) {
+        const result = await meliService.updateItem(p.meliId!, payload);
+        if (result.ok) okCount++;
+        else errors.push(`${p.sku}: ${result.error}`);
+      }
+
+      const skippedMsg = skipped > 0 ? `\n${skipped} sin publicar en ML, omitidos.` : '';
+      if (errors.length === 0) {
+        alert(`✅ ${okCount} publicaciones actualizadas en Mercado Libre.${skippedMsg}`);
+      } else {
+        alert(`⚠️ ${okCount} actualizadas, ${errors.length} con error:\n${errors.slice(0, 5).join('\n')}${skippedMsg}`);
+      }
+      refresh();
     }
     setMassiveModal({ isOpen: false, action: '', value: '' });
   };
