@@ -111,7 +111,7 @@ function seedBrand(relevant: any[], productBrand: string | undefined): { id: str
 // check digit here means a broken source value is treated the same as "no
 // barcode" (falls through to seedEmptyGtinReason below) instead of ever
 // reaching ML.
-function isValidGtin(raw: string): boolean {
+export function isValidGtin(raw: string): boolean {
     const digits = raw.replace(/\D/g, '');
     if (![8, 12, 13, 14].includes(digits.length)) return false;
     const checkDigit = Number(digits[digits.length - 1]);
@@ -134,6 +134,31 @@ function extractAmazonBarcode(amazonAttrs: any): string | null {
         if (match?.value && isValidGtin(match.value)) return match.value;
     }
     return null;
+}
+
+// TestProductsPage's "Publicar Real" never calls buildItemPayload — it just
+// resends test_products.publishPayload, a blob captured once at sandbox-test
+// time. Confirmed live: a Playmobil ASIN kept sending an invalid GTIN on every
+// retry, byte-for-byte identical, because that stored payload was built before
+// the AI-overwrite fix above existed and nothing re-derives it on republish —
+// no amount of fixing buildItemPayload helps a payload that's already sitting
+// in the database. Called right before every real publish (single and bulk) so
+// a fix here still reaches products sandboxed before the fix landed: dedupes
+// by attribute id (buildItemPayload's own fallback can leave two GTIN entries —
+// a Map keyed by id naturally keeps the LAST one, which is always the one it
+// freshly validated) and drops whichever code-attribute value, if any, still
+// fails its GS1 check digit after that.
+export function sanitizePublishAttributes(attributes: any[] | undefined): any[] {
+    if (!Array.isArray(attributes)) return attributes ?? [];
+    const byId = new Map<string, any>();
+    for (const attr of attributes) {
+        if (attr?.id) byId.set(attr.id, attr);
+    }
+    for (const id of CODE_ATTR_PRIORITY) {
+        const attr = byId.get(id);
+        if (attr && !isValidGtin(String(attr.value_name ?? ''))) byId.delete(id);
+    }
+    return Array.from(byId.values());
 }
 
 // EMPTY_GTIN_REASON only matters once extractAmazonBarcode above has genuinely come
