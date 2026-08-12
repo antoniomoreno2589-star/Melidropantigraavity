@@ -619,9 +619,18 @@ export function useAmazonImporter() {
                     const defaultAttrs: Record<string, string> = { ...seed };
                     if (Array.isArray(aiMapped)) {
                         aiMapped.forEach((ma: any) => {
-                            // BRAND and EMPTY_GTIN_REASON are already deterministically seeded
-                            // above — never let the AI's guess replace either.
+                            // BRAND, EMPTY_GTIN_REASON, and the barcode attribute (GTIN/EAN/UPC)
+                            // are already deterministically seeded above — never let the AI's
+                            // guess replace any of them. Confirmed live: the AI proposed its own
+                            // GTIN ("4009847713733", wrong check digit) for a Playmobil ASIN that
+                            // already had a real, valid, checksum-verified barcode seeded from
+                            // Amazon's own catalog data — it silently overwrote the correct value,
+                            // and buildItemPayload's fallback then appended the real one back in
+                            // as a SECOND, duplicate GTIN entry rather than replacing the bad one,
+                            // so ML received two GTIN values and rejected the whole publish on the
+                            // first (AI-hallucinated) one.
                             if (ma.id && ma.value_name && ma.id !== brandSeed?.id && ma.id !== gtinReasonSeed?.id &&
+                                ma.id !== codeAttrId &&
                                 !['genérico', 'generic', 'n/a', 'no aplica', 'unknown']
                                     .includes(ma.value_name.toLowerCase())) {
                                 defaultAttrs[ma.id] = ma.value_name;
@@ -725,9 +734,11 @@ export function useAmazonImporter() {
                 const defaultAttrs: Record<string, string> = { ...seed };
                 if (Array.isArray(aiMapped)) {
                     aiMapped.forEach((ma: any) => {
-                        // BRAND and EMPTY_GTIN_REASON are already deterministically seeded
-                        // above — never let the AI's guess replace either.
+                        // BRAND, EMPTY_GTIN_REASON, and the barcode attribute (GTIN/EAN/UPC)
+                        // are already deterministically seeded above — never let the AI's
+                        // guess replace any of them (see handleLoadAttributes for why).
                         if (ma.id && ma.value_name && ma.id !== brandSeed?.id && ma.id !== gtinReasonSeed?.id &&
+                            ma.id !== codeAttrId &&
                             !['genérico', 'generic', 'n/a', 'no aplica', 'unknown'].includes(ma.value_name.toLowerCase())) {
                             defaultAttrs[ma.id] = ma.value_name;
                         }
