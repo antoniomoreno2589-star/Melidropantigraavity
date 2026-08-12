@@ -230,6 +230,49 @@ export const TestProductsPage = () => {
         setSelectedIds(prev => prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]);
     };
 
+    // useAmazonImporter's own real-publish path upserts into `products` with
+    // in_updater=true and fires amazon-ml-updater right after a successful
+    // publish — this page's real-publish (handlePublishToReal/handleBulkPublish)
+    // never did either. Confirmed live: a product published for real from here
+    // (B0BTK34CK9, meli_id MLM3299954079) had no `products` row at all, so it
+    // was invisible to the background job that fixes shipping.handling_time
+    // (and would stay invisible to every future price/stock/shipping sync,
+    // forever, not just the one-time handling_time fix). Best-effort: the
+    // publish itself already succeeded by the time this runs, so a failure
+    // here is only logged, never surfaced as a publish error.
+    const trackPublishedProduct = async (product: TestProduct, result: any, itemPayload: any, descriptionText?: string) => {
+        if (!result.id) return;
+        try {
+            const { data: { user } } = await supabase.auth.getUser();
+            if (!user) return;
+            const { error: sbErr } = await supabase.from('products').upsert({
+                user_id:          user.id,
+                meli_id:          result.id,
+                asin:             product.asin,
+                title:            result.title || itemPayload.title || product.title,
+                sku:              product.asin,
+                price_mxn:        itemPayload.price,
+                stock_meli:       itemPayload.available_quantity,
+                status:           'active',
+                image_url:        product.imageUrl ?? null,
+                currency:         itemPayload.currency_id === 'USD' ? 'USD' : 'MXN',
+                description_text: descriptionText ?? null,
+                last_updated:     new Date().toISOString(),
+                in_updater:       true,
+                published_by_app: true,
+            }, { onConflict: 'meli_id' });
+            if (sbErr) {
+                console.error('[Melidrop] products upsert error (publish-to-real):', sbErr.message);
+                return;
+            }
+            supabase.functions.invoke('amazon-ml-updater', {
+                body: { force: true, userId: user.id, asin: product.asin }
+            }).catch(err => console.warn('[Melidrop] Post-publish updater trigger failed:', err));
+        } catch (e: any) {
+            console.error('[Melidrop] trackPublishedProduct failed:', e.message);
+        }
+    };
+
     const handlePublishToReal = async (id: string) => {
         const product = testProducts.find(p => p.id === id);
         if (!product) return;
@@ -307,6 +350,8 @@ export const TestProductsPage = () => {
             setTestProducts(prev => prev.map(p =>
                 p.id === id ? { ...p, meliId: result.id, isPublishedToReal: true } : p
             ));
+
+            await trackPublishedProduct(product, result, itemPayload, descriptionText);
 
             alert(`✅ Producto publicado exitosamente.\nID: ${result.id}\nVer: ${result.permalink || 'En tu panel de MercadoLibre'}`);
         } catch (err: any) {
@@ -430,6 +475,7 @@ export const TestProductsPage = () => {
                 setTestProducts(prev => prev.map(p =>
                     p.id === product.id ? { ...p, meliId: result.id, isPublishedToReal: true } : p
                 ));
+                await trackPublishedProduct(product, result, itemPayload, descriptionText);
                 successCount++;
             } catch (err: any) {
                 errors.push(`${product.title}: ${err.message}`);
