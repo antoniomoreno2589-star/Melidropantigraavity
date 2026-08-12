@@ -103,16 +103,35 @@ function seedBrand(relevant: any[], productBrand: string | undefined): { id: str
 // a real UPC and EAN) that only the second form had anything, and nothing was
 // reading it. GTIN preferred over EAN over UPC, matching resolveBarcodeAttributeId's
 // own priority order for which code type ML trusts most.
+// Confirmed live: Amazon's Catalog API can report a GTIN with a wrong check
+// digit (ASIN publish rejected on "[GTIN] contains values with invalid
+// format: [4009847713733]" — that value's correct check digit is 5, not 3).
+// ML validates the whole payload atomically, so one malformed identifier
+// fails the entire publish with no partial fallback. Validating the GS1
+// check digit here means a broken source value is treated the same as "no
+// barcode" (falls through to seedEmptyGtinReason below) instead of ever
+// reaching ML.
+function isValidGtin(raw: string): boolean {
+    const digits = raw.replace(/\D/g, '');
+    if (![8, 12, 13, 14].includes(digits.length)) return false;
+    const checkDigit = Number(digits[digits.length - 1]);
+    let sum = 0;
+    for (let i = digits.length - 2, weight: 1 | 3 = 3; i >= 0; i--, weight = weight === 3 ? 1 : 3) {
+        sum += Number(digits[i]) * weight;
+    }
+    return (10 - (sum % 10)) % 10 === checkDigit;
+}
+
 const BARCODE_TYPE_PRIORITY = ['gtin', 'ean', 'upc', 'isbn'];
 function extractAmazonBarcode(amazonAttrs: any): string | null {
     for (const key of ['gtin', 'ean', 'upc', 'item_barcode']) {
         const value = amazonAttrs?.[key]?.[0]?.value;
-        if (value) return value;
+        if (value && isValidGtin(value)) return value;
     }
     const external: any[] = amazonAttrs?.externally_assigned_product_identifier || [];
     for (const type of BARCODE_TYPE_PRIORITY) {
         const match = external.find((id: any) => (id?.type || '').toLowerCase() === type);
-        if (match?.value) return match.value;
+        if (match?.value && isValidGtin(match.value)) return match.value;
     }
     return null;
 }
