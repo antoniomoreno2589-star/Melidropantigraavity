@@ -3,6 +3,7 @@ import { Product } from '../types';
 import { api } from '../services/api';
 import { meliService } from '../services/meliService';
 import { supabase } from '../services/supabase';
+import { sanitizePublishAttributes } from './AmazonImporter/useAmazonImporter';
 
 interface TestProduct extends Product {
     isPublishedToReal: boolean;
@@ -271,7 +272,7 @@ export const TestProductsPage = () => {
             // Extract description for separate posting (ML rejects description in POST /items)
             const payload = product.publishPayload;
             const descriptionText = payload?.description?.plain_text;
-            const itemPayload = { ...payload, description: undefined };
+            const itemPayload = { ...payload, description: undefined, attributes: sanitizePublishAttributes(payload?.attributes) };
 
             const result = await meliService.publishItemWithFallbacks(itemPayload, false);
 
@@ -409,7 +410,7 @@ export const TestProductsPage = () => {
                 }
 
                 const descriptionText = product.publishPayload?.description?.plain_text;
-                const itemPayload = { ...product.publishPayload, description: undefined };
+                const itemPayload = { ...product.publishPayload, description: undefined, attributes: sanitizePublishAttributes(product.publishPayload?.attributes) };
                 const result = await meliService.publishItemWithFallbacks(itemPayload, false);
 
                 if (result.error) {
