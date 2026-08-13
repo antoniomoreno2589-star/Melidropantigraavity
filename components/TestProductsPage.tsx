@@ -15,7 +15,13 @@ interface TestProduct extends Product {
     category: string;
 }
 
-type SandboxStatusFilter = 'all' | 'published' | 'not_published' | 'active' | 'paused' | 'under_review' | 'inactive' | 'deleted_by_ml';
+// Split into two independent filters (used to be one SandboxStatusFilter
+// union covering both) — confirmed live that crammed published/not_published
+// into the same single-select as the ML status pills, so picking "Activa"
+// silently cleared "No publicados" and vice versa, with no way to combine
+// them despite that being the exact combination sellers want most often.
+type SandboxStatusFilter = 'all' | 'active' | 'paused' | 'under_review' | 'inactive' | 'deleted_by_ml';
+type PublishedFilter = 'all' | 'published' | 'not_published';
 
 // ML represents "removed by Mercado Libre" as status=closed plus a "deleted"
 // sub_status entry — the same shape a seller-initiated close/delete can leave,
@@ -44,6 +50,7 @@ export const TestProductsPage = () => {
     const bulkPublishCancelRef = useRef(false);
     const [isSyncing, setIsSyncing] = useState(false);
     const [filterStatus, setFilterStatus] = useState<SandboxStatusFilter>('all');
+    const [filterPublished, setFilterPublished] = useState<PublishedFilter>('all');
     const [dateFilterType, setDateFilterType] = useState<'created' | 'updated'>('created');
     const [filterDate, setFilterDate] = useState<string>('');
     const [showFilters, setShowFilters] = useState(false);
@@ -133,23 +140,28 @@ export const TestProductsPage = () => {
                 : searchField === 'sku' ? p.sku.toLowerCase().includes(q)
                 : p.title.toLowerCase().includes(q);
 
-            // 2. Status filter
+            // 2. ML status filter (the pill row)
             let matchesStatus = true;
-            if (filterStatus === 'published') matchesStatus = p.isPublishedToReal;
-            else if (filterStatus === 'not_published') matchesStatus = !p.isPublishedToReal;
-            else if (filterStatus === 'active') matchesStatus = p.status === 'active';
+            if (filterStatus === 'active') matchesStatus = p.status === 'active';
             else if (filterStatus === 'paused') matchesStatus = p.status === 'paused';
             else if (filterStatus === 'under_review') matchesStatus = ['under_review', 'not_yet_active', 'payment_required'].includes(p.status);
             else if (filterStatus === 'inactive') matchesStatus = ['inactive', 'closed'].includes(p.status) && !isDeletedByMl(p);
             else if (filterStatus === 'deleted_by_ml') matchesStatus = isDeletedByMl(p);
 
-            // 3. Date filter — against creation or last-update date, per the dropdown
+            // 3. Published-to-real filter (the funnel dropdown) — independent of
+            // the ML status filter above, so e.g. "Activa" + "No publicados" can
+            // be combined instead of one silently overriding the other.
+            let matchesPublished = true;
+            if (filterPublished === 'published') matchesPublished = p.isPublishedToReal;
+            else if (filterPublished === 'not_published') matchesPublished = !p.isPublishedToReal;
+
+            // 4. Date filter — against creation or last-update date, per the dropdown
             const dateValue = dateFilterType === 'updated' ? p.updatedDate : p.creationDate;
             const matchesDate = filterDate ? dateValue === filterDate : true;
 
-            return matchesSearch && matchesStatus && matchesDate;
+            return matchesSearch && matchesStatus && matchesPublished && matchesDate;
         });
-    }, [testProducts, searchField, searchQuery, filterStatus, dateFilterType, filterDate]);
+    }, [testProducts, searchField, searchQuery, filterStatus, filterPublished, dateFilterType, filterDate]);
 
     // Counts for the status pill row — always over the full catalog, not the
     // currently filtered/searched subset, same as ML's own seller panel.
@@ -169,7 +181,7 @@ export const TestProductsPage = () => {
     // that no longer has any rows once the filtered set shrinks.
     useEffect(() => {
         setCurrentPage(1);
-    }, [searchField, searchQuery, filterStatus, dateFilterType, filterDate]);
+    }, [searchField, searchQuery, filterStatus, filterPublished, dateFilterType, filterDate]);
 
     const totalPages = Math.max(1, Math.ceil(filteredProducts.length / PAGE_SIZE));
 
@@ -551,15 +563,10 @@ export const TestProductsPage = () => {
         }
     };
 
-    const getFilterLabel = () => {
-        switch(filterStatus) {
+    const getPublishedFilterLabel = () => {
+        switch (filterPublished) {
             case 'published': return 'Publicados en MercadoLibre';
             case 'not_published': return 'No publicados en MercadoLibre';
-            case 'active': return 'Productos activos';
-            case 'paused': return 'Productos pausados';
-            case 'under_review': return 'En revisión';
-            case 'inactive': return 'Inactivos';
-            case 'deleted_by_ml': return 'Eliminados por Mercado Libre';
             default: return 'Todos los productos';
         }
     };
@@ -770,8 +777,8 @@ export const TestProductsPage = () => {
                                     <div className="relative">
                                         <button
                                             onClick={() => setShowFilters(!showFilters)}
-                                            title={getFilterLabel()}
-                                            className={`flex items-center justify-center size-9 rounded-lg transition-all border ${showFilters || filterStatus === 'published' || filterStatus === 'not_published' ? 'bg-primary/10 border-primary text-primary' : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-400 hover:text-slate-600 dark:hover:text-slate-300'}`}
+                                            title={getPublishedFilterLabel()}
+                                            className={`flex items-center justify-center size-9 rounded-lg transition-all border ${showFilters || filterPublished !== 'all' ? 'bg-primary/10 border-primary text-primary' : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-400 hover:text-slate-600 dark:hover:text-slate-300'}`}
                                         >
                                             <span className="material-symbols-outlined text-[20px]">filter_alt</span>
                                         </button>
@@ -779,20 +786,20 @@ export const TestProductsPage = () => {
                                         {showFilters && (
                                             <div className="absolute top-full right-0 mt-2 w-64 bg-white dark:bg-slate-800 rounded-xl shadow-xl border border-slate-200 dark:border-slate-700 z-50 overflow-hidden">
                                                 <button
-                                                    onClick={() => { setFilterStatus('all'); setShowFilters(false); }}
-                                                    className={`w-full text-left px-4 py-2.5 text-xs hover:bg-slate-50 dark:hover:bg-slate-700 ${filterStatus === 'all' ? 'font-black text-primary bg-primary/5' : 'text-slate-600 dark:text-slate-300'}`}
+                                                    onClick={() => { setFilterPublished('all'); setShowFilters(false); }}
+                                                    className={`w-full text-left px-4 py-2.5 text-xs hover:bg-slate-50 dark:hover:bg-slate-700 ${filterPublished === 'all' ? 'font-black text-primary bg-primary/5' : 'text-slate-600 dark:text-slate-300'}`}
                                                 >
                                                     Todos los productos
                                                 </button>
                                                 <button
-                                                    onClick={() => { setFilterStatus('published'); setShowFilters(false); }}
-                                                    className={`w-full text-left px-4 py-2.5 text-xs hover:bg-slate-50 dark:hover:bg-slate-700 ${filterStatus === 'published' ? 'font-black text-primary bg-primary/5' : 'text-slate-600 dark:text-slate-300'}`}
+                                                    onClick={() => { setFilterPublished('published'); setShowFilters(false); }}
+                                                    className={`w-full text-left px-4 py-2.5 text-xs hover:bg-slate-50 dark:hover:bg-slate-700 ${filterPublished === 'published' ? 'font-black text-primary bg-primary/5' : 'text-slate-600 dark:text-slate-300'}`}
                                                 >
                                                     Publicados en MercadoLibre
                                                 </button>
                                                 <button
-                                                    onClick={() => { setFilterStatus('not_published'); setShowFilters(false); }}
-                                                    className={`w-full text-left px-4 py-2.5 text-xs hover:bg-slate-50 dark:hover:bg-slate-700 ${filterStatus === 'not_published' ? 'font-black text-primary bg-primary/5' : 'text-slate-600 dark:text-slate-300'}`}
+                                                    onClick={() => { setFilterPublished('not_published'); setShowFilters(false); }}
+                                                    className={`w-full text-left px-4 py-2.5 text-xs hover:bg-slate-50 dark:hover:bg-slate-700 ${filterPublished === 'not_published' ? 'font-black text-primary bg-primary/5' : 'text-slate-600 dark:text-slate-300'}`}
                                                 >
                                                     No publicados en MercadoLibre
                                                 </button>
