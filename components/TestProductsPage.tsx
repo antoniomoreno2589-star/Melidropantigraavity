@@ -357,6 +357,10 @@ export const TestProductsPage = () => {
                 const errorMsg = causes.length > 0
                     ? `${result.error}\n• ${causes.join('\n• ')}`
                     : result.error;
+                // Full raw ML response (result.raw carries the untruncated JSON body) —
+                // the alert only shows a flattened summary, so this is what to check
+                // in DevTools when a cause needs more detail than a one-line message.
+                console.error('[Melidrop] handlePublishToReal error:', { asin: product.asin, error: result.error, cause: result.cause, raw: result.raw, payload: itemPayload });
                 alert(`Error al publicar:\n${errorMsg}`);
                 return;
             }
@@ -463,7 +467,13 @@ export const TestProductsPage = () => {
         bulkPublishCancelRef.current = false;
         setBulkPublishRun({ total: toPublish.length, done: 0, successCount: 0, errors: [], finished: false, cancelled: false });
 
-        const markDone = (result: { success: true } | { success: false; title: string; message: string }) => {
+        // Tracked locally (not read back from bulkPublishRun state) so the final
+        // setSelectedIds below always sees every failure from this run, not a
+        // stale snapshot — state updates queued during the loop aren't
+        // guaranteed to be flushed back into this closure by the time it ends.
+        const failedIds: string[] = [];
+        const markDone = (result: { success: true } | { success: false; id: string; title: string; message: string }) => {
+            if (!result.success) failedIds.push(result.id);
             setBulkPublishRun(prev => prev && {
                 ...prev,
                 done: prev.done + 1,
@@ -475,7 +485,7 @@ export const TestProductsPage = () => {
         for (const product of toPublish) {
             if (bulkPublishCancelRef.current) break;
             if (!product.publishPayload) {
-                markDone({ success: false, title: product.title, message: 'sin payload (re-importar)' });
+                markDone({ success: false, id: product.id, title: product.title, message: 'sin payload (re-importar)' });
                 continue;
             }
             try {
@@ -496,7 +506,12 @@ export const TestProductsPage = () => {
 
                 if (result.error) {
                     const causes = result.cause?.map((c: any) => c.message || c.code).join(', ') || result.error;
-                    markDone({ success: false, title: product.title, message: causes });
+                    // See handlePublishToReal's matching log for why: the modal only
+                    // shows this flattened line, full detail (cause[].code/references,
+                    // raw ML body) is what a fix like an auto-category-correction would
+                    // need to key off of.
+                    console.error('[Melidrop] handleBulkPublish error:', { asin: product.asin, error: result.error, cause: result.cause, raw: result.raw, payload: itemPayload });
+                    markDone({ success: false, id: product.id, title: product.title, message: causes });
                     continue;
                 }
 
@@ -514,11 +529,15 @@ export const TestProductsPage = () => {
                 await trackPublishedProduct(product, result, itemPayload, descriptionText);
                 markDone({ success: true });
             } catch (err: any) {
-                markDone({ success: false, title: product.title, message: err.message });
+                console.error('[Melidrop] handleBulkPublish exception:', { asin: product.asin, error: err });
+                markDone({ success: false, id: product.id, title: product.title, message: err.message });
             }
         }
 
-        setSelectedIds([]);
+        // Failed items stay selected so retrying is "click Publicar seleccionados
+        // again" instead of having to re-find them — successes are already
+        // filtered out of any future toPublish (isPublishedToReal is now true).
+        setSelectedIds(failedIds);
         setBulkPublishRun(prev => prev && { ...prev, finished: true, cancelled: bulkPublishCancelRef.current });
     };
 
@@ -1091,6 +1110,11 @@ export const TestProductsPage = () => {
                                         </div>
                                     ))}
                                 </div>
+                            )}
+                            {bulkPublishRun.finished && bulkPublishRun.errors.length > 0 && (
+                                <p className="text-xs text-slate-400 italic">
+                                    Los productos con error quedaron seleccionados — corrige lo que haga falta y dale "Publicar seleccionados" de nuevo para reintentar solo esos.
+                                </p>
                             )}
                         </div>
                         <div className="p-4 bg-slate-50 dark:bg-slate-900/50 border-t border-slate-200 dark:border-slate-700 flex justify-end">
