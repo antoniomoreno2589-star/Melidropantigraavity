@@ -406,8 +406,8 @@ export const SettingsPage = () => {
     const [postalCode, setPostalCode] = useState<string>(() => localStorage.getItem('melidrop_postal_code') || '');
     const [deliveryDaysUsa, setDeliveryDaysUsa] = useState<number>(() => parseInt(localStorage.getItem('melidrop_delivery_days_usa') || '10'));
     const [deliveryDaysMx, setDeliveryDaysMx] = useState<number>(() => parseInt(localStorage.getItem('melidrop_delivery_days_mx') || '3'));
-    const [usaDefaultMargin, setUsaDefaultMargin] = useState<number>(30);
-    const [mxDefaultMargin, setMxDefaultMargin] = useState<number>(20);
+    const [usaDefaultMargin, setUsaDefaultMargin] = useState<number>(() => parseFloat(localStorage.getItem('melidrop_usa_default_margin') || '30'));
+    const [mxDefaultMargin, setMxDefaultMargin] = useState<number>(() => parseFloat(localStorage.getItem('melidrop_mx_default_margin') || '20'));
     const [isUpdatingDolar, setIsUpdatingDolar] = useState(false);
     const [isDetecting, setIsDetecting] = useState(false);
     const [detectStatus, setDetectStatus] = useState('');
@@ -477,6 +477,8 @@ export const SettingsPage = () => {
     const handleSaveSection = async (section: string) => {
         localStorage.setItem('melidrop_usa_rules', JSON.stringify(usaRules));
         localStorage.setItem('melidrop_mx_rules', JSON.stringify(mxRules));
+        localStorage.setItem('melidrop_usa_default_margin', usaDefaultMargin.toString());
+        localStorage.setItem('melidrop_mx_default_margin', mxDefaultMargin.toString());
         localStorage.setItem('melidrop_exchange_rate', exchangeRate.toString());
         localStorage.setItem('melidrop_global_filters', globalFilters);
         localStorage.setItem('melidrop_prep_days', prepDays.toString());
@@ -496,6 +498,8 @@ export const SettingsPage = () => {
                 margin_rules: {
                     ...existingRules,
                     usa: usaRules, mx: mxRules, filters: globalFilters,
+                    usa_default_margin: usaDefaultMargin,
+                    mx_default_margin: mxDefaultMargin,
                     prep_days: prepDays,
                     postal_code: postalCode,
                     warranty_months: warrantyMonths,

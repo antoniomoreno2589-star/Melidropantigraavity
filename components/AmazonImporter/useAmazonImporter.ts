@@ -799,7 +799,18 @@ export function useAmazonImporter() {
             : defaultRules;
         const rule = rules.find(r => cost >= r.min && (r.max === null || cost <= r.max))
             || rules[rules.length - 1];
-        const margin = rule?.margin ?? 50;
+        // Only reached when `rules` is empty (every tier deleted in Settings) or
+        // cost is negative — a well-formed table's last tier has max:null, so
+        // .find() (or the fallback above) always matches otherwise. Reads the
+        // "Margen Default" / "Margen Default Nacional" field from Settings —
+        // confirmed live it was never actually wired here (or even persisted):
+        // SettingsPage read/wrote every other field to localStorage except this
+        // one, so it silently reset to its hardcoded default on every reload
+        // and never reached this formula, which had its own separate hardcoded
+        // 50% instead.
+        const defaultMarginKey = isUSD ? 'melidrop_usa_default_margin' : 'melidrop_mx_default_margin';
+        const defaultMargin = parseFloat(localStorage.getItem(defaultMarginKey) || (isUSD ? '30' : '20'));
+        const margin = rule?.margin ?? defaultMargin;
         // USD → convert to MXN then apply margin; MXN → apply margin directly
         return isUSD
             ? Math.ceil(cost * exchangeRate * (1 + margin / 100))
