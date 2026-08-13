@@ -65,6 +65,13 @@ export const UpdaterPage: React.FC = () => {
         const saved = localStorage.getItem('melidrop_fixed_delivery_days');
         return saved ? JSON.parse(saved) : { MX: 2, US: 8, CN: 18, EU: 23 };
     });
+    // Separate table for products imported from Amazon USA (products.currency
+    // === 'USD') — the table above only ever governed MXN/"Nacional" imports
+    // going forward; owner-specified, no shared defaults with the MX table.
+    const [fixedDeliveryDaysUsa, setFixedDeliveryDaysUsa] = useState<{ MX: number; US: number; CN: number; EU: number }>(() => {
+        const saved = localStorage.getItem('melidrop_fixed_delivery_days_usa');
+        return saved ? JSON.parse(saved) : { MX: 2, US: 8, CN: 18, EU: 23 };
+    });
     const [defaultStock, setDefaultStock] = useState<number>(() =>
         parseInt(localStorage.getItem('melidrop_default_stock') || '3')
     );
@@ -539,6 +546,7 @@ export const UpdaterPage: React.FC = () => {
         localStorage.setItem('melidrop_sync_frequency_hours', syncFreqHours.toString());
         localStorage.setItem('melidrop_update_mode', updateMode);
         localStorage.setItem('melidrop_fixed_delivery_days', JSON.stringify(fixedDeliveryDays));
+        localStorage.setItem('melidrop_fixed_delivery_days_usa', JSON.stringify(fixedDeliveryDaysUsa));
         const { data: { user } } = await supabase.auth.getUser();
         if (user) {
             const { data: existing } = await supabase.from('user_connections').select('margin_rules').eq('user_id', user.id).maybeSingle();
@@ -554,6 +562,7 @@ export const UpdaterPage: React.FC = () => {
                     sync_frequency_hours: syncFreqHours,
                     update_mode: updateMode,
                     fixed_delivery_days: fixedDeliveryDays,
+                    fixed_delivery_days_usa: fixedDeliveryDaysUsa,
                 }
             }, { onConflict: 'user_id' });
         }
@@ -661,15 +670,15 @@ export const UpdaterPage: React.FC = () => {
                                         {updateMode === 'fixed' && <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-primary text-white uppercase">Activo</span>}
                                     </p>
                                     <p className="text-xs text-slate-500 mt-1">
-                                        Solo API oficial de Amazon, sin scraper. Precio y tiempo de entrega según la oferta ganadora (buybox → país → Prime → FBA) y una tabla fija de días por país (MX 2 · US 8 · CN 18 · Europa 23).
+                                        Solo API oficial de Amazon, sin scraper. Precio según la oferta ganadora (buybox → país → Prime → FBA). Tiempo de entrega por tabla fija de días por país — una tabla para productos de Amazon México, otra independiente para Amazon USA (abajo).
                                     </p>
                                 </button>
                             </div>
                             {updateMode === 'fixed' && (
                                 <div className="mt-4 rounded-xl border border-slate-200 dark:border-slate-700 overflow-hidden animate-fade-in">
                                     <div className="px-4 py-3 bg-slate-50 dark:bg-slate-800/50 border-b border-slate-200 dark:border-slate-700">
-                                        <p className="text-xs font-black text-slate-500 uppercase">Días de Entrega por País de Origen</p>
-                                        <p className="text-xs text-slate-400 mt-0.5">Se usan según el país de envío de la oferta ganadora. Se suman a los días de preparación configurados en Ajustes.</p>
+                                        <p className="text-xs font-black text-slate-500 uppercase">🇲🇽 Días de Entrega por País de Origen — Productos Amazon México</p>
+                                        <p className="text-xs text-slate-400 mt-0.5">Solo para productos importados de Amazon México (Nacional). Se usan según el país de envío de la oferta ganadora en amazon.com.mx — cubre vendedores cruzados (EU/CN) que venden ahí. Se suman a los días de preparación configurados en Ajustes.</p>
                                     </div>
                                     <div className="grid grid-cols-[1fr_100px] gap-3 px-4 py-2 text-xs font-bold text-slate-400 uppercase border-b border-slate-100 dark:border-slate-800">
                                         <span>País de origen</span>
@@ -688,6 +697,36 @@ export const UpdaterPage: React.FC = () => {
                                                     type="number" min="0" max="90"
                                                     value={fixedDeliveryDays[c.key]}
                                                     onChange={e => setFixedDeliveryDays(prev => ({ ...prev, [c.key]: Math.max(0, parseInt(e.target.value) || 0) }))}
+                                                    className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg px-2 py-1.5 text-sm font-black text-center"
+                                                />
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
+                            {updateMode === 'fixed' && (
+                                <div className="mt-4 rounded-xl border border-slate-200 dark:border-slate-700 overflow-hidden animate-fade-in">
+                                    <div className="px-4 py-3 bg-slate-50 dark:bg-slate-800/50 border-b border-slate-200 dark:border-slate-700">
+                                        <p className="text-xs font-black text-slate-500 uppercase">🇺🇸 Días de Entrega por País de Origen — Productos Amazon USA</p>
+                                        <p className="text-xs text-slate-400 mt-0.5">Tabla independiente para productos importados de Amazon USA — no comparte valores con la tabla de México de arriba. No se usa ShippingTime de la oferta (confirmado poco confiable, reporta 0 horas como dato faltante). Se suman a los días de preparación configurados en Ajustes.</p>
+                                    </div>
+                                    <div className="grid grid-cols-[1fr_100px] gap-3 px-4 py-2 text-xs font-bold text-slate-400 uppercase border-b border-slate-100 dark:border-slate-800">
+                                        <span>País de origen</span>
+                                        <span>Días</span>
+                                    </div>
+                                    <div className="divide-y divide-slate-100 dark:divide-slate-800">
+                                        {([
+                                            { key: 'MX', flag: '🇲🇽', label: 'México' },
+                                            { key: 'US', flag: '🇺🇸', label: 'Estados Unidos' },
+                                            { key: 'CN', flag: '🇨🇳', label: 'China' },
+                                            { key: 'EU', flag: '🇪🇺', label: 'Europa' },
+                                        ] as const).map(c => (
+                                            <div key={c.key} className="grid grid-cols-[1fr_100px] gap-3 px-4 py-2.5 items-center">
+                                                <span className="text-sm font-semibold text-slate-700 dark:text-slate-200">{c.flag} {c.label}</span>
+                                                <input
+                                                    type="number" min="0" max="90"
+                                                    value={fixedDeliveryDaysUsa[c.key]}
+                                                    onChange={e => setFixedDeliveryDaysUsa(prev => ({ ...prev, [c.key]: Math.max(0, parseInt(e.target.value) || 0) }))}
                                                     className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg px-2 py-1.5 text-sm font-black text-center"
                                                 />
                                             </div>

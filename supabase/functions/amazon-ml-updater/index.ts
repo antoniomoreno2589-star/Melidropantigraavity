@@ -1763,16 +1763,38 @@ Deno.serve(async (req) => {
                     // the scraper — so a product paused for that reason before self-heals
                     // (via the reactivation branch below) once this mode takes over.
                     noBuyBox = false;
-                    const fixedDays = daysForShipsFromCountry(offers?.shipsFromCountry ?? null, (settings as any).fixed_delivery_days ?? null);
+                    // Two independent tables, not one shared between origins — confirmed
+                    // live this was the actual bug (B0CMTCZFJP): a single fixed_delivery_days
+                    // table was applied to every product regardless of where it was
+                    // imported from. USD-tagged products (imported from Amazon USA) now use
+                    // their own table instead — owner-specified, deliberately NOT falling
+                    // back to ShippingTime.maximumHours (confirmed unreliable — see the
+                    // EUROPE_COUNTRIES comment above) or to the older amazon_delivery_usa /
+                    // amazon_delivery_cross_border settings (owner didn't recognize where
+                    // those values came from). MXN/"Nacional" products keep using the
+                    // original table and fallback unchanged.
+                    const isUsaImport = currency !== 'MXN';
+                    const countryTable = isUsaImport ? (settings as any).fixed_delivery_days_usa : (settings as any).fixed_delivery_days;
+                    const fixedDays = daysForShipsFromCountry(offers?.shipsFromCountry ?? null, countryTable ?? null);
                     if (fixedDays !== null) {
                         cachedShippingDays = fixedDays;
                         debug.shipsFromCountry = offers?.shipsFromCountry ?? null;
-                    } else if (cachedShippingDays === null) {
-                        // Unrecognized/missing ship-from-country — same manual fallback Real
-                        // mode uses for cross-border defaults.
-                        cachedShippingDays = currency === 'MXN'
-                            ? ((settings as any).amazon_delivery_mx ?? null)
-                            : ((settings as any).amazon_delivery_cross_border ?? (settings as any).amazon_delivery_usa ?? null);
+                    } else {
+                        // Unrecognized/missing ship-from-country this cycle. Confirmed live
+                        // (B0CMTCZFJP): the old code only applied a default when
+                        // cachedShippingDays was null — otherwise it silently kept resending
+                        // whatever was already cached, forever, with no expiry, which let a
+                        // single stale value (36 days, from before this account switched into
+                        // Fixed mode) get resent to ML every cycle for weeks. Same STALE_MS
+                        // window Real mode already uses for its own scrape cache.
+                        const cacheAgeMs = (product as any).shipping_days_updated_at
+                            ? Date.now() - new Date((product as any).shipping_days_updated_at).getTime()
+                            : Infinity;
+                        if (cachedShippingDays === null || cacheAgeMs > STALE_MS) {
+                            cachedShippingDays = isUsaImport
+                                ? (countryTable?.US ?? null)
+                                : ((settings as any).amazon_delivery_mx ?? null);
+                        }
                     }
                 } else {
                     noBuyBox = (existingPauseReason === 'sin_buybox');
