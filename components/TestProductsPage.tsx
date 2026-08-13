@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { Product } from '../types';
 import { api } from '../services/api';
 import { meliService } from '../services/meliService';
@@ -29,6 +29,19 @@ export const TestProductsPage = () => {
     const [searchField, setSearchField] = useState<'title' | 'asin' | 'sku'>('title');
     const [searchQuery, setSearchQuery] = useState('');
     const [selectedIds, setSelectedIds] = useState<string[]>([]);
+    // Live progress for handleBulkPublish — a batch can be thousands of items
+    // (2000+ per the account this was built for), so this tracks a running
+    // counter/error list instead of the previous silent for-loop + one final
+    // alert() at the end with no feedback while it ran.
+    const [bulkPublishRun, setBulkPublishRun] = useState<{
+        total: number;
+        done: number;
+        successCount: number;
+        errors: { title: string; message: string }[];
+        finished: boolean;
+        cancelled: boolean;
+    } | null>(null);
+    const bulkPublishCancelRef = useRef(false);
     const [isSyncing, setIsSyncing] = useState(false);
     const [filterStatus, setFilterStatus] = useState<SandboxStatusFilter>('all');
     const [dateFilterType, setDateFilterType] = useState<'created' | 'updated'>('created');
@@ -435,12 +448,22 @@ export const TestProductsPage = () => {
         }
 
         const toPublish = testProducts.filter(p => selectedIds.includes(p.id) && !p.isPublishedToReal);
-        let successCount = 0;
-        const errors: string[] = [];
+        bulkPublishCancelRef.current = false;
+        setBulkPublishRun({ total: toPublish.length, done: 0, successCount: 0, errors: [], finished: false, cancelled: false });
+
+        const markDone = (result: { success: true } | { success: false; title: string; message: string }) => {
+            setBulkPublishRun(prev => prev && {
+                ...prev,
+                done: prev.done + 1,
+                successCount: prev.successCount + (result.success ? 1 : 0),
+                errors: result.success ? prev.errors : [...prev.errors, { title: result.title, message: result.message }],
+            });
+        };
 
         for (const product of toPublish) {
+            if (bulkPublishCancelRef.current) break;
             if (!product.publishPayload) {
-                errors.push(`${product.title}: sin payload (re-importar)`);
+                markDone({ success: false, title: product.title, message: 'sin payload (re-importar)' });
                 continue;
             }
             try {
@@ -451,7 +474,7 @@ export const TestProductsPage = () => {
                     setTestProducts(prev => prev.map(p =>
                         p.id === product.id ? { ...p, meliId: dup.existingItem?.id, isPublishedToReal: true } : p
                     ));
-                    successCount++;
+                    markDone({ success: true });
                     continue;
                 }
 
@@ -461,7 +484,7 @@ export const TestProductsPage = () => {
 
                 if (result.error) {
                     const causes = result.cause?.map((c: any) => c.message || c.code).join(', ') || result.error;
-                    errors.push(`${product.title}: ${causes}`);
+                    markDone({ success: false, title: product.title, message: causes });
                     continue;
                 }
 
@@ -477,15 +500,14 @@ export const TestProductsPage = () => {
                     p.id === product.id ? { ...p, meliId: result.id, isPublishedToReal: true } : p
                 ));
                 await trackPublishedProduct(product, result, itemPayload, descriptionText);
-                successCount++;
+                markDone({ success: true });
             } catch (err: any) {
-                errors.push(`${product.title}: ${err.message}`);
+                markDone({ success: false, title: product.title, message: err.message });
             }
         }
 
         setSelectedIds([]);
-        const summary = `✅ Publicados: ${successCount}\n${errors.length > 0 ? `\n❌ Errores (${errors.length}):\n${errors.join('\n')}` : ''}`;
-        alert(summary);
+        setBulkPublishRun(prev => prev && { ...prev, finished: true, cancelled: bulkPublishCancelRef.current });
     };
 
     const clearSandbox = async () => {
@@ -971,6 +993,22 @@ export const TestProductsPage = () => {
                                 <span className="material-symbols-outlined text-primary">auto_fix_high</span>
                                 Acciones masivas ({selectedIds.length} seleccionados):
                             </p>
+                            {filteredProducts.length > selectedIds.length && (
+                                <button
+                                    onClick={() => setSelectedIds(filteredProducts.map(p => p.id))}
+                                    className="text-xs font-bold text-primary hover:underline"
+                                >
+                                    Seleccionar los {filteredProducts.length} filtrados
+                                </button>
+                            )}
+                            {selectedIds.length > 0 && (
+                                <button
+                                    onClick={() => setSelectedIds([])}
+                                    className="text-xs font-bold text-slate-400 hover:underline"
+                                >
+                                    Limpiar selección
+                                </button>
+                            )}
                             <button
                                 onClick={handleBulkPublish}
                                 disabled={selectedIds.length === 0}
@@ -996,6 +1034,78 @@ export const TestProductsPage = () => {
                     </div>
                 )}
             </div>
+
+            {bulkPublishRun && (
+                <div className="fixed inset-0 z-[120] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+                    <div className="bg-white dark:bg-slate-800 rounded-xl shadow-2xl w-full max-w-lg overflow-hidden animate-scale-up flex flex-col max-h-[85vh]">
+                        <div className="p-4 border-b border-slate-200 dark:border-slate-700 flex justify-between items-center">
+                            <h3 className="font-bold text-slate-900 dark:text-white">
+                                {!bulkPublishRun.finished
+                                    ? 'Publicando en Mercado Libre...'
+                                    : bulkPublishRun.cancelled ? 'Publicación cancelada' : 'Publicación terminada'}
+                            </h3>
+                            {bulkPublishRun.finished && (
+                                <button onClick={() => setBulkPublishRun(null)}>
+                                    <span className="material-symbols-outlined text-slate-400">close</span>
+                                </button>
+                            )}
+                        </div>
+                        <div className="p-6 space-y-4 overflow-y-auto">
+                            <div>
+                                <div className="flex justify-between text-xs font-bold text-slate-500 mb-1">
+                                    <span>{bulkPublishRun.done} de {bulkPublishRun.total}</span>
+                                    <span>{Math.round((bulkPublishRun.done / Math.max(bulkPublishRun.total, 1)) * 100)}%</span>
+                                </div>
+                                <div className="w-full h-2.5 bg-slate-100 dark:bg-slate-900 rounded-full overflow-hidden">
+                                    <div
+                                        className={`h-full transition-all duration-300 ${bulkPublishRun.finished ? (bulkPublishRun.errors.length > 0 ? 'bg-amber-500' : 'bg-green-500') : 'bg-primary'}`}
+                                        style={{ width: `${(bulkPublishRun.done / Math.max(bulkPublishRun.total, 1)) * 100}%` }}
+                                    />
+                                </div>
+                            </div>
+                            <div className="flex gap-4 text-sm">
+                                <span className="flex items-center gap-1.5 text-green-600 dark:text-green-400 font-bold">
+                                    <span className="material-symbols-outlined text-[16px]">check_circle</span>
+                                    {bulkPublishRun.successCount} exitosos
+                                </span>
+                                {bulkPublishRun.errors.length > 0 && (
+                                    <span className="flex items-center gap-1.5 text-red-600 dark:text-red-400 font-bold">
+                                        <span className="material-symbols-outlined text-[16px]">error</span>
+                                        {bulkPublishRun.errors.length} con error
+                                    </span>
+                                )}
+                            </div>
+                            {bulkPublishRun.errors.length > 0 && (
+                                <div className="space-y-1.5 max-h-60 overflow-y-auto border border-slate-200 dark:border-slate-700 rounded-lg p-3">
+                                    {bulkPublishRun.errors.map((e, i) => (
+                                        <div key={i} className="text-xs">
+                                            <span className="font-bold text-slate-700 dark:text-slate-300">{e.title}:</span>{' '}
+                                            <span className="text-red-500">{e.message}</span>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+                        </div>
+                        <div className="p-4 bg-slate-50 dark:bg-slate-900/50 border-t border-slate-200 dark:border-slate-700 flex justify-end">
+                            {!bulkPublishRun.finished ? (
+                                <button
+                                    onClick={() => { bulkPublishCancelRef.current = true; }}
+                                    className="px-4 py-2 text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg text-sm font-bold transition-all"
+                                >
+                                    Cancelar
+                                </button>
+                            ) : (
+                                <button
+                                    onClick={() => setBulkPublishRun(null)}
+                                    className="px-4 py-2 bg-primary text-white rounded-lg text-sm font-bold shadow-sm hover:shadow active:scale-95 transition-all"
+                                >
+                                    Cerrar
+                                </button>
+                            )}
+                        </div>
+                    </div>
+                </div>
+            )}
 
             {previewImage && (
                 <div
