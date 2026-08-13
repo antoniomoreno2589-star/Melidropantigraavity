@@ -10,6 +10,7 @@ interface TestProduct extends Product {
     isPublishedToReal: boolean;
     creationDate: string; // Format YYYY-MM-DD for easier filtering
     updatedDate: string;  // Same format, backed by test_products.updated_at
+    publishedToRealDate: string | null; // Same format, backed by published_to_real_at — null until isPublishedToReal
     subStatus: string[];  // ML's real sub_status array (e.g. ["deleted"] when ML itself removed the listing)
     prepTime: string;
     category: string;
@@ -51,8 +52,11 @@ export const TestProductsPage = () => {
     const [isSyncing, setIsSyncing] = useState(false);
     const [filterStatus, setFilterStatus] = useState<SandboxStatusFilter>('all');
     const [filterPublished, setFilterPublished] = useState<PublishedFilter>('all');
-    const [dateFilterType, setDateFilterType] = useState<'created' | 'updated'>('created');
-    const [filterDate, setFilterDate] = useState<string>('');
+    const [dateFilterType, setDateFilterType] = useState<'created' | 'updated' | 'published'>('created');
+    // Range instead of a single exact-match date — "products published between
+    // the 5th and the 12th" needed two bounds, not one day at a time.
+    const [filterDateFrom, setFilterDateFrom] = useState<string>('');
+    const [filterDateTo, setFilterDateTo] = useState<string>('');
     const [showFilters, setShowFilters] = useState(false);
     const [currentPage, setCurrentPage] = useState(1);
     const PAGE_SIZE = 20;
@@ -155,13 +159,21 @@ export const TestProductsPage = () => {
             if (filterPublished === 'published') matchesPublished = p.isPublishedToReal;
             else if (filterPublished === 'not_published') matchesPublished = !p.isPublishedToReal;
 
-            // 4. Date filter — against creation or last-update date, per the dropdown
-            const dateValue = dateFilterType === 'updated' ? p.updatedDate : p.creationDate;
-            const matchesDate = filterDate ? dateValue === filterDate : true;
+            // 4. Date filter — against creation, last-update, or real-publish date
+            // (per the dropdown), as a range instead of one exact day. A product
+            // that's never been published for real has no publishedToRealDate —
+            // that correctly excludes it whenever this filter type has a bound set,
+            // same as it would from a real "published between X and Y" search.
+            const dateValue = dateFilterType === 'updated' ? p.updatedDate
+                : dateFilterType === 'published' ? p.publishedToRealDate
+                : p.creationDate;
+            const matchesDate = (!filterDateFrom && !filterDateTo) ? true
+                : !dateValue ? false
+                : (!filterDateFrom || dateValue >= filterDateFrom) && (!filterDateTo || dateValue <= filterDateTo);
 
             return matchesSearch && matchesStatus && matchesPublished && matchesDate;
         });
-    }, [testProducts, searchField, searchQuery, filterStatus, filterPublished, dateFilterType, filterDate]);
+    }, [testProducts, searchField, searchQuery, filterStatus, filterPublished, dateFilterType, filterDateFrom, filterDateTo]);
 
     // Counts for the status pill row — always over the full catalog, not the
     // currently filtered/searched subset, same as ML's own seller panel.
@@ -181,7 +193,7 @@ export const TestProductsPage = () => {
     // that no longer has any rows once the filtered set shrinks.
     useEffect(() => {
         setCurrentPage(1);
-    }, [searchField, searchQuery, filterStatus, filterPublished, dateFilterType, filterDate]);
+    }, [searchField, searchQuery, filterStatus, filterPublished, dateFilterType, filterDateFrom, filterDateTo]);
 
     const totalPages = Math.max(1, Math.ceil(filteredProducts.length / PAGE_SIZE));
 
@@ -321,8 +333,9 @@ export const TestProductsPage = () => {
         const dup = await meliService.checkDuplicate(product.asin);
         if (dup.isDuplicate) {
             alert(`Ya existe en tu cuenta real de MercadoLibre (ID: ${dup.existingItem?.id}). No se volvió a publicar.`);
-            await api.testProducts.update(id, { meli_id: dup.existingItem?.id, is_published_to_real: true });
-            setTestProducts(prev => prev.map(p => p.id === id ? { ...p, meliId: dup.existingItem?.id, isPublishedToReal: true } : p));
+            const publishedNow = new Date().toISOString();
+            await api.testProducts.update(id, { meli_id: dup.existingItem?.id, is_published_to_real: true, published_to_real_at: publishedNow });
+            setTestProducts(prev => prev.map(p => p.id === id ? { ...p, meliId: dup.existingItem?.id, isPublishedToReal: true, publishedToRealDate: publishedNow.split('T')[0] } : p));
             return;
         }
 
@@ -371,14 +384,16 @@ export const TestProductsPage = () => {
             }
 
             // Update test product with real meli_id and publication status
+            const publishedNow = new Date().toISOString();
             await api.testProducts.update(id, {
                 meli_id: result.id,
-                is_published_to_real: true
+                is_published_to_real: true,
+                published_to_real_at: publishedNow
             });
 
             // Update local state
             setTestProducts(prev => prev.map(p =>
-                p.id === id ? { ...p, meliId: result.id, isPublishedToReal: true } : p
+                p.id === id ? { ...p, meliId: result.id, isPublishedToReal: true, publishedToRealDate: publishedNow.split('T')[0] } : p
             ));
 
             await trackPublishedProduct(product, result, itemPayload, descriptionText);
@@ -492,9 +507,10 @@ export const TestProductsPage = () => {
                 // Guard against publishing the same ASIN twice for real.
                 const dup = await meliService.checkDuplicate(product.asin);
                 if (dup.isDuplicate) {
-                    await api.testProducts.update(product.id, { meli_id: dup.existingItem?.id, is_published_to_real: true });
+                    const publishedNow = new Date().toISOString();
+                    await api.testProducts.update(product.id, { meli_id: dup.existingItem?.id, is_published_to_real: true, published_to_real_at: publishedNow });
                     setTestProducts(prev => prev.map(p =>
-                        p.id === product.id ? { ...p, meliId: dup.existingItem?.id, isPublishedToReal: true } : p
+                        p.id === product.id ? { ...p, meliId: dup.existingItem?.id, isPublishedToReal: true, publishedToRealDate: publishedNow.split('T')[0] } : p
                     ));
                     markDone({ success: true });
                     continue;
@@ -519,12 +535,14 @@ export const TestProductsPage = () => {
                     await meliService.postDescription(result.id, descriptionText);
                 }
 
+                const publishedNow = new Date().toISOString();
                 await api.testProducts.update(product.id, {
                     meli_id: result.id,
-                    is_published_to_real: true
+                    is_published_to_real: true,
+                    published_to_real_at: publishedNow
                 });
                 setTestProducts(prev => prev.map(p =>
-                    p.id === product.id ? { ...p, meliId: result.id, isPublishedToReal: true } : p
+                    p.id === product.id ? { ...p, meliId: result.id, isPublishedToReal: true, publishedToRealDate: publishedNow.split('T')[0] } : p
                 ));
                 await trackPublishedProduct(product, result, itemPayload, descriptionText);
                 markDone({ success: true });
@@ -769,7 +787,10 @@ export const TestProductsPage = () => {
                                 </div>
 
                                 <div className="flex flex-wrap items-center gap-2">
-                                    {/* Date filter: date-type selector + date, like ML's "Actualización ▾ | dd/mm/aaaa" */}
+                                    {/* Date filter: date-type selector + from/to range, like ML's
+                                        "Actualización ▾ | dd/mm/aaaa" but with two bounds instead of
+                                        one exact day, and a third type (Publicación Real) alongside
+                                        creation/last-update. */}
                                     <div className="flex items-center bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg overflow-hidden">
                                         <select
                                             value={dateFilterType}
@@ -778,15 +799,28 @@ export const TestProductsPage = () => {
                                         >
                                             <option value="created">Creación</option>
                                             <option value="updated">Actualización</option>
+                                            <option value="published">Publicación Real</option>
                                         </select>
                                         <input
                                             type="date"
-                                            value={filterDate}
-                                            onChange={(e) => setFilterDate(e.target.value)}
+                                            value={filterDateFrom}
+                                            onChange={(e) => setFilterDateFrom(e.target.value)}
+                                            title="Desde"
                                             className="bg-transparent border-none text-xs font-bold text-slate-600 dark:text-slate-300 focus:ring-0 px-2 py-2"
                                         />
-                                        {filterDate && (
-                                            <button onClick={() => setFilterDate('')} className="text-slate-400 hover:text-red-500 pr-2">
+                                        <span className="text-slate-300 dark:text-slate-600 text-xs">—</span>
+                                        <input
+                                            type="date"
+                                            value={filterDateTo}
+                                            onChange={(e) => setFilterDateTo(e.target.value)}
+                                            title="Hasta"
+                                            className="bg-transparent border-none text-xs font-bold text-slate-600 dark:text-slate-300 focus:ring-0 px-2 py-2"
+                                        />
+                                        {(filterDateFrom || filterDateTo) && (
+                                            <button
+                                                onClick={() => { setFilterDateFrom(''); setFilterDateTo(''); }}
+                                                className="text-slate-400 hover:text-red-500 pr-2"
+                                            >
                                                 <span className="material-symbols-outlined text-[16px]">close</span>
                                             </button>
                                         )}

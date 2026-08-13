@@ -510,6 +510,7 @@ export const api = {
                 isPublishedToReal: p.is_published_to_real,
                 creationDate: new Date(p.created_at).toISOString().split('T')[0],
                 updatedDate: p.updated_at ? new Date(p.updated_at).toISOString().split('T')[0] : new Date(p.created_at).toISOString().split('T')[0],
+                publishedToRealDate: p.published_to_real_at ? new Date(p.published_to_real_at).toISOString().split('T')[0] : null,
                 subStatus: Array.isArray(p.sub_status) ? p.sub_status : []
             }));
         },
