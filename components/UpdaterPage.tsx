@@ -76,6 +76,10 @@ export const UpdaterPage: React.FC = () => {
     );
     const [syncRunning, setSyncRunning] = useState(false);
     const [syncResult, setSyncResult] = useState<string>('');
+    // Per-sku failures from the most recent handleRunNow — the edge function's
+    // response already carries a full debug array (one entry per product, not
+    // just an aggregate count), it just wasn't being read on this end before.
+    const [lastRunErrors, setLastRunErrors] = useState<{ sku: string; message: string }[]>([]);
     const [prepDays, setPrepDays] = useState<number>(3);
     const [postalCode, setPostalCode] = useState<string>('');
     const [scrapeDebug, setScrapeDebug] = useState<{ product: Product; result: any } | null>(null);
@@ -462,6 +466,7 @@ export const UpdaterPage: React.FC = () => {
     const handleRunNow = async () => {
         setSyncRunning(true);
         setSyncResult('Ejecutando sincronización...');
+        setLastRunErrors([]);
         try {
             const { data: { user } } = await supabase.auth.getUser();
             const res = await fetch(UPDATER_URL, {
@@ -472,23 +477,49 @@ export const UpdaterPage: React.FC = () => {
             const data = await res.json();
             if (data.success) {
                 const s = data.summary?.[0];
+
+                // Fetched before building the message below so a partial batch
+                // (job.processed_count < job.total_products) can say how many are
+                // still pending instead of just "batch done" with no sense of
+                // whether another click is needed — a single invocation only ever
+                // processes one batch (up to 200 products), so a catalog bigger
+                // than that needs "Ejecutar Ahora" clicked again to keep going.
+                let job: any = null;
+                if (user) {
+                    const { data: jobRow } = await supabase.from('sync_jobs').select('*').eq('user_id', user.id).order('started_at', { ascending: false }).limit(1).maybeSingle();
+                    if (jobRow) { setSyncJob(jobRow); job = jobRow; }
+                }
+
                 if (!s) {
                     setSyncResult('✅ Sincronización ejecutada (sin cambios).');
                 } else if (s.skipped) {
                     setSyncResult(`⏳ No es necesario aún (próxima sincronización en ${syncFreqHours}h).`);
-                } else if (s.completed === true) {
+                } else if (s.complete === true) {
+                    // Edge function's field is `complete`, not `completed` — this
+                    // branch was silently dead before (always fell through to the
+                    // one below, which still shows a similar message, just without
+                    // the "todos procesados" framing).
                     setSyncResult('✅ Sincronización completada (todos los productos procesados).');
                 } else if (s.updated !== undefined || s.errors !== undefined) {
                     const hasErrors = (s.errors ?? 0) > 0;
                     const icon = hasErrors ? '⚠️' : '✅';
-                    const errorDetail = hasErrors && s.firstError ? ` — ${s.firstError}` : '';
-                    setSyncResult(`${icon} Lote procesado: ${s.updated ?? 0} actualizados, ${s.errors ?? 0} errores.${errorDetail}`);
+                    const pending = job && job.status !== 'completed' && job.total_products > job.processed_count
+                        ? ` Quedan ${job.total_products - job.processed_count} de ${job.total_products} por procesar — dale "Ejecutar Ahora" de nuevo para seguir.`
+                        : '';
+                    setSyncResult(`${icon} Lote procesado: ${s.updated ?? 0} actualizados, ${s.errors ?? 0} errores.${pending}`);
                 } else {
                     setSyncResult('✅ Lote procesado sin cambios.');
                 }
-                if (user) {
-                    const { data: job } = await supabase.from('sync_jobs').select('*').eq('user_id', user.id).order('started_at', { ascending: false }).limit(1).maybeSingle();
-                    if (job) setSyncJob(job);
+
+                // The response already carries a full per-product debug array
+                // (sku + result) — was only ever reduced to a single firstError
+                // string on screen. Surface every failed sku from this run instead.
+                if (Array.isArray(s?.debug)) {
+                    setLastRunErrors(
+                        s.debug
+                            .filter((d: any) => typeof d.mlResult === 'string' && d.mlResult.startsWith('error'))
+                            .map((d: any) => ({ sku: d.sku ?? d.meliId ?? '?', message: d.mlResult.replace(/^error:\s*/, '') }))
+                    );
                 }
             } else {
                 setSyncResult(`❌ Error: ${data.error ?? data.message ?? 'Error desconocido'}`);
@@ -752,6 +783,22 @@ export const UpdaterPage: React.FC = () => {
                             <p className={`text-xs font-mono ${syncResult.startsWith('✅') ? 'text-green-600' : syncResult.startsWith('❌') ? 'text-red-500' : 'text-slate-500'}`}>
                                 {syncResult}
                             </p>
+                        </div>
+                    )}
+                    {lastRunErrors.length > 0 && (
+                        <div className="px-6 pb-4">
+                            <div className="flex items-center gap-1.5 text-xs font-bold text-red-500 mb-1.5">
+                                <span className="material-symbols-outlined text-[14px]">error</span>
+                                {lastRunErrors.length} producto{lastRunErrors.length !== 1 ? 's' : ''} con error en este lote
+                            </div>
+                            <div className="space-y-1 max-h-40 overflow-y-auto border border-slate-200 dark:border-slate-700 rounded-lg p-3 bg-slate-50 dark:bg-slate-900/50">
+                                {lastRunErrors.map((e, i) => (
+                                    <div key={i} className="text-xs font-mono">
+                                        <span className="font-bold text-slate-700 dark:text-slate-300">{e.sku}:</span>{' '}
+                                        <span className="text-red-500">{e.message}</span>
+                                    </div>
+                                ))}
+                            </div>
                         </div>
                     )}
                     <div className="p-4 bg-slate-50 dark:bg-slate-800/50 border-t border-slate-100 dark:border-slate-800 flex gap-3">
