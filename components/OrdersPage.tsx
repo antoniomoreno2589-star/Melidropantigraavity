@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import { api } from '../services/api';
 import { meliService } from '../services/meliService';
-import { amazonService } from '../services/amazonService';
+import { amazonService, amazonDomainForCurrency } from '../services/amazonService';
 import { supabase } from '../services/supabase';
 import { Order } from '../types';
 
@@ -240,8 +240,7 @@ export const OrdersPage = () => {
     };
 
     // ── amazon link / buy ──────────────────────────────────────────────
-    const getAmazonDomain = (asin: string) =>
-        currencyMap[asin] === 'USD' ? 'amazon.com' : 'amazon.com.mx';
+    const getAmazonDomain = (asin: string) => amazonDomainForCurrency(currencyMap[asin]);
 
     const handleBuyClick = async (order: Order) => {
         if (order.amazonAsin) {

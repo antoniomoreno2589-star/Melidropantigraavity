@@ -1,6 +1,16 @@
 import { Product } from '../types';
 import { supabase } from './supabase';
 
+// Confirmed live: ASIN links across the app (Sandbox, Catálogo) were hardcoded
+// to amazon.com regardless of where the product was actually sourced from —
+// a MXN-origin ("Nacional") product's link still pointed at the US site
+// instead of amazon.com.mx. `currency` is the same per-product signal
+// calculateMexicoPrice already uses to decide USD-cross-border vs
+// MXN-domestic, so it doubles as the signal for which Amazon site to link to.
+export function amazonDomainForCurrency(currency?: string | null): string {
+    return currency === 'USD' ? 'amazon.com' : 'amazon.com.mx';
+}
+
 export interface AmazonCredentials {
     sellerId: string;
     clientId: string;

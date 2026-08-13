@@ -3,6 +3,7 @@ import { Product } from '../types';
 import { useNavigate } from 'react-router-dom';
 import { meliService } from '../services/meliService';
 import { api } from '../services/api';
+import { amazonDomainForCurrency } from '../services/amazonService';
 import { SyncStatus } from './SyncStatus';
 
 const calculatePrice = (costUSD: number, settings: any) => {
@@ -511,7 +512,7 @@ export const CatalogTable: React.FC = () => {
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap">
                       <a
-                        href={`https://www.amazon.com/dp/${product.asin || product.sku}`}
+                        href={`https://www.${amazonDomainForCurrency(product.currency)}/dp/${product.asin || product.sku}`}
                         target="_blank"
                         rel="noopener noreferrer"
                         className="inline-flex items-center gap-1 rounded-md bg-gray-100 dark:bg-gray-700 px-2 py-1 text-xs font-medium text-gray-600 dark:text-gray-300 ring-1 ring-inset ring-gray-500/10 font-mono hover:bg-orange-50 dark:hover:bg-orange-900/20 hover:text-orange-600 dark:hover:text-orange-400 transition-colors"

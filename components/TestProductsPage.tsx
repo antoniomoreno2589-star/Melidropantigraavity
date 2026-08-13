@@ -4,6 +4,7 @@ import { api } from '../services/api';
 import { meliService } from '../services/meliService';
 import { supabase } from '../services/supabase';
 import { sanitizePublishAttributes } from './AmazonImporter/useAmazonImporter';
+import { amazonDomainForCurrency } from '../services/amazonService';
 
 interface TestProduct extends Product {
     isPublishedToReal: boolean;
@@ -884,7 +885,7 @@ export const TestProductsPage = () => {
                                                     <td className="px-6 py-4">
                                                         <div className="flex flex-col text-xs">
                                                             <a
-                                                                href={`https://www.amazon.com/dp/${p.asin}`}
+                                                                href={`https://www.${amazonDomainForCurrency(p.currency)}/dp/${p.asin}`}
                                                                 target="_blank"
                                                                 rel="noopener noreferrer"
                                                                 title="Ver en Amazon"
