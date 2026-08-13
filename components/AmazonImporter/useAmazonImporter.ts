@@ -1211,6 +1211,7 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
                     sku: processed.asin,
                     price_mxn: payload.price,
                     cost_usd: loadedProducts.find(p => p.asin === processed.asin)?.price || 0,
+                    currency: loadedProducts.find(p => p.asin === processed.asin)?.currency ?? 'USD',
                     image_url: processed.images[0]?.url,
                     category: payload.category_id,
                     // publishResult IS ML's raw item response on a fresh publish (status

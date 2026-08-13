@@ -4,6 +4,7 @@ export interface Product {
   sku: string; // Internal SKU
   asin: string; // Amazon ID
   meliId?: string; // Mercado Libre ID (if published)
+  currency?: string; // 'USD' | 'MXN' — which Amazon marketplace this was sourced from
   priceMXN: number;
   costUSD: number;
   stockProvider: number;

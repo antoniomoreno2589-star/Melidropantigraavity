@@ -12,7 +12,7 @@ export const api = {
                 const { data, error } = await supabase
                     .from('products')
                     // Select only needed columns (not *)
-                    .select('id, title, sku, asin, meli_id, price_mxn, cost_usd, stock_provider, stock_meli, status, image_url, last_updated, in_updater, amazon_seller_count, sold_by_amazon')
+                    .select('id, title, sku, asin, meli_id, price_mxn, cost_usd, stock_provider, stock_meli, status, image_url, last_updated, in_updater, amazon_seller_count, sold_by_amazon, currency')
                     .order('last_updated', { ascending: false })
                     .range(from, from + step - 1);
 
@@ -31,6 +31,7 @@ export const api = {
                 sku: p.sku,
                 asin: p.asin,
                 meliId: p.meli_id,
+                currency: p.currency,
                 priceMXN: p.price_mxn,
                 costUSD: p.cost_usd,
                 stockProvider: p.stock_provider,
@@ -212,7 +213,7 @@ export const api = {
         ): Promise<{ products: Product[]; total: number }> {
             let query = supabase
                 .from('products')
-                .select('id, title, sku, asin, meli_id, price_mxn, cost_usd, stock_provider, stock_meli, status, image_url, last_updated, in_updater, amazon_seller_count, sold_by_amazon', { count: 'exact' })
+                .select('id, title, sku, asin, meli_id, price_mxn, cost_usd, stock_provider, stock_meli, status, image_url, last_updated, in_updater, amazon_seller_count, sold_by_amazon, currency', { count: 'exact' })
                 .order('last_updated', { ascending: false });
 
             if (filters.status && filters.status !== 'all') {
@@ -240,6 +241,7 @@ export const api = {
                     sku: p.sku,
                     asin: p.asin,
                     meliId: p.meli_id,
+                    currency: p.currency,
                     priceMXN: p.price_mxn,
                     costUSD: p.cost_usd,
                     stockProvider: p.stock_provider,
@@ -495,6 +497,7 @@ export const api = {
                 title: p.title,
                 asin: p.asin,
                 sku: p.sku,
+                currency: p.currency ?? 'USD',
                 priceMXN: p.price_mxn,
                 costUSD: p.cost_usd,
                 stockProvider: p.stock_provider,
@@ -528,6 +531,7 @@ export const api = {
                     sku: product.sku,
                     price_mxn: product.price_mxn,
                     cost_usd: product.cost_usd,
+                    currency: product.currency || 'USD',
                     stock_provider: product.stock_provider || 0,
                     stock_meli: product.stock_meli || 0,
                     status: product.status || 'active',
