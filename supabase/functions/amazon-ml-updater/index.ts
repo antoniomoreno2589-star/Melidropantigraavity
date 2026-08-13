@@ -1008,7 +1008,7 @@ async function fetchAmazonOffers(
     accessToken: string,
     marketplaceId: string,
     amazonSellerId: string
-): Promise<AmazonOffers> {
+): Promise<AmazonOffers | null> {
     try {
         const url = `${endpoint}/products/pricing/v0/items/${asin}/offers?MarketplaceId=${marketplaceId}&ItemCondition=New`;
         const res = await fetch(url, {
@@ -1018,7 +1018,22 @@ async function fetchAmazonOffers(
             if (res.status === 404 || res.status === 400) {
                 return { price: null, sellerCount: 0, soldByAmazon: false, amazonStock: 0, shippingDays: null, winningOfferPrice: null, shipsFromCountry: null, currency: null };
             }
-            return { price: null, sellerCount: 0, soldByAmazon: false, amazonStock: null, shippingDays: null, winningOfferPrice: null, shipsFromCountry: null, currency: null };
+            // Confirmed live: this used to return the exact same "confirmed zero
+            // offers" shape for ANY other non-2xx status — indistinguishable from
+            // a genuine stockout. That's the actual root cause behind a mass
+            // false-pause incident: fetchOffersBatch's primary batch call failing
+            // (e.g., hitting its OWN rate limit from repeated forced runs) falls
+            // back to firing one individual call per ASIN concurrently — a
+            // pattern this file's own comment on fetchOffersBatch already
+            // documented as producing ~90% 429s — and every one of those 429s
+            // got silently read as "this product has zero real offers," pausing
+            // dozens of perfectly live listings at once. Retrying only added
+            // more load to an already-limited budget, making it worse each time.
+            // null means "couldn't determine this cycle" — the caller leaves
+            // this product's availability/status untouched instead of assuming
+            // the worst.
+            console.error(`[fetchAmazonOffers] asin=${asin} HTTP ${res.status} — could not determine availability, leaving untouched`);
+            return null;
         }
         const data = await res.json();
         const summary = data?.payload?.Summary;
@@ -1063,8 +1078,12 @@ async function fetchAmazonOffers(
 
         console.log(`[fetchAmazonOffers] asin=${asin} price=${price} sellerCount=${sellerCount} soldByAmazon=${soldByAmazon} amazonStock=${amazonStock} shippingDays=${shippingDays}(maxHours=${maxHours}) winningOfferPrice=${winningOfferPrice} shipsFromCountry=${shipsFromCountry} currency=${currency}`);
         return { price, sellerCount, soldByAmazon, amazonStock, shippingDays, winningOfferPrice, shipsFromCountry, currency };
-    } catch {
-        return { price: null, sellerCount: 0, soldByAmazon: false, amazonStock: null, shippingDays: null, winningOfferPrice: null, shipsFromCountry: null, currency: null };
+    } catch (e) {
+        // Network error, timeout, JSON parse failure, etc. — same reasoning as
+        // the HTTP-status branch above: couldn't determine availability this
+        // cycle, so say so instead of returning a fake "zero offers" result.
+        console.error(`[fetchAmazonOffers] asin=${asin} request threw — could not determine availability, leaving untouched:`, e);
+        return null;
     }
 }
 
@@ -1125,11 +1144,32 @@ async function fetchOffersBatch(
             });
 
             if (!res.ok) {
-                console.log(`[fetchOffersBatch] batch HTTP ${res.status} — falling back to individual calls`);
-                const fallback = await Promise.allSettled(
-                    chunk.map(asin => fetchAmazonOffers(endpoint, asin, accessToken, marketplaceId, amazonSellerId))
-                );
-                fallback.forEach((r, idx) => { if (r.status === "fulfilled") offers[chunk[idx]] = r.value; });
+                // Confirmed live: firing all 20 of these concurrently (the comment
+                // above already knew why — "1-2 TPS limit → 20 concurrent calls =
+                // ~90% 429 errors" — this fallback just never followed its own
+                // documented reasoning) is what actually caused a mass false-pause
+                // incident: this fallback only runs when the primary batch call
+                // itself failed (e.g., its own 0.5 TPS limit), so the individual
+                // endpoint was already under pressure, and firing 20 at once on
+                // top of that reliably produced the ~90% 429 rate the comment
+                // warned about. Sequential with a small gap keeps this fallback
+                // under the 1-2 TPS budget instead of instantly blowing past it.
+                console.log(`[fetchOffersBatch] batch HTTP ${res.status} — falling back to individual calls, sequential`);
+                for (const asin of chunk) {
+                    try {
+                        const result = await fetchAmazonOffers(endpoint, asin, accessToken, marketplaceId, amazonSellerId);
+                        // null means fetchAmazonOffers couldn't determine availability
+                        // this cycle (HTTP failure, timeout, etc.) — leave that ASIN
+                        // absent from `offers` entirely rather than writing a fake
+                        // "zero offers" entry, matching how the primary batch path
+                        // above already skips (rather than fabricates) a per-item
+                        // failure.
+                        if (result !== null) offers[asin] = result;
+                    } catch (e) {
+                        console.error(`[fetchOffersBatch] individual fallback error for asin=${asin}:`, e);
+                    }
+                    await new Promise(r => setTimeout(r, 700));
+                }
                 continue;
             }
 
