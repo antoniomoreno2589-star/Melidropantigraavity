@@ -33,7 +33,7 @@ export const CatalogTable: React.FC = () => {
   const [filter, setFilter] = useState('all');
   const [searchInput, setSearchInput] = useState('');
   const [search, setSearch] = useState('');
-  const [searchCategory, setSearchCategory] = useState<'title' | 'sku' | 'meliId'>('title');
+  const [searchCategory, setSearchCategory] = useState<'title' | 'sku' | 'meliId' | 'brand'>('title');
   const [dateType, setDateType] = useState<'updated' | 'created'>('updated');
   const [dateValue, setDateValue] = useState('');
 
@@ -335,6 +335,7 @@ export const CatalogTable: React.FC = () => {
                 <option value="title">Título</option>
                 <option value="sku">SKU</option>
                 <option value="meliId">MLM ID</option>
+                <option value="brand">Marca</option>
               </select>
               <div className="relative flex-1">
                 <input
