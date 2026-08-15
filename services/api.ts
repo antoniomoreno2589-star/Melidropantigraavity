@@ -194,6 +194,7 @@ export const api = {
                 stock_meli: (p as any).stock_meli || 0,
                 status: p.status,
                 image_url: (p as any).image_url,
+                brand: p.brand ?? null,
                 last_updated: new Date().toISOString(),
                 // in_updater is NOT set here — sync must not override user's manual selection.
                 // New products default to false (DB default), existing products keep their value.
@@ -209,11 +210,11 @@ export const api = {
         async listPaginated(
             page: number,
             pageSize: number,
-            filters: { status?: string; search?: string; searchCategory?: 'title' | 'sku' | 'meliId' }
+            filters: { status?: string; search?: string; searchCategory?: 'title' | 'sku' | 'meliId' | 'brand' }
         ): Promise<{ products: Product[]; total: number }> {
             let query = supabase
                 .from('products')
-                .select('id, title, sku, asin, meli_id, price_mxn, cost_usd, stock_provider, stock_meli, status, image_url, last_updated, in_updater, amazon_seller_count, sold_by_amazon, currency', { count: 'exact' })
+                .select('id, title, sku, asin, meli_id, price_mxn, cost_usd, stock_provider, stock_meli, status, image_url, last_updated, in_updater, amazon_seller_count, sold_by_amazon, currency, brand', { count: 'exact' })
                 .order('last_updated', { ascending: false });
 
             if (filters.status && filters.status !== 'all') {
@@ -228,6 +229,7 @@ export const api = {
                 const s = `%${filters.search}%`;
                 if (filters.searchCategory === 'sku') query = query.ilike('sku', s);
                 else if (filters.searchCategory === 'meliId') query = query.ilike('meli_id', s);
+                else if (filters.searchCategory === 'brand') query = query.ilike('brand', s);
                 else query = query.ilike('title', s);
             }
 
@@ -253,6 +255,7 @@ export const api = {
                     amazonSellerCount: p.amazon_seller_count ?? null,
                     soldByAmazon: p.sold_by_amazon ?? null,
                     amazonStock: null,
+                    brand: p.brand ?? null,
                 })),
                 total: count ?? 0,
             };

@@ -403,6 +403,9 @@ class MeliService {
                     }
                     const sku = skuAttr?.value_name || item.seller_custom_field || item.id;
 
+                    const brandAttr = item.attributes?.find((attr: any) => attr.id === 'BRAND' || attr.id === 'MARCA');
+                    const brand = brandAttr?.value_name || null;
+
                     return {
                         title: item.title,
                         sku: sku,
@@ -412,7 +415,8 @@ class MeliService {
                         stock_meli: item.available_quantity,
                         stock_provider: 0,
                         status: statusMap[item.status] || 'draft',
-                        image_url: item.thumbnail ? item.thumbnail.replace("-I.jpg", "-V.jpg") : undefined
+                        image_url: item.thumbnail ? item.thumbnail.replace("-I.jpg", "-V.jpg") : undefined,
+                        brand,
                     };
                 });
 

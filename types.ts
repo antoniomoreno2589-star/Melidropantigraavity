@@ -22,6 +22,7 @@ export interface Product {
   shippingSyncBlocked?: boolean;     // true = ML rejected the last shipping.handling_time update
                                       // (active bid/offer, listing under review, etc.) — the
                                       // displayed shippingDays is stale until ML allows it again
+  brand?: string | null;             // Brand attribute as published on Mercado Libre (null = not yet synced)
 }
 
 export interface Order {
