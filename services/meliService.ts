@@ -389,9 +389,21 @@ class MeliService {
                 const items = await this.getItemsDetails(chunkIds);
 
                 const productsToUpsert: any[] = items.map(item => {
+                    // ML's item.status only ever comes back as one of these values (finer
+                    // detail lives in sub_status). Confirmed live: this map used to only
+                    // know 'active'/'paused' and silently collapsed every other real ML
+                    // status — under_review, closed, inactive, etc. — into 'draft', which
+                    // is wrong: a listing "en revisión" on ML showed up here as a draft
+                    // that was never even published. The rest of the app (Publicaciones'
+                    // filter tabs, status counts) already expects these exact values.
                     const statusMap: Record<string, string> = {
                         'active': 'active',
                         'paused': 'paused',
+                        'under_review': 'under_review',
+                        'not_yet_active': 'not_yet_active',
+                        'payment_required': 'payment_required',
+                        'closed': 'closed',
+                        'inactive': 'inactive',
                     };
 
                     let skuAttr = item.attributes?.find((attr: any) => attr.id === 'SELLER_SKU');
