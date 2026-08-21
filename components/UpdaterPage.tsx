@@ -213,7 +213,7 @@ export const UpdaterPage: React.FC = () => {
             while (true) {
                 const { data, error } = await supabase
                     .from('products')
-                    .select('id, title, sku, asin, meli_id, price_mxn, cost_usd, stock_provider, stock_meli, status, image_url, last_updated, in_updater, amazon_seller_count, sold_by_amazon, amazon_available, pause_reason, shipping_days, shipping_sync_blocked')
+                    .select('id, title, sku, asin, meli_id, price_mxn, cost_usd, stock_provider, stock_meli, status, image_url, last_updated, in_updater, amazon_seller_count, sold_by_amazon, amazon_available, pause_reason, shipping_days, shipping_sync_blocked, shipping_block_reason')
                     .eq('user_id', user.id)
                     .eq('in_updater', true)
                     .neq('status', 'closed')
@@ -249,6 +249,7 @@ export const UpdaterPage: React.FC = () => {
                 pauseReason: p.pause_reason ?? null,
                 shippingDays: p.shipping_days ?? null,
                 shippingSyncBlocked: p.shipping_sync_blocked ?? false,
+                shippingBlockReason: p.shipping_block_reason ?? null,
             }));
 
             setProducts(mappedProducts);
@@ -272,7 +273,7 @@ export const UpdaterPage: React.FC = () => {
             while (true) {
                 const { data, error } = await supabase
                     .from('products')
-                    .select('id, title, sku, asin, meli_id, price_mxn, cost_usd, stock_provider, stock_meli, status, image_url, last_updated, in_updater, amazon_seller_count, sold_by_amazon, amazon_available, pause_reason, shipping_days, shipping_sync_blocked')
+                    .select('id, title, sku, asin, meli_id, price_mxn, cost_usd, stock_provider, stock_meli, status, image_url, last_updated, in_updater, amazon_seller_count, sold_by_amazon, amazon_available, pause_reason, shipping_days, shipping_sync_blocked, shipping_block_reason')
                     .eq('user_id', user.id)
                     .eq('in_updater', false)
                     .neq('status', 'closed')
@@ -307,6 +308,7 @@ export const UpdaterPage: React.FC = () => {
                 pauseReason: p.pause_reason ?? null,
                 shippingDays: p.shipping_days ?? null,
                 shippingSyncBlocked: p.shipping_sync_blocked ?? false,
+                shippingBlockReason: p.shipping_block_reason ?? null,
             })));
             setNotEnrolledLoaded(true);
         } catch (e) {
@@ -1113,7 +1115,7 @@ export const UpdaterPage: React.FC = () => {
                                             <span
                                                 className={`px-2 py-0.5 rounded-full text-xs font-black flex items-center gap-1 ${product.shippingSyncBlocked ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-400' : 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-400'}`}
                                                 title={product.shippingSyncBlocked
-                                                    ? `MercadoLibre no permitió actualizar el tiempo de manejo de este producto (oferta activa, en revisión, u otro motivo del lado de ML) — este valor puede estar desactualizado. Amazon: ${product.shippingDays}d + prep: ${prepDays}d`
+                                                    ? `Mercado Libre rechazó la actualización — este valor puede estar desactualizado. Motivo de ML: "${product.shippingBlockReason || 'no especificado'}". Amazon: ${product.shippingDays}d + prep: ${prepDays}d`
                                                     : `Amazon: ${product.shippingDays}d + prep: ${prepDays}d`}
                                             >
                                                 {product.shippingSyncBlocked && <span className="material-symbols-outlined text-[12px]">warning</span>}
