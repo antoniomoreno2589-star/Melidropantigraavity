@@ -1252,6 +1252,7 @@ interface MeliUpdateResult {
     error?: string;
     cause?: any[];
     strippedFields?: string[];
+    strippedReasons?: Record<string, string>;
 }
 
 async function updateMeliItem(
@@ -1289,16 +1290,26 @@ async function updateMeliItemWithFallbacks(
     let body: Record<string, unknown> = payload;
     let result = await updateMeliItem(meliId, body, token);
     const allStripped: string[] = [];
+    // ML's own wording for WHY a field is locked (e.g. "shipping.handling_time
+    // is not modifiable.") — captured before the field is stripped, since a
+    // successful retry's result has no `cause` at all. Surfaced to the user
+    // instead of a generic "ML rejected it" so it's a fact, not a guess.
+    const reasons: Record<string, string> = {};
 
     let attempts = 0;
     while (!result.ok && attempts < 5) {
-        const lockedFields = (result.cause ?? [])
-            .filter((c: any) => c.code === 'field_not_updatable')
+        const lockedCauses = (result.cause ?? []).filter((c: any) => c.code === 'field_not_updatable');
+        const lockedFields = lockedCauses
             .flatMap((c: any) => c.references ?? [])
             .map((ref: string) => ref.split('.')[0]);
 
         const strippable = [...new Set(lockedFields)].filter((f: string) => f in body);
         if (strippable.length === 0) break; // nothing we know how to fix — surface the error as-is
+
+        for (const f of strippable) {
+            const cause = lockedCauses.find((c: any) => (c.references ?? []).some((ref: string) => ref.split('.')[0] === f));
+            if (cause?.message) reasons[f] = cause.message;
+        }
 
         console.log(`[amazon-ml-updater] meliId=${meliId} ML locked field(s) [${strippable.join(', ')}] — retrying without them`);
         body = { ...body };
@@ -1307,14 +1318,14 @@ async function updateMeliItemWithFallbacks(
 
         if (Object.keys(body).length === 0) {
             // Every field in this update was locked — nothing left to send.
-            return { ok: true, strippedFields: allStripped };
+            return { ok: true, strippedFields: allStripped, strippedReasons: reasons };
         }
 
         result = await updateMeliItem(meliId, body, token);
         attempts++;
     }
 
-    return { ...result, strippedFields: allStripped.length > 0 ? allStripped : undefined };
+    return { ...result, strippedFields: allStripped.length > 0 ? allStripped : undefined, strippedReasons: Object.keys(reasons).length > 0 ? reasons : undefined };
 }
 
 async function updateMeliDescription(
@@ -1956,6 +1967,7 @@ Deno.serve(async (req) => {
                         // Clears itself automatically once ML accepts the field again.
                         if (updatePayload.shipping) {
                             dbUpdate.shipping_sync_blocked = stripped.has('shipping');
+                            dbUpdate.shipping_block_reason = stripped.has('shipping') ? (result.strippedReasons?.shipping ?? null) : null;
                         }
                         // Confirmed live (B0BP7P2VD9): self-heal a wrong stored currency so
                         // future cycles route to the right marketplace directly instead of
