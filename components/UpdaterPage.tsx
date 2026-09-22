@@ -87,10 +87,9 @@ export const UpdaterPage: React.FC = () => {
     // response already carries a full debug array (one entry per product, not
     // just an aggregate count), it just wasn't being read on this end before.
     const [lastRunErrors, setLastRunErrors] = useState<{ sku: string; message: string }[]>([]);
-    // Fields ML silently stripped from a successful update this run, other than
-    // 'shipping' (that one already has its own persistent, per-product badge —
-    // see shipping_sync_blocked/shipping_block_reason). A stripped field never
-    // shows up in lastRunErrors above since the overall update still succeeded.
+    // Fields ML silently stripped from a successful update this run, with ML's
+    // own reason when it gave one. A stripped field never shows up in
+    // lastRunErrors above since the overall update still succeeded.
     const [lastRunStripped, setLastRunStripped] = useState<{ sku: string; fields: string[] }[]>([]);
     const [prepDays, setPrepDays] = useState<number>(3);
     const [postalCode, setPostalCode] = useState<string>('');
@@ -536,8 +535,11 @@ export const UpdaterPage: React.FC = () => {
                     );
                     setLastRunStripped(
                         s.debug
-                            .filter((d: any) => Array.isArray(d.strippedFields) && d.strippedFields.some((f: string) => f !== 'shipping'))
-                            .map((d: any) => ({ sku: d.sku ?? d.meliId ?? '?', fields: d.strippedFields.filter((f: string) => f !== 'shipping') }))
+                            .filter((d: any) => Array.isArray(d.strippedFields) && d.strippedFields.length > 0)
+                            .map((d: any) => ({
+                                sku: d.sku ?? d.meliId ?? '?',
+                                fields: d.strippedFields.map((f: string) => d.strippedReasons?.[f] ? `${f} (${d.strippedReasons[f]})` : f),
+                            }))
                     );
                 }
             } else {
@@ -630,7 +632,7 @@ export const UpdaterPage: React.FC = () => {
                                     {syncJob.status !== 'running' && products.filter(p => p.shippingSyncBlocked).length > 0 && (
                                         <p className="text-xs text-amber-600 dark:text-amber-400 mt-0.5 flex items-center gap-1">
                                             <span className="material-symbols-outlined text-[13px]">warning</span>
-                                            "0 errores" no incluye el tiempo de envío: Mercado Libre rechazó ese campo en {products.filter(p => p.shippingSyncBlocked).length} producto(s) — el resto del producto sí se actualizó. Ver detalle abajo.
+                                            "0 errores" no incluye el tiempo de preparación: no se pudo aplicar en {products.filter(p => p.shippingSyncBlocked).length} producto(s) — el resto del producto sí se actualizó. Pasa el cursor sobre el ⚠ de cada producto para ver el motivo.
                                         </p>
                                     )}
                                 </div>

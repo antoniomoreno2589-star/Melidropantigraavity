@@ -1255,28 +1255,74 @@ interface MeliUpdateResult {
     strippedReasons?: Record<string, string>;
 }
 
-// Only called when a shipping update just got blocked — reads back the item's
-// actual shipping config so shipping_block_reason can say WHY it's locked
-// (e.g. Mercado Envíos Full manages handling_time from the fulfillment
-// center, not the seller) instead of just quoting ML's generic error text.
-// Read-only, best-effort: a failure here must never affect the sync result.
-async function fetchItemShippingConfig(
+function manufacturingDaysFrom(terms: any[]): number | null {
+    const term = terms.find((t: any) => t.id === 'MANUFACTURING_TIME');
+    if (!term) return null;
+    if (typeof term.value_struct?.number === 'number') return term.value_struct.number;
+    const n = parseInt(term.value_name ?? '', 10);
+    return Number.isFinite(n) ? n : null;
+}
+
+// Confirmed live: every listing this app publishes ends up as ME2 with
+// logistic_type=xd_drop_off, where ML owns shipping.handling_time and rejects
+// every seller write to it ("shipping.handling_time is not modifiable.").
+// The seller-side preparation time for ME2 is the MANUFACTURING_TIME sale
+// term instead ("Disponibilidad de stock" — what the seller panel's
+// Modificar option edits). Sent as its own PUT, never bundled with
+// price/stock, so a rejection here can't take those down with it.
+async function syncManufacturingTime(
     meliId: string,
+    days: number,
     token: string
-): Promise<{ logisticType: string | null; mode: string | null; catalogListing: boolean | null } | null> {
+): Promise<{ ok: boolean; changed: boolean; previous: number | null; error?: string }> {
     try {
-        const res = await fetch(`${MELI_API}/items/${meliId}?attributes=shipping,catalog_listing`, {
+        const getRes = await fetch(`${MELI_API}/items/${meliId}?attributes=sale_terms`, {
             headers: { Authorization: `Bearer ${token}` },
         });
-        if (!res.ok) return null;
-        const data = await res.json();
-        return {
-            logisticType: data?.shipping?.logistic_type ?? null,
-            mode: data?.shipping?.mode ?? null,
-            catalogListing: data?.catalog_listing ?? null,
-        };
-    } catch {
-        return null;
+        if (!getRes.ok) {
+            return { ok: false, changed: false, previous: null, error: `No se pudo leer la publicación en ML (HTTP ${getRes.status})` };
+        }
+        const terms: any[] = (await getRes.json())?.sale_terms ?? [];
+        const previous = manufacturingDaysFrom(terms);
+        if (previous === days) return { ok: true, changed: false, previous };
+
+        // Re-send the item's other sale terms (warranty, etc.) exactly as ML
+        // returned them, so this write can't drop them whether ML merges
+        // sale_terms by id or replaces the whole array.
+        const keep = terms
+            .filter((t: any) => t.id !== 'MANUFACTURING_TIME' && (t.value_id || t.value_name))
+            .map((t: any) => t.value_id ? { id: t.id, value_id: t.value_id } : { id: t.id, value_name: t.value_name });
+
+        const putRes = await fetch(`${MELI_API}/items/${meliId}`, {
+            method:  "PUT",
+            headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+            body:    JSON.stringify({ sale_terms: [...keep, { id: 'MANUFACTURING_TIME', value_name: `${days} días` }] }),
+        });
+        const text = await putRes.text().catch(() => '');
+        if (!putRes.ok) {
+            let reason = `ML ${putRes.status}`;
+            try {
+                const parsed = JSON.parse(text);
+                reason = parsed?.cause?.[0]?.message ?? parsed?.message ?? reason;
+            } catch { /* not JSON */ }
+            console.error(`[amazon-ml-updater] MANUFACTURING_TIME update failed for ${meliId}: ${putRes.status} - ${text.slice(0, 500)}`);
+            return { ok: false, changed: false, previous, error: reason };
+        }
+
+        // A 200 isn't proof the value stuck: for a category without
+        // MANUFACTURING_TIME, ML answers with a delete.item.sale_terms
+        // warning and silently drops it. Check what ML says it saved.
+        let saved: any = null;
+        try { saved = JSON.parse(text); } catch { /* not JSON */ }
+        if (Array.isArray(saved?.sale_terms)) {
+            const applied = manufacturingDaysFrom(saved.sale_terms);
+            if (applied !== days) {
+                return { ok: false, changed: false, previous, error: `ML aceptó la solicitud pero no guardó la disponibilidad de stock (quedó en ${applied ?? 'vacío'}) — puede que la categoría no la permita` };
+            }
+        }
+        return { ok: true, changed: true, previous };
+    } catch (e) {
+        return { ok: false, changed: false, previous: null, error: `Error de red: ${e instanceof Error ? e.message : String(e)}` };
     }
 }
 
@@ -1300,13 +1346,12 @@ async function updateMeliItem(
     return { ok: true };
 }
 
-// PUT /items validates the whole payload atomically — confirmed live that an
-// item with an active bid/offer (has_bids:true) rejects shipping.handling_time
-// as field_not_updatable, and that alone fails the ENTIRE request, blocking
-// price/stock from updating too even though those parts were perfectly valid
-// (a batch of 6 came back "0 actualizados, 6 errores" purely from this).
-// Strip whichever top-level field(s) ML names as locked and retry, so the
-// rest of the payload still lands instead of failing 0-for-N.
+// PUT /items validates the whole payload atomically — one locked field (e.g.
+// price or available_quantity on an under_review item) fails the ENTIRE
+// request, blocking every other perfectly valid field in it too (a batch of
+// 6 once came back "0 actualizados, 6 errores" purely from this). Strip
+// whichever top-level field(s) ML names as locked and retry, so the rest of
+// the payload still lands instead of failing 0-for-N.
 async function updateMeliItemWithFallbacks(
     meliId: string,
     payload: Record<string, unknown>,
@@ -1953,14 +1998,6 @@ Deno.serve(async (req) => {
                 debug.amazonStock   = amazonStock;
                 debug.shippingDays  = cachedShippingDays;
 
-                if (syncParams.shipping) {
-                    if (cachedShippingDays !== null) {
-                        const totalHandlingTime = cachedShippingDays + prepDays;
-                        updatePayload.shipping = { handling_time: totalHandlingTime };
-                        console.log(`[amazon-ml-updater] meliId=${meliId} shipping=${cachedShippingDays} + prep=${prepDays} = ${totalHandlingTime}`);
-                    }
-                }
-
                 if (syncParams.photos) {
                     const images = asinImages[sku];
                     if (images?.length > 0) {
@@ -1976,12 +2013,13 @@ Deno.serve(async (req) => {
                     const result = await updateMeliItemWithFallbacks(meliId, updatePayload, mlToken);
                     debug.mlResult = result.ok ? "ok" : `error: ${result.error}`;
                     if (result.strippedFields?.length) debug.strippedFields = result.strippedFields;
+                    if (result.strippedReasons) debug.strippedReasons = result.strippedReasons;
                     console.log(`[amazon-ml-updater] meliId=${meliId} result=${result.ok ? 'SUCCESS' : `FAILED: ${result.error}`}${result.strippedFields?.length ? ` (stripped: ${result.strippedFields.join(', ')})` : ''}`);
                     if (result.ok) {
-                        // A field ML reported as locked (e.g. shipping.handling_time on an
-                        // item with an active bid) never actually reached ML — only record
-                        // the fields that weren't stripped, so Supabase doesn't claim a
-                        // value was applied when it wasn't.
+                        // A field ML reported as locked (e.g. price on an under_review
+                        // item) never actually reached ML — only record the fields that
+                        // weren't stripped, so Supabase doesn't claim a value was applied
+                        // when it wasn't.
                         const stripped = new Set(result.strippedFields ?? []);
                         const dbUpdate: any = { last_updated: new Date().toISOString() };
                         if (updatePayload.price && !stripped.has('price'))                            dbUpdate.price_mxn           = updatePayload.price;
@@ -1989,39 +2027,6 @@ Deno.serve(async (req) => {
                         if (updatePayload.status && !stripped.has('status'))                          dbUpdate.status               = updatePayload.status;
                         if (sellerCount !== null)             dbUpdate.amazon_seller_count  = sellerCount;
                         if (soldByAmazon !== null)            dbUpdate.sold_by_amazon       = soldByAmazon;
-                        // Real mode's scrape loop persists shipping_days itself, separately,
-                        // before this loop runs. Fixed mode has no such loop — persist here
-                        // instead, so the "Días Prep." column reflects what ML actually got.
-                        if (updateMode === 'fixed' && cachedShippingDays !== null && !stripped.has('shipping')) {
-                            dbUpdate.shipping_days = cachedShippingDays;
-                            dbUpdate.shipping_days_updated_at = new Date().toISOString();
-                        }
-                        // Confirmed live: ML rejects shipping.handling_time as
-                        // field_not_updatable with has_bids:false on both active and
-                        // under_review listings — not an "active bid" or a transient
-                        // under-review hold as originally assumed, and not specific to
-                        // catalog listings either (confirmed blocked on non-catalog
-                        // ASINs too), and it does not clear on its own over time. Only
-                        // flag it when a shipping update was actually attempted this
-                        // cycle. When newly blocked, also read back the item's real
-                        // shipping config (logistic_type / mode / catalog_listing) so
-                        // shipping_block_reason can point at the actual cause — e.g.
-                        // Mercado Envíos Full manages handling_time from the
-                        // fulfillment center, not the seller — instead of just ML's
-                        // generic error text.
-                        if (updatePayload.shipping) {
-                            const nowBlocked = stripped.has('shipping');
-                            dbUpdate.shipping_sync_blocked = nowBlocked;
-                            if (nowBlocked) {
-                                const reason = result.strippedReasons?.shipping ?? 'bloqueado';
-                                const cfg = await fetchItemShippingConfig(meliId, mlToken);
-                                dbUpdate.shipping_block_reason = cfg
-                                    ? `${reason} [logistic_type=${cfg.logisticType ?? '?'}, mode=${cfg.mode ?? '?'}, catalog_listing=${cfg.catalogListing ?? '?'}]`
-                                    : reason;
-                            } else {
-                                dbUpdate.shipping_block_reason = null;
-                            }
-                        }
                         // Confirmed live (B0BP7P2VD9): self-heal a wrong stored currency so
                         // future cycles route to the right marketplace directly instead of
                         // needing the zero-offer fallback above on every single run.
@@ -2040,9 +2045,32 @@ Deno.serve(async (req) => {
                     debug.mlResult = "skipped_no_changes";
                     console.log(`[amazon-ml-updater] meliId=${meliId}, sku=${sku} - no changes needed`);
                 }
-                debugItems.push(debug);
 
                 const metaUpdate: any = { last_updated: new Date().toISOString() };
+
+                // Preparation time = Amazon delivery days + the seller's own prep
+                // days, written as MANUFACTURING_TIME (see syncManufacturingTime).
+                // Runs on its own — independent of whether price/stock changed —
+                // and records its own outcome in shipping_sync_blocked/_reason,
+                // which the Updater page's ⚠ badge reads.
+                if (syncParams.shipping && cachedShippingDays !== null && cachedShippingDays + prepDays > 0) {
+                    const targetDays = cachedShippingDays + prepDays;
+                    const mt = await syncManufacturingTime(meliId, targetDays, mlToken);
+                    debug.manufacturingTime = { target: targetDays, previous: mt.previous, ok: mt.ok, changed: mt.changed, error: mt.error };
+                    console.log(`[amazon-ml-updater] meliId=${meliId} MANUFACTURING_TIME amazon=${cachedShippingDays} + prep=${prepDays} = ${targetDays} (was ${mt.previous ?? 'none'}) → ${mt.ok ? (mt.changed ? 'UPDATED' : 'already correct') : `FAILED: ${mt.error}`}`);
+                    metaUpdate.shipping_sync_blocked = !mt.ok;
+                    metaUpdate.shipping_block_reason = mt.ok ? null : (mt.error ?? 'rechazado por ML');
+                    // Real mode's scrape loop persists shipping_days itself, before this
+                    // loop runs. Fixed mode has no such loop — persist here instead, only
+                    // once ML actually holds the value, so the "Días Prep." column shows
+                    // what buyers see instead of a value ML never accepted.
+                    if (mt.ok && updateMode === 'fixed') {
+                        metaUpdate.shipping_days = cachedShippingDays;
+                        metaUpdate.shipping_days_updated_at = new Date().toISOString();
+                    }
+                }
+                debugItems.push(debug);
+
                 if (sellerCount !== null)          metaUpdate.amazon_seller_count = sellerCount;
                 if (soldByAmazon !== null)         metaUpdate.sold_by_amazon      = soldByAmazon;
                 if (pauseReasonToWrite !== undefined) metaUpdate.pause_reason     = pauseReasonToWrite;
