@@ -617,6 +617,12 @@ export const UpdaterPage: React.FC = () => {
                                             ? `${syncJob.processed_count || 0} / ${syncJob.total_products || '?'} productos`
                                             : `${syncJob.updated_count || 0} actualizados · ${syncJob.error_count || 0} errores · ${formatDate(syncJob.finished_at)}`}
                                     </p>
+                                    {syncJob.status !== 'running' && products.filter(p => p.shippingSyncBlocked).length > 0 && (
+                                        <p className="text-xs text-amber-600 dark:text-amber-400 mt-0.5 flex items-center gap-1">
+                                            <span className="material-symbols-outlined text-[13px]">warning</span>
+                                            "0 errores" no incluye el tiempo de envío: Mercado Libre rechazó ese campo en {products.filter(p => p.shippingSyncBlocked).length} producto(s) — el resto del producto sí se actualizó. Ver detalle abajo.
+                                        </p>
+                                    )}
                                 </div>
                             </div>
                             {syncJob.status === 'running' && (
