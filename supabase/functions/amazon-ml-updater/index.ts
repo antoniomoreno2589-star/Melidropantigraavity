@@ -1121,48 +1121,82 @@ async function fetchAmazonImages(
     return results;
 }
 
+// Amazon's documented Product Pricing v0 limits, shared by every call this
+// account makes in the NA region (USD and MXN marketplaces draw from the same
+// bucket): getItemOffersBatch 0.1 req/s burst 1 — lowered from 0.5 in 2023 —
+// and getItemOffers 0.5 req/s burst 1. Confirmed live that pacing the
+// per-ASIN fallback at 0.7 s got ~3 of every 4 calls throttled (429).
+// Each call reserves its slot synchronously, so concurrent callers (the USD
+// and MXN fetches run in parallel) still queue up one interval apart.
+function makePacer(intervalMs: number): () => Promise<void> {
+    let nextSlotAt = 0;
+    return async () => {
+        const now  = Date.now();
+        const slot = Math.max(now, nextSlotAt);
+        nextSlotAt = slot + intervalMs;
+        if (slot > now) await new Promise(r => setTimeout(r, slot - now));
+    };
+}
+const paceOffersBatch  = makePacer(10_500);
+const paceOffersSingle = makePacer(2_100);
+
 async function fetchOffersBatch(
     endpoint: string,
     accessToken: string,
     asins: string[],
     marketplaceId: string,
-    amazonSellerId: string
+    amazonSellerId: string,
+    // Epoch ms after which the slow per-ASIN fallback stops. At 2.1 s per call
+    // it would otherwise be able to eat the whole edge-function wall-clock
+    // budget and get the invocation killed before any listing is updated.
+    fallbackDeadline: number
 ): Promise<Record<string, AmazonOffers>> {
-    // Use the batch pricing endpoint: 20 ASINs per request, sequential chunks.
-    // Individual endpoint: 1-2 TPS limit → 20 concurrent calls = ~90% 429 errors.
-    // Batch endpoint: 0.5 TPS but processes 20 ASINs per call → 10× more efficient,
-    // 200 ASINs = 10 calls = ~20s total with no rate-limit failures.
+    // Batch pricing endpoint: 20 ASINs per request. Confirmed live that this
+    // failed with HTTP 400 on every single call for as long as the logs go
+    // back — MarketplaceId/ItemCondition were nested in a `queryParams`
+    // object, but getItemOffersBatch expects them at the top level of each
+    // request — so every run silently fell back to one throttled call per
+    // ASIN and most products got no Amazon data at all.
     const offers: Record<string, AmazonOffers> = {};
     const BATCH = 20;
     for (let i = 0; i < asins.length; i += BATCH) {
         const chunk = asins.slice(i, i + BATCH);
         try {
-            const res = await fetch(`${endpoint}/batches/products/pricing/v0/itemOffers`, {
-                method: "POST",
-                headers: { "x-amz-access-token": accessToken, "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    requests: chunk.map(asin => ({
-                        uri: `/products/pricing/v0/items/${asin}/offers`,
-                        method: "GET",
-                        queryParams: { MarketplaceId: marketplaceId, ItemCondition: "New" },
-                    })),
-                }),
-            });
+            const callBatch = async () => {
+                await paceOffersBatch();
+                return fetch(`${endpoint}/batches/products/pricing/v0/itemOffers`, {
+                    method: "POST",
+                    headers: { "x-amz-access-token": accessToken, "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        requests: chunk.map(asin => ({
+                            uri: `/products/pricing/v0/items/${asin}/offers`,
+                            method: "GET",
+                            MarketplaceId: marketplaceId,
+                            ItemCondition: "New",
+                        })),
+                    }),
+                });
+            };
+            let res = await callBatch();
+            if (res.status === 429) {
+                console.log(`[fetchOffersBatch] batch HTTP 429 — retrying once in the next rate-limit slot`);
+                res = await callBatch();
+            }
 
             if (!res.ok) {
-                // Confirmed live: firing all 20 of these concurrently (the comment
-                // above already knew why — "1-2 TPS limit → 20 concurrent calls =
-                // ~90% 429 errors" — this fallback just never followed its own
-                // documented reasoning) is what actually caused a mass false-pause
-                // incident: this fallback only runs when the primary batch call
-                // itself failed (e.g., its own 0.5 TPS limit), so the individual
-                // endpoint was already under pressure, and firing 20 at once on
-                // top of that reliably produced the ~90% 429 rate the comment
-                // warned about. Sequential with a small gap keeps this fallback
-                // under the 1-2 TPS budget instead of instantly blowing past it.
-                console.log(`[fetchOffersBatch] batch HTTP ${res.status} — falling back to individual calls, sequential`);
+                const errBody = await res.text().catch(() => '');
+                console.log(`[fetchOffersBatch] batch HTTP ${res.status} body=${errBody.slice(0, 300)}`);
+                // Confirmed live: firing these 20 concurrently produced a mass of
+                // 429s that were once read as "zero offers" and paused live
+                // listings. One at a time, in getItemOffers' own rate-limit slots.
+                console.log(`[fetchOffersBatch] falling back to individual calls, sequential`);
                 for (const asin of chunk) {
+                    if (Date.now() > fallbackDeadline) {
+                        console.log(`[fetchOffersBatch] individual fallback time budget used up — leaving asin=${asin} and the rest of this chunk undetermined this cycle`);
+                        break;
+                    }
                     try {
+                        await paceOffersSingle();
                         const result = await fetchAmazonOffers(endpoint, asin, accessToken, marketplaceId, amazonSellerId);
                         // null means fetchAmazonOffers couldn't determine availability
                         // this cycle (HTTP failure, timeout, etc.) — leave that ASIN
@@ -1174,14 +1208,24 @@ async function fetchOffersBatch(
                     } catch (e) {
                         console.error(`[fetchOffersBatch] individual fallback error for asin=${asin}:`, e);
                     }
-                    await new Promise(r => setTimeout(r, 700));
                 }
                 continue;
             }
 
             const data = await res.json();
-            (data?.responses ?? []).forEach((resp: any, idx: number) => {
-                const asin = chunk[idx];
+            const responses: any[] = data?.responses ?? [];
+            // A per-item 404/400 below is read as "confirmed zero offers", which
+            // pauses the listing. If NO item in the batch came back 200, that's
+            // far more likely a request-shape problem than every product
+            // vanishing at once — leave them undetermined instead of risking a
+            // repeat of the mass false-pause incident.
+            const anyItemOk = responses.some((r: any) => r?.status?.statusCode === 200);
+            if (!anyItemOk) {
+                console.error(`[fetchOffersBatch] no item in batch returned 200 (statuses: ${responses.map((r: any) => r?.status?.statusCode).join(',')}) — leaving all ${chunk.length} undetermined. First: ${JSON.stringify(responses[0] ?? null).slice(0, 300)}`);
+                continue;
+            }
+            responses.forEach((resp: any, idx: number) => {
+                const asin = resp?.request?.Asin ?? resp?.body?.payload?.ASIN ?? chunk[idx];
                 if (!asin) return;
                 const statusCode = resp?.status?.statusCode ?? 0;
                 if (statusCode === 404 || statusCode === 400) {
@@ -1786,9 +1830,13 @@ Deno.serve(async (req) => {
             const usdAsins = products.filter((p: any) => (p.currency ?? 'USD') !== 'MXN').map((p: any) => p.sku);
             const mxnAsins = products.filter((p: any) => (p.currency ?? 'USD') === 'MXN').map((p: any) => p.sku);
 
+            // Shared by every fetchOffersBatch call below (incl. the rechecks):
+            // at most ~60 s of slow per-ASIN fallback per invocation, leaving
+            // room for the Mercado Libre updates within the wall-clock limit.
+            const offersFallbackDeadline = Date.now() + 60_000;
             const [usdOffers, mxnOffers] = await Promise.all([
-                usdAsins.length ? fetchOffersBatch(endpoint, accessToken, usdAsins, MARKETPLACE_USA, AMAZON_SELLER_USA) : Promise.resolve({}),
-                mxnAsins.length ? fetchOffersBatch(endpoint, accessToken, mxnAsins, MARKETPLACE_MXN, AMAZON_SELLER_MXN) : Promise.resolve({}),
+                usdAsins.length ? fetchOffersBatch(endpoint, accessToken, usdAsins, MARKETPLACE_USA, AMAZON_SELLER_USA, offersFallbackDeadline) : Promise.resolve({}),
+                mxnAsins.length ? fetchOffersBatch(endpoint, accessToken, mxnAsins, MARKETPLACE_MXN, AMAZON_SELLER_MXN, offersFallbackDeadline) : Promise.resolve({}),
             ]);
             const asinOffers: Record<string, AmazonOffers> = { ...usdOffers, ...mxnOffers };
 
@@ -1799,17 +1847,22 @@ Deno.serve(async (req) => {
             // listing that's actually for sale. Before trusting a 0-offer result,
             // double-check the OTHER marketplace — only for the ASINs that came back
             // empty, so the common (correctly-tagged) case pays no extra cost.
+            // Only ASINs Amazon actually confirmed at zero — not ones whose fetch
+            // failed (throttled, network). Confirmed live: a throttled MX product
+            // (B07HQBRGNT) got re-queried on Amazon USA, which would have swapped
+            // in the wrong marketplace's offer had one existed there, and burned
+            // scarce rate-limit budget either way.
             const zeroOfferAsins = (products as any[])
                 .map((p: any) => p.sku)
-                .filter((sku: string) => (asinOffers[sku]?.sellerCount ?? 0) === 0);
+                .filter((sku: string) => asinOffers[sku] !== undefined && asinOffers[sku].sellerCount === 0);
             if (zeroOfferAsins.length > 0) {
                 const usdSet = new Set(usdAsins);
                 const recheckUsd = zeroOfferAsins.filter((sku: string) => !usdSet.has(sku)); // was queried MXN → try USA
                 const recheckMxn = zeroOfferAsins.filter((sku: string) => usdSet.has(sku));  // was queried USA → try MXN
                 console.log(`[amazon-ml-updater] ${zeroOfferAsins.length} ASIN(s) came back with 0 offers — double-checking the other marketplace before pausing`);
                 const [recheckUsdOffers, recheckMxnOffers] = await Promise.all([
-                    recheckUsd.length ? fetchOffersBatch(endpoint, accessToken, recheckUsd, MARKETPLACE_USA, AMAZON_SELLER_USA) : Promise.resolve({}),
-                    recheckMxn.length ? fetchOffersBatch(endpoint, accessToken, recheckMxn, MARKETPLACE_MXN, AMAZON_SELLER_MXN) : Promise.resolve({}),
+                    recheckUsd.length ? fetchOffersBatch(endpoint, accessToken, recheckUsd, MARKETPLACE_USA, AMAZON_SELLER_USA, offersFallbackDeadline) : Promise.resolve({}),
+                    recheckMxn.length ? fetchOffersBatch(endpoint, accessToken, recheckMxn, MARKETPLACE_MXN, AMAZON_SELLER_MXN, offersFallbackDeadline) : Promise.resolve({}),
                 ]);
                 for (const [sku, offer] of Object.entries({ ...recheckUsdOffers, ...recheckMxnOffers })) {
                     if ((offer as AmazonOffers).sellerCount > 0) {
@@ -2092,7 +2145,15 @@ Deno.serve(async (req) => {
                 // Runs on its own — independent of whether price/stock changed —
                 // and records its own outcome in shipping_sync_blocked/_reason,
                 // which the Updater page's ⚠ badge reads.
-                if (syncParams.shipping && cachedShippingDays !== null && cachedShippingDays + prepDays > 0) {
+                // Fixed mode derives preparation time from Amazon's offer data. When
+                // that couldn't be fetched this cycle, leave whatever ML shows alone
+                // rather than write a guessed default — confirmed live: B07HQBRGNT,
+                // whose only offer ships from Greece (23 days), got the México
+                // default (2 days) because every fetch for it was throttled.
+                const noAmazonData = updateMode === 'fixed' && offers === undefined;
+                if (syncParams.shipping && noAmazonData) {
+                    debug.manufacturingTime = { skipped: 'sin datos de Amazon en este ciclo' };
+                } else if (syncParams.shipping && cachedShippingDays !== null && cachedShippingDays + prepDays > 0) {
                     const targetDays = cachedShippingDays + prepDays;
                     const mt = await syncManufacturingTime(meliId, targetDays, mlToken);
                     debug.manufacturingTime = { target: targetDays, previous: mt.previous, ok: mt.ok, changed: mt.changed, error: mt.error };
