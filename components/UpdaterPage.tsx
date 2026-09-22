@@ -87,6 +87,11 @@ export const UpdaterPage: React.FC = () => {
     // response already carries a full debug array (one entry per product, not
     // just an aggregate count), it just wasn't being read on this end before.
     const [lastRunErrors, setLastRunErrors] = useState<{ sku: string; message: string }[]>([]);
+    // Fields ML silently stripped from a successful update this run, other than
+    // 'shipping' (that one already has its own persistent, per-product badge —
+    // see shipping_sync_blocked/shipping_block_reason). A stripped field never
+    // shows up in lastRunErrors above since the overall update still succeeded.
+    const [lastRunStripped, setLastRunStripped] = useState<{ sku: string; fields: string[] }[]>([]);
     const [prepDays, setPrepDays] = useState<number>(3);
     const [postalCode, setPostalCode] = useState<string>('');
     const [scrapeDebug, setScrapeDebug] = useState<{ product: Product; result: any } | null>(null);
@@ -529,6 +534,11 @@ export const UpdaterPage: React.FC = () => {
                             .filter((d: any) => typeof d.mlResult === 'string' && d.mlResult.startsWith('error'))
                             .map((d: any) => ({ sku: d.sku ?? d.meliId ?? '?', message: d.mlResult.replace(/^error:\s*/, '') }))
                     );
+                    setLastRunStripped(
+                        s.debug
+                            .filter((d: any) => Array.isArray(d.strippedFields) && d.strippedFields.some((f: string) => f !== 'shipping'))
+                            .map((d: any) => ({ sku: d.sku ?? d.meliId ?? '?', fields: d.strippedFields.filter((f: string) => f !== 'shipping') }))
+                    );
                 }
             } else {
                 setSyncResult(`❌ Error: ${data.error ?? data.message ?? 'Error desconocido'}`);
@@ -843,6 +853,22 @@ export const UpdaterPage: React.FC = () => {
                                     <div key={i} className="text-xs font-mono">
                                         <span className="font-bold text-slate-700 dark:text-slate-300">{e.sku}:</span>{' '}
                                         <span className="text-red-500">{e.message}</span>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+                    {lastRunStripped.length > 0 && (
+                        <div className="px-6 pb-4">
+                            <div className="flex items-center gap-1.5 text-xs font-bold text-amber-600 dark:text-amber-400 mb-1.5">
+                                <span className="material-symbols-outlined text-[14px]">warning</span>
+                                {lastRunStripped.length} producto{lastRunStripped.length !== 1 ? 's' : ''} con campo(s) rechazado(s) por ML (el resto sí se actualizó)
+                            </div>
+                            <div className="space-y-1 max-h-40 overflow-y-auto border border-slate-200 dark:border-slate-700 rounded-lg p-3 bg-slate-50 dark:bg-slate-900/50">
+                                {lastRunStripped.map((e, i) => (
+                                    <div key={i} className="text-xs font-mono">
+                                        <span className="font-bold text-slate-700 dark:text-slate-300">{e.sku}:</span>{' '}
+                                        <span className="text-amber-600 dark:text-amber-400">{e.fields.join(', ')}</span>
                                     </div>
                                 ))}
                             </div>
