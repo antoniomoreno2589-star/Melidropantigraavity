@@ -7,6 +7,12 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 const MELI_API  = "https://api.mercadolibre.com";
 const LWA_URL   = "https://api.amazon.com/auth/o2/token";
 const BATCH_SIZE = 200;
+// Longer than any single invocation can run (edge function wall-clock limit),
+// so a live lease always means someone is really processing; if an invocation
+// dies mid-batch, its lease simply expires and the cron takes over.
+const JOB_LEASE_MS = 10 * 60 * 1000;
+// sync_jobs.locked_until is NOT NULL with this as "free" (its column default).
+const LEASE_FREE = new Date(0).toISOString();
 const PRICE_CONCURRENCY = 20;
 
 const MARKETPLACE_USA = "ATVPDKIKX0DER";
@@ -1653,13 +1659,24 @@ Deno.serve(async (req) => {
 
             if (!meliCreds?.token || !amazonCreds?.refreshToken) continue;
 
-            // When force=true, abandon stale running jobs so we restart from offset 0
+            // Confirmed live: the every-2-minutes cron picked up a 'running' job
+            // that a manual run was still in the middle of, and both processed
+            // the same listings in parallel — writes milliseconds apart, which
+            // Mercado Libre rejects with 409 Conflict. A job may only be
+            // processed by the invocation holding its lease (locked_until).
+            const nowIso     = new Date().toISOString();
+            const leaseUntil = new Date(Date.now() + JOB_LEASE_MS).toISOString();
+            const alreadyRunning = { userId, skipped: true, alreadyRunning: true, reason: "Otra actualización ya está en curso" };
+
+            // When force=true, abandon running jobs so we restart from offset 0 —
+            // but only ones nobody is actively processing (lease free or expired).
             if (forceRun) {
                 await supabase
                     .from("sync_jobs")
-                    .update({ status: "abandoned", finished_at: new Date().toISOString() })
+                    .update({ status: "abandoned", finished_at: nowIso, locked_until: LEASE_FREE })
                     .eq("user_id", userId)
-                    .eq("status", "running");
+                    .eq("status", "running")
+                    .lt("locked_until", nowIso);
             }
 
             const { data: activeJob } = await supabase
@@ -1673,7 +1690,24 @@ Deno.serve(async (req) => {
 
             let job = activeJob;
 
-            if (!job) {
+            if (job) {
+                // Conditional update = atomic claim: if two invocations race here,
+                // Postgres re-checks the WHERE for the second one after the first
+                // commits, so only one of them gets the row back.
+                const { data: claimed } = await supabase
+                    .from("sync_jobs")
+                    .update({ locked_until: leaseUntil })
+                    .eq("id", job.id)
+                    .eq("status", "running")
+                    .lt("locked_until", nowIso)
+                    .select()
+                    .maybeSingle();
+                if (!claimed) {
+                    summary.push(alreadyRunning);
+                    continue;
+                }
+                job = claimed;
+            } else {
                 const { data: lastJob } = await supabase
                     .from("sync_jobs")
                     .select("finished_at")
@@ -1699,16 +1733,21 @@ Deno.serve(async (req) => {
                     .not("sku", "is", null)
                     .neq("sku",  "");
 
+                // Created already holding the lease. sync_jobs_one_running_per_user
+                // rejects this insert if another invocation just created a running
+                // job for the same user — that one wins, this one steps aside.
                 const { data: newJob } = await supabase
                     .from("sync_jobs")
-                    .insert({ user_id: userId, total_products: count ?? 0, status: "running" })
+                    .insert({ user_id: userId, total_products: count ?? 0, status: "running", locked_until: leaseUntil })
                     .select()
                     .single();
 
+                if (!newJob) {
+                    summary.push(alreadyRunning);
+                    continue;
+                }
                 job = newJob;
             }
-
-            if (!job) continue;
 
             const offset = job.next_offset as number;
 
@@ -1730,7 +1769,7 @@ Deno.serve(async (req) => {
             if (!products?.length) {
                 await supabase
                     .from("sync_jobs")
-                    .update({ status: "completed", finished_at: new Date().toISOString(), updated_at: new Date().toISOString() })
+                    .update({ status: "completed", finished_at: new Date().toISOString(), updated_at: new Date().toISOString(), locked_until: LEASE_FREE })
                     .eq("id", job.id);
                 summary.push({ userId, completed: true });
                 continue;
@@ -2091,6 +2130,8 @@ Deno.serve(async (req) => {
                 updated_count:   (job.updated_count   as number) + updated,
                 error_count:     (job.error_count      as number) + errors,
                 updated_at:      new Date().toISOString(),
+                // Batch done — release the lease so the cron can pick up the next one.
+                locked_until:    LEASE_FREE,
             };
             if (isComplete) {
                 jobUpdate.status      = "completed";

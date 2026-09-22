@@ -505,6 +505,8 @@ export const UpdaterPage: React.FC = () => {
 
                 if (!s) {
                     setSyncResult('✅ Sincronización ejecutada (sin cambios).');
+                } else if (s.alreadyRunning) {
+                    setSyncResult('⏳ Ya hay una actualización en curso (puede ser la automática) — espera a que termine; el avance se ve arriba.');
                 } else if (s.skipped) {
                     setSyncResult(`⏳ No es necesario aún (próxima sincronización en ${syncFreqHours}h).`);
                 } else if (s.complete === true) {
