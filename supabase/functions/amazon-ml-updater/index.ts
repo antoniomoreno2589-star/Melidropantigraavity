@@ -1323,7 +1323,20 @@ async function updateMeliItemWithFallbacks(
 
     let attempts = 0;
     while (!result.ok && attempts < 5) {
-        const lockedCauses = (result.cause ?? []).filter((c: any) => c.code === 'field_not_updatable');
+        // Confirmed live (B0006KQH6K): ML doesn't only use the generic
+        // 'field_not_updatable' code — an under_review item rejected `price`
+        // with code 'item.price.not_modifiable' instead, which this filter
+        // used to miss entirely. That took the WHOLE update down (price
+        // wasn't strippable, so nothing was, so the retry loop gave up) and
+        // silently killed stock/shipping/status changes in the same payload
+        // too, even though only price was actually the problem. Any
+        // "<...>.not_modifiable" code is treated the same as
+        // 'field_not_updatable' — the field itself still only comes from
+        // `references`, so this doesn't change what gets stripped, just
+        // which of ML's codes are recognized as "this field, specifically,
+        // is why the request failed."
+        const lockedCauses = (result.cause ?? []).filter((c: any) =>
+            c.code === 'field_not_updatable' || /not_modifiable$/i.test(c.code ?? ''));
         const lockedFields = lockedCauses
             .flatMap((c: any) => c.references ?? [])
             .map((ref: string) => ref.split('.')[0]);
