@@ -1255,6 +1255,31 @@ interface MeliUpdateResult {
     strippedReasons?: Record<string, string>;
 }
 
+// Only called when a shipping update just got blocked — reads back the item's
+// actual shipping config so shipping_block_reason can say WHY it's locked
+// (e.g. Mercado Envíos Full manages handling_time from the fulfillment
+// center, not the seller) instead of just quoting ML's generic error text.
+// Read-only, best-effort: a failure here must never affect the sync result.
+async function fetchItemShippingConfig(
+    meliId: string,
+    token: string
+): Promise<{ logisticType: string | null; mode: string | null; catalogListing: boolean | null } | null> {
+    try {
+        const res = await fetch(`${MELI_API}/items/${meliId}?attributes=shipping,catalog_listing`, {
+            headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!res.ok) return null;
+        const data = await res.json();
+        return {
+            logisticType: data?.shipping?.logistic_type ?? null,
+            mode: data?.shipping?.mode ?? null,
+            catalogListing: data?.catalog_listing ?? null,
+        };
+    } catch {
+        return null;
+    }
+}
+
 async function updateMeliItem(
     meliId: string,
     payload: Record<string, unknown>,
@@ -1958,16 +1983,31 @@ Deno.serve(async (req) => {
                             dbUpdate.shipping_days = cachedShippingDays;
                             dbUpdate.shipping_days_updated_at = new Date().toISOString();
                         }
-                        // Confirmed live: ML can reject shipping.handling_time as
-                        // field_not_updatable for reasons unrelated to Melidrop (an active
-                        // bid/offer on the item, or the listing sitting in under_review
-                        // waiting on a patch) — only flag it when a shipping update was
-                        // actually attempted this cycle, so the UI can explain why the
-                        // displayed value is stale instead of leaving it unexplained.
-                        // Clears itself automatically once ML accepts the field again.
+                        // Confirmed live: ML rejects shipping.handling_time as
+                        // field_not_updatable with has_bids:false on both active and
+                        // under_review listings — not an "active bid" or a transient
+                        // under-review hold as originally assumed, and not specific to
+                        // catalog listings either (confirmed blocked on non-catalog
+                        // ASINs too), and it does not clear on its own over time. Only
+                        // flag it when a shipping update was actually attempted this
+                        // cycle. When newly blocked, also read back the item's real
+                        // shipping config (logistic_type / mode / catalog_listing) so
+                        // shipping_block_reason can point at the actual cause — e.g.
+                        // Mercado Envíos Full manages handling_time from the
+                        // fulfillment center, not the seller — instead of just ML's
+                        // generic error text.
                         if (updatePayload.shipping) {
-                            dbUpdate.shipping_sync_blocked = stripped.has('shipping');
-                            dbUpdate.shipping_block_reason = stripped.has('shipping') ? (result.strippedReasons?.shipping ?? null) : null;
+                            const nowBlocked = stripped.has('shipping');
+                            dbUpdate.shipping_sync_blocked = nowBlocked;
+                            if (nowBlocked) {
+                                const reason = result.strippedReasons?.shipping ?? 'bloqueado';
+                                const cfg = await fetchItemShippingConfig(meliId, mlToken);
+                                dbUpdate.shipping_block_reason = cfg
+                                    ? `${reason} [logistic_type=${cfg.logisticType ?? '?'}, mode=${cfg.mode ?? '?'}, catalog_listing=${cfg.catalogListing ?? '?'}]`
+                                    : reason;
+                            } else {
+                                dbUpdate.shipping_block_reason = null;
+                            }
                         }
                         // Confirmed live (B0BP7P2VD9): self-heal a wrong stored currency so
                         // future cycles route to the right marketplace directly instead of
