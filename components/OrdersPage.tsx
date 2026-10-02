@@ -354,7 +354,7 @@ export const OrdersPage = () => {
     const handleExport = () => {
         const header = 'ID,Comprador,Producto,ASIN,Fecha,Entrega,Estado ML,Total MXN,Neto MXN,Comisión,Estado Amazon,Piezas,Costo Unitario,Costo Total,Envío Devolución,Reembolso,Impuestos,Moneda,Ganancia MXN\n';
         const rows = filteredOrders.map(o => {
-            const currency    = currencyMap[o.amazonAsin] ?? 'USD';
+            const currency    = currencyMap[o.amazonAsin] ?? 'MXN';
             const returnCost  = o.returnShippingCost ?? 0;
             const refundAmt   = o.refundAmount ?? 0;
             const taxAmt      = o.taxAmount ?? 0;

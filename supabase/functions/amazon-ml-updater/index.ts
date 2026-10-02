@@ -1830,7 +1830,7 @@ Deno.serve(async (req) => {
             const usdAsins = products.filter((p: any) => (p.currency ?? 'USD') !== 'MXN').map((p: any) => p.sku);
             const mxnAsins = products.filter((p: any) => (p.currency ?? 'USD') === 'MXN').map((p: any) => p.sku);
 
-            // Shared by every fetchOffersBatch call below (incl. the rechecks):
+            // Shared by both fetchOffersBatch calls below:
             // at most ~60 s of slow per-ASIN fallback per invocation, leaving
             // room for the Mercado Libre updates within the wall-clock limit.
             const offersFallbackDeadline = Date.now() + 60_000;
@@ -1840,37 +1840,17 @@ Deno.serve(async (req) => {
             ]);
             const asinOffers: Record<string, AmazonOffers> = { ...usdOffers, ...mxnOffers };
 
-            // Confirmed live (B0BP7P2VD9): a product's stored `currency` can point at
-            // the wrong marketplace — tagged USD (→ queried USA, 0 offers there) while
-            // a real, live, buybox-winning Amazon offer existed in MX the whole time.
-            // That false "0 offers" reads as isUnavailableOnAmazon and auto-pauses a
-            // listing that's actually for sale. Before trusting a 0-offer result,
-            // double-check the OTHER marketplace — only for the ASINs that came back
-            // empty, so the common (correctly-tagged) case pays no extra cost.
-            // Only ASINs Amazon actually confirmed at zero — not ones whose fetch
-            // failed (throttled, network). Confirmed live: a throttled MX product
-            // (B07HQBRGNT) got re-queried on Amazon USA, which would have swapped
-            // in the wrong marketplace's offer had one existed there, and burned
-            // scarce rate-limit budget either way.
-            const zeroOfferAsins = (products as any[])
-                .map((p: any) => p.sku)
-                .filter((sku: string) => asinOffers[sku] !== undefined && asinOffers[sku].sellerCount === 0);
-            if (zeroOfferAsins.length > 0) {
-                const usdSet = new Set(usdAsins);
-                const recheckUsd = zeroOfferAsins.filter((sku: string) => !usdSet.has(sku)); // was queried MXN → try USA
-                const recheckMxn = zeroOfferAsins.filter((sku: string) => usdSet.has(sku));  // was queried USA → try MXN
-                console.log(`[amazon-ml-updater] ${zeroOfferAsins.length} ASIN(s) came back with 0 offers — double-checking the other marketplace before pausing`);
-                const [recheckUsdOffers, recheckMxnOffers] = await Promise.all([
-                    recheckUsd.length ? fetchOffersBatch(endpoint, accessToken, recheckUsd, MARKETPLACE_USA, AMAZON_SELLER_USA, offersFallbackDeadline) : Promise.resolve({}),
-                    recheckMxn.length ? fetchOffersBatch(endpoint, accessToken, recheckMxn, MARKETPLACE_MXN, AMAZON_SELLER_MXN, offersFallbackDeadline) : Promise.resolve({}),
-                ]);
-                for (const [sku, offer] of Object.entries({ ...recheckUsdOffers, ...recheckMxnOffers })) {
-                    if ((offer as AmazonOffers).sellerCount > 0) {
-                        console.log(`[amazon-ml-updater] sku=${sku} had 0 offers on its labeled-currency marketplace but ${(offer as AmazonOffers).sellerCount} on the other — using that instead`);
-                        asinOffers[sku] = offer as AmazonOffers;
-                    }
-                }
-            }
+            // Each product is priced and timed ONLY from the Amazon marketplace it
+            // was imported from (owner's rule). There used to be a cross-marketplace
+            // fallback here — a product with 0 offers on its own marketplace was
+            // re-queried on the other one and that offer was used instead — plus a
+            // "self-heal" that then rewrote the product's stored currency to match.
+            // Confirmed live that together they flipped products' origin back and
+            // forth between MXN and USD on almost every run (one listing 5 times in
+            // one day), depending only on which marketplace happened to be
+            // throttled that cycle. Removed: a product unavailable on its own
+            // marketplace is one the owner can't buy there, so it pauses as it
+            // should, and reactivates once offers come back.
 
             const asinImages: Record<string, string[]> = {};
             if (syncParams.photos) {
@@ -2064,10 +2044,9 @@ Deno.serve(async (req) => {
                         : (offers?.price ?? null);
                     debug.amazonPrice = amazonPrice;
                     if (amazonPrice) {
-                        // Use the offer's real currency when the marketplace fallback above
-                        // had to pull it from a different market than `currency` implies —
-                        // otherwise a MXN-priced offer could get the USD exchange-rate
-                        // multiplier applied to it (or vice versa), badly mispricing the item.
+                        // Price in whatever currency the offer itself reports — applying
+                        // the USD exchange-rate multiplier to an MXN price (or vice
+                        // versa) would badly misprice the item.
                         const priceCurrency = offers?.currency ?? currency;
                         const newMxn     = calculateMxnPrice(amazonPrice, priceCurrency, exchangeRate, usaRules, mxRules);
                         const currentMxn = (product as any).price_mxn ?? 0;
@@ -2119,13 +2098,6 @@ Deno.serve(async (req) => {
                         if (updatePayload.status && !stripped.has('status'))                          dbUpdate.status               = updatePayload.status;
                         if (sellerCount !== null)             dbUpdate.amazon_seller_count  = sellerCount;
                         if (soldByAmazon !== null)            dbUpdate.sold_by_amazon       = soldByAmazon;
-                        // Confirmed live (B0BP7P2VD9): self-heal a wrong stored currency so
-                        // future cycles route to the right marketplace directly instead of
-                        // needing the zero-offer fallback above on every single run.
-                        if (offers?.currency && offers.currency !== currency) {
-                            console.log(`[amazon-ml-updater] meliId=${meliId} correcting stored currency ${currency} → ${offers.currency}`);
-                            dbUpdate.currency = offers.currency;
-                        }
                         dbUpdate.amazon_available = !isUnavailableOnAmazon;
                         await supabase.from("products").update(dbUpdate).eq("meli_id", meliId);
                         updated++;
