@@ -196,7 +196,13 @@ class AmazonService {
                 description,
                 bulletPoints,
                 price: winningOffer?.ListingPrice?.Amount ?? pricing?.Summary?.LowestPrices?.[0]?.ListingPrice?.Amount ?? 0,
-                currency: winningOffer?.ListingPrice?.CurrencyCode ?? pricing?.Summary?.LowestPrices?.[0]?.ListingPrice?.CurrencyCode ?? 'USD',
+                // The product's origin is the marketplace it was looked up on —
+                // Amazon México unless a marketplace is passed (amazon-proxy's
+                // default) — whether or not an offer came back this time.
+                // Confirmed live: deriving it from the offer and falling back to
+                // 'USD' when Amazon México returned none (throttled, or briefly
+                // no offers) labeled México-sourced products as Amazon USA.
+                currency: marketplace === 'ATVPDKIKX0DER' ? 'USD' : 'MXN',
                 imageUrl: primaryImage,
                 images: uniqueImages.slice(0, 10),
                 brand,

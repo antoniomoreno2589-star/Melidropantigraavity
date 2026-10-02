@@ -277,7 +277,7 @@ export function useAmazonImporter() {
 
         setLoadingAsins(true);
         const initial: LoadedProduct[] = asins.map(asin => ({
-            asin, title: '', description: '', brand: '', price: 0, currency: 'USD',
+            asin, title: '', description: '', brand: '', price: 0, currency: 'MXN',
             imageUrl: '', images: [], category: '', attributes: {}, loading: true, error: null
         }));
         setLoadedProducts(initial);
@@ -335,7 +335,7 @@ export function useAmazonImporter() {
                 } catch (e: any) {
                     console.error(`[Melidrop] Failed to load ${asin} after retries:`, e.message);
                     results[i] = {
-                        asin, title: '', description: '', brand: '', price: 0, currency: 'USD',
+                        asin, title: '', description: '', brand: '', price: 0, currency: 'MXN',
                         imageUrl: '', images: [], category: '', attributes: {}, _failed: true, _error: e.message,
                     };
                 }
@@ -787,7 +787,7 @@ export function useAmazonImporter() {
 
     // ── Pricing helpers ────────────────────────────────────────────────
     const calculateMexicoPrice = (cost: number, currency: string): number => {
-        const isUSD = (currency?.toUpperCase() ?? 'USD') !== 'MXN';
+        const isUSD = (currency?.toUpperCase() ?? 'MXN') !== 'MXN';
         const exchangeRate = parseFloat(localStorage.getItem('melidrop_exchange_rate') || '18.5');
         const rulesKey = isUSD ? 'melidrop_usa_rules' : 'melidrop_mx_rules';
         const savedRulesRaw = localStorage.getItem(rulesKey);
@@ -865,7 +865,7 @@ export function useAmazonImporter() {
             ...(!userAttrIds.has('MODEL') && catAttrIds.has('MODEL') ? [{ id: 'MODEL', value_name: product.brand || processed.asin }] : []),
         ];
 
-        const currency = product.currency || 'USD';
+        const currency = product.currency || 'MXN';
         const isUSD = currency.toUpperCase() !== 'MXN';
         let priceMXN = calculateMexicoPrice(product.price || 0, currency);
 
@@ -1211,7 +1211,7 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
                     sku: processed.asin,
                     price_mxn: payload.price,
                     cost_usd: loadedProducts.find(p => p.asin === processed.asin)?.price || 0,
-                    currency: loadedProducts.find(p => p.asin === processed.asin)?.currency ?? 'USD',
+                    currency: loadedProducts.find(p => p.asin === processed.asin)?.currency ?? 'MXN',
                     image_url: processed.images[0]?.url,
                     category: payload.category_id,
                     // publishResult IS ML's raw item response on a fresh publish (status
@@ -1581,7 +1581,7 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
                             stock_meli:       publishPayload.available_quantity,
                             status:           isDraft ? 'inactive' : 'active',
                             image_url:        processed.images[0]?.url ?? null,
-                            currency:         product?.currency ?? 'USD',
+                            currency:         product?.currency ?? 'MXN',
                             description_text: descriptionText ?? null,
                             last_updated:     new Date().toISOString(),
                             in_updater:       !isDraft,
