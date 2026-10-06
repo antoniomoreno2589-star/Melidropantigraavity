@@ -912,7 +912,7 @@ class MeliService {
     // body for that id (e.g. status 404 for a listing that no longer exists,
     // the same shape getItem returns). Throws if the request itself fails.
     async getItemsStatus(itemIds: string[], customToken?: string): Promise<any[]> {
-        const response = await this.fetchWithAuth(`/items?ids=${itemIds.join(',')}&attributes=id,status,sub_status`, {}, customToken);
+        const response = await this.fetchWithAuth(`/items?ids=${itemIds.join(',')}&attributes=id,status,sub_status,seller_id`, {}, customToken);
         if (!response.ok) throw new Error(`ML multiget HTTP ${response.status}`);
         const entries: any[] = await response.json();
         return itemIds.map((id, idx) =>

@@ -21,7 +21,7 @@ interface TestProduct extends Product {
 // into the same single-select as the ML status pills, so picking "Activa"
 // silently cleared "No publicados" and vice versa, with no way to combine
 // them despite that being the exact combination sellers want most often.
-type SandboxStatusFilter = 'all' | 'active' | 'paused' | 'under_review' | 'inactive' | 'deleted_by_ml';
+type SandboxStatusFilter = 'all' | 'active' | 'paused' | 'under_review' | 'inactive' | 'deleted_by_ml' | 'unpublished';
 type PublishedFilter = 'all' | 'published' | 'not_published';
 
 // ML represents "removed by Mercado Libre" as status=closed plus a "deleted"
@@ -30,6 +30,13 @@ type PublishedFilter = 'all' | 'published' | 'not_published';
 // table immediately on delete, so they can't be mistaken for this bucket).
 const isDeletedByMl = (p: TestProduct): boolean =>
     p.status === 'closed' && Array.isArray(p.subStatus) && p.subStatus.includes('deleted');
+
+// A row with no meli_id never became a listing anywhere: the sandbox test
+// publish failed, and the importer kept the row (with its production payload)
+// so it can still be published for real. Its stored status is just the
+// importer's 'active' fallback — confirmed live that 454 such rows were being
+// counted and shown as active listings that don't exist on Mercado Libre.
+const isUnpublished = (p: TestProduct): boolean => !p.meliId;
 
 export const TestProductsPage = () => {
     const [activeTab, setActiveTab] = useState<'config' | 'products'>('products');
@@ -147,7 +154,9 @@ export const TestProductsPage = () => {
 
             // 2. ML status filter (the pill row)
             let matchesStatus = true;
-            if (filterStatus === 'active') matchesStatus = p.status === 'active';
+            if (filterStatus === 'unpublished') matchesStatus = isUnpublished(p);
+            else if (filterStatus !== 'all' && isUnpublished(p)) matchesStatus = false;
+            else if (filterStatus === 'active') matchesStatus = p.status === 'active';
             else if (filterStatus === 'paused') matchesStatus = p.status === 'paused';
             else if (filterStatus === 'under_review') matchesStatus = ['under_review', 'not_yet_active', 'payment_required'].includes(p.status);
             else if (filterStatus === 'inactive') matchesStatus = ['inactive', 'closed'].includes(p.status) && !isDeletedByMl(p);
@@ -179,8 +188,9 @@ export const TestProductsPage = () => {
     // Counts for the status pill row — always over the full catalog, not the
     // currently filtered/searched subset, same as ML's own seller panel.
     const statusCounts = useMemo(() => {
-        const counts = { active: 0, paused: 0, review: 0, inactive: 0, deletedByMl: 0 };
+        const counts = { active: 0, paused: 0, review: 0, inactive: 0, deletedByMl: 0, unpublished: 0 };
         for (const p of testProducts) {
+            if (isUnpublished(p)) { counts.unpublished++; continue; }
             if (isDeletedByMl(p)) { counts.deletedByMl++; continue; }
             if (p.status === 'active') counts.active++;
             else if (p.status === 'paused') counts.paused++;
@@ -227,24 +237,41 @@ export const TestProductsPage = () => {
             // the test-user token (an auth call plus a DB read) for every one of
             // them. Now: the token once, and ML's 20-ids-per-request multi-get.
             const testToken = (await meliService.autoRefreshTestUserToken()) ?? undefined;
+            // Whose listings these really are — a listing owned by another account
+            // can't show up in the test user's own Mercado Libre panel.
+            const testUserId = testToken ? (await meliService.getUserInfoByToken(testToken))?.id : undefined;
             const BATCH = 20;
-            const batches: { items: TestProduct[]; token?: string }[] = [];
+            const batches: { items: TestProduct[]; token?: string; sandbox: boolean }[] = [];
             const sandboxItems = withMeliId.filter(p => !p.isPublishedToReal);
             const realItems = withMeliId.filter(p => p.isPublishedToReal);
-            for (let i = 0; i < sandboxItems.length; i += BATCH) batches.push({ items: sandboxItems.slice(i, i + BATCH), token: testToken });
-            for (let i = 0; i < realItems.length; i += BATCH) batches.push({ items: realItems.slice(i, i + BATCH) });
+            for (let i = 0; i < sandboxItems.length; i += BATCH) batches.push({ items: sandboxItems.slice(i, i + BATCH), token: testToken, sandbox: true });
+            for (let i = 0; i < realItems.length; i += BATCH) batches.push({ items: realItems.slice(i, i + BATCH), sandbox: false });
+
+            // What ML actually answered for the test account's listings — this
+            // used to end with a bare "completada" even when every request failed.
+            const mlStatusCounts: Record<string, number> = {};
+            let notFound = 0;
+            let otherAccount = 0;
+            let failed = 0;
 
             const CONCURRENCY = 4;
             let nextBatch = 0;
             let done = 0;
             const worker = async () => {
                 while (nextBatch < batches.length) {
-                    const { items, token } = batches[nextBatch++];
+                    const { items, token, sandbox } = batches[nextBatch++];
                     try {
                         const results = await meliService.getItemsStatus(items.map(p => p.meliId!), token);
                         await Promise.all(items.map(async (p, idx) => {
                             const item = results[idx];
-                            if (!item?.status) return;
+                            if (!item?.status) { failed++; return; }
+                            if (sandbox) {
+                                if (item.error || typeof item.status === 'number') notFound++;
+                                else {
+                                    mlStatusCounts[item.status] = (mlStatusCounts[item.status] ?? 0) + 1;
+                                    if (testUserId && item.seller_id && String(item.seller_id) !== String(testUserId)) otherAccount++;
+                                }
+                            }
                             const subStatus = Array.isArray(item.sub_status) ? item.sub_status : [];
                             const changed = item.status !== p.status
                                 || JSON.stringify(subStatus) !== JSON.stringify(p.subStatus || []);
@@ -253,6 +280,7 @@ export const TestProductsPage = () => {
                             }
                         }));
                     } catch (e) {
+                        failed += items.length;
                         console.error(`[Melidrop] Failed to refresh status for ${items.length} test products:`, e);
                     }
                     done += items.length;
@@ -263,7 +291,26 @@ export const TestProductsPage = () => {
 
             const data = await api.testProducts.list();
             setTestProducts(data);
-            alert('Sincronización con el Sandbox de Mercado Libre completada.');
+
+            const statusLabels: Record<string, string> = {
+                active: 'Activas', paused: 'Pausadas', under_review: 'En revisión',
+                not_yet_active: 'En revisión (aún no activas)', payment_required: 'Pago pendiente',
+                closed: 'Cerradas', inactive: 'Inactivas',
+            };
+            const reported = Object.values(mlStatusCounts).reduce((a, b) => a + b, 0);
+            const lines = [
+                'Sincronización completada.',
+                '',
+                `Mercado Libre reporta ${reported.toLocaleString()} publicaciones de prueba:`,
+                ...Object.entries(mlStatusCounts)
+                    .sort((a, b) => b[1] - a[1])
+                    .map(([status, n]) => `• ${statusLabels[status] ?? status}: ${n.toLocaleString()}`),
+            ];
+            if (otherAccount > 0) lines.push('', `⚠️ ${otherAccount.toLocaleString()} de ellas pertenecen a OTRA cuenta, no a tu usuario de prueba (por eso no aparecen en su panel de Mercado Libre).`);
+            if (!testUserId) lines.push('', 'No se pudo verificar a qué cuenta pertenece cada publicación (no hay acceso del usuario de prueba).');
+            if (notFound > 0) lines.push('', `${notFound.toLocaleString()} ya no existen en Mercado Libre.`);
+            if (failed > 0) lines.push('', `⚠️ ${failed.toLocaleString()} no se pudieron consultar. Vuelve a sincronizar.`);
+            alert(lines.join('\n'));
         } catch (err) {
             console.error("Sync error:", err);
         } finally {
@@ -634,6 +681,9 @@ export const TestProductsPage = () => {
     // before the plain status switch so a closed+deleted item reads as "Eliminado
     // por ML" instead of just "Cerrado".
     const statusBadge = (p: TestProduct): { label: string; cls: string } => {
+        if (isUnpublished(p)) {
+            return { label: 'Sin publicar', cls: 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400' };
+        }
         if (isDeletedByMl(p)) {
             return { label: 'Eliminado por ML', cls: 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400' };
         }
@@ -900,9 +950,11 @@ export const TestProductsPage = () => {
                                     { key: 'paused', label: 'Pausada', count: statusCounts.paused },
                                     { key: 'under_review', label: 'Revisando', count: statusCounts.review },
                                     { key: 'inactive', label: 'Inactiva', count: statusCounts.inactive },
-                                ] as { key: SandboxStatusFilter; label: string; count: number }[]).map(s => (
+                                    { key: 'unpublished', label: 'Sin publicar', count: statusCounts.unpublished, title: 'Su prueba en la cuenta de prueba falló, así que no existen en Mercado Libre. Se guardaron para que puedas publicarlos en tu cuenta real.' },
+                                ] as { key: SandboxStatusFilter; label: string; count: number; title?: string }[]).map(s => (
                                     <button
                                         key={s.key}
+                                        title={s.title}
                                         onClick={() => setFilterStatus(prev => prev === s.key ? 'all' : s.key)}
                                         className={`font-bold flex items-baseline gap-1.5 transition-colors ${filterStatus === s.key ? 'text-primary' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'}`}
                                     >
