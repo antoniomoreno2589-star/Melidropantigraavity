@@ -50,6 +50,7 @@ export const TestProductsPage = () => {
     } | null>(null);
     const bulkPublishCancelRef = useRef(false);
     const [isSyncing, setIsSyncing] = useState(false);
+    const [syncProgress, setSyncProgress] = useState<{ done: number; total: number } | null>(null);
     const [filterStatus, setFilterStatus] = useState<SandboxStatusFilter>('all');
     const [filterPublished, setFilterPublished] = useState<PublishedFilter>('all');
     const [dateFilterType, setDateFilterType] = useState<'created' | 'updated' | 'published'>('created');
@@ -219,28 +220,46 @@ export const TestProductsPage = () => {
             // Actually ask ML for each item's current status and persist any change.
             const current = await api.testProducts.list();
             const withMeliId = current.filter(p => p.meliId);
-            const CONCURRENCY = 5;
-            let nextIndex = 0;
+            setSyncProgress({ done: 0, total: withMeliId.length });
+
+            // Confirmed slow live (3,581 test products ≈ 20-30 min, no progress
+            // shown): this used to make one ML request per product, and re-read
+            // the test-user token (an auth call plus a DB read) for every one of
+            // them. Now: the token once, and ML's 20-ids-per-request multi-get.
+            const testToken = (await meliService.autoRefreshTestUserToken()) ?? undefined;
+            const BATCH = 20;
+            const batches: { items: TestProduct[]; token?: string }[] = [];
+            const sandboxItems = withMeliId.filter(p => !p.isPublishedToReal);
+            const realItems = withMeliId.filter(p => p.isPublishedToReal);
+            for (let i = 0; i < sandboxItems.length; i += BATCH) batches.push({ items: sandboxItems.slice(i, i + BATCH), token: testToken });
+            for (let i = 0; i < realItems.length; i += BATCH) batches.push({ items: realItems.slice(i, i + BATCH) });
+
+            const CONCURRENCY = 4;
+            let nextBatch = 0;
+            let done = 0;
             const worker = async () => {
-                while (nextIndex < withMeliId.length) {
-                    const p = withMeliId[nextIndex++];
+                while (nextBatch < batches.length) {
+                    const { items, token } = batches[nextBatch++];
                     try {
-                        const token = await resolveItemToken(p);
-                        const item = await meliService.getItem(p.meliId!, token);
-                        if (item?.status) {
+                        const results = await meliService.getItemsStatus(items.map(p => p.meliId!), token);
+                        await Promise.all(items.map(async (p, idx) => {
+                            const item = results[idx];
+                            if (!item?.status) return;
                             const subStatus = Array.isArray(item.sub_status) ? item.sub_status : [];
                             const changed = item.status !== p.status
                                 || JSON.stringify(subStatus) !== JSON.stringify(p.subStatus || []);
                             if (changed) {
                                 await api.testProducts.update(p.id, { status: item.status, sub_status: subStatus });
                             }
-                        }
+                        }));
                     } catch (e) {
-                        console.error(`[Melidrop] Failed to refresh status for ${p.asin}:`, e);
+                        console.error(`[Melidrop] Failed to refresh status for ${items.length} test products:`, e);
                     }
+                    done += items.length;
+                    setSyncProgress({ done, total: withMeliId.length });
                 }
             };
-            await Promise.all(Array.from({ length: Math.min(CONCURRENCY, withMeliId.length) }, () => worker()));
+            await Promise.all(Array.from({ length: Math.min(CONCURRENCY, batches.length) }, () => worker()));
 
             const data = await api.testProducts.list();
             setTestProducts(data);
@@ -249,6 +268,7 @@ export const TestProductsPage = () => {
             console.error("Sync error:", err);
         } finally {
             setIsSyncing(false);
+            setSyncProgress(null);
         }
     };
 
@@ -866,7 +886,9 @@ export const TestProductsPage = () => {
                                         className="flex items-center gap-2 px-4 py-2 text-sm font-bold text-primary hover:bg-primary/10 rounded-lg transition-all border border-primary/20 disabled:opacity-50 whitespace-nowrap"
                                     >
                                         <span className={`material-symbols-outlined text-[20px] ${isSyncing ? 'animate-spin' : ''}`}>sync</span>
-                                        {isSyncing ? 'Sincronizando...' : 'Sincronizar Test'}
+                                        {isSyncing
+                                            ? (syncProgress ? `Sincronizando ${syncProgress.done.toLocaleString()} / ${syncProgress.total.toLocaleString()}` : 'Sincronizando...')
+                                            : 'Sincronizar Test'}
                                     </button>
                                 </div>
                             </div>

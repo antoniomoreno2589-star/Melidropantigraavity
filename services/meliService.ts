@@ -907,6 +907,19 @@ class MeliService {
         } catch (e) { return null; }
     }
 
+    // ML's multi-get: up to 20 ids per request, only the status fields. Returns
+    // one entry per requested id, in order — the item body, or ML's own error
+    // body for that id (e.g. status 404 for a listing that no longer exists,
+    // the same shape getItem returns). Throws if the request itself fails.
+    async getItemsStatus(itemIds: string[], customToken?: string): Promise<any[]> {
+        const response = await this.fetchWithAuth(`/items?ids=${itemIds.join(',')}&attributes=id,status,sub_status`, {}, customToken);
+        if (!response.ok) throw new Error(`ML multiget HTTP ${response.status}`);
+        const entries: any[] = await response.json();
+        return itemIds.map((id, idx) =>
+            (entries.find(e => e?.body?.id === id) ?? entries[idx])?.body ?? null
+        );
+    }
+
     async getItems(itemIds: string[]) {
         if (!itemIds || !itemIds.length) return [];
         try {
