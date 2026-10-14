@@ -41,11 +41,11 @@ const LWA_TOKEN_URL = 'https://api.amazon.com/auth/o2/token';
 const tokenCache = new Map<string, { accessToken: string; expiresAt: number }>();
 
 async function getAccessToken(credentials: AmazonCredentials): Promise<string> {
-    // The client secret has to be part of the key. Confirmed live: after the
-    // owner rotated an expired LWA client secret, this kept serving the access
-    // token minted with the old one (same client ID + refresh token), so every
-    // test of the new, valid secret failed with "The LWA secret token you
-    // provided has expired" for up to an hour.
+    // The client secret has to be part of the key: AmazonConnect tests a newly
+    // pasted secret before saving it, and with client ID + refresh token alone
+    // a warm isolate would answer that test with a token minted from a
+    // different secret — failing a good new secret after a rotation, or
+    // passing a wrong one that then gets saved.
     const cacheKey = `${credentials.clientId}:${credentials.clientSecret}:${credentials.refreshToken}`;
     const cached = tokenCache.get(cacheKey);
     if (cached && Date.now() < cached.expiresAt) {
