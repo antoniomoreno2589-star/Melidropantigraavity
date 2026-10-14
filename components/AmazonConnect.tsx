@@ -1,6 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { amazonService, AmazonCredentials } from '../services/amazonService';
 
+const describeAmazonError = (msg?: string) =>
+    msg && /expired/i.test(msg)
+        ? 'Amazon rechazó la clave secreta (Client Secret): está vencida. Renuévala en Seller Central y pega aquí la nueva.'
+        : `Amazon rechazó las credenciales: ${msg ?? 'error desconocido'}`;
+
 export const AmazonConnect: React.FC = () => {
     const [creds, setCreds] = useState<AmazonCredentials>({
         sellerId: '',
@@ -12,6 +17,9 @@ export const AmazonConnect: React.FC = () => {
     const [isConnected, setIsConnected] = useState(false);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState('');
+    const [newSecret, setNewSecret] = useState('');
+    const [updatingSecret, setUpdatingSecret] = useState(false);
+    const [secretMsg, setSecretMsg] = useState('');
 
     useEffect(() => {
         const stored = amazonService.getCredentials();
@@ -31,18 +39,44 @@ export const AmazonConnect: React.FC = () => {
         setError('');
 
         try {
-            const valid = await amazonService.testConnection(creds);
-            if (valid) {
-                amazonService.saveCredentials(creds);
-                setIsConnected(true);
-                alert('Conexión con Amazon exitosa');
-            } else {
-                setError('Credenciales inválidas. Por favor verifica tus datos.');
+            const test = await amazonService.testConnection(creds);
+            if (!test.ok) {
+                setError(describeAmazonError(test.error));
+                return;
             }
-        } catch (err) {
-            setError('Error al conectar con Amazon.');
+            await amazonService.saveCredentials(creds);
+            setIsConnected(true);
+            alert('Conexión con Amazon exitosa');
+        } catch (err: any) {
+            setError(err?.message ?? 'Error al conectar con Amazon.');
         } finally {
             setLoading(false);
+        }
+    };
+
+    // Amazon expires the LWA client secret every 180 days. Swapping in just the
+    // new one, verified against Amazon before saving, avoids disconnecting and
+    // re-entering every credential (including the refresh token) each time.
+    const handleUpdateSecret = async (e: React.FormEvent) => {
+        e.preventDefault();
+        if (!newSecret.trim()) return;
+        setUpdatingSecret(true);
+        setSecretMsg('');
+        try {
+            const updated = { ...creds, clientSecret: newSecret.trim() };
+            const test = await amazonService.testConnection(updated);
+            if (!test.ok) {
+                setSecretMsg(`❌ ${describeAmazonError(test.error)}`);
+                return;
+            }
+            await amazonService.saveCredentials(updated);
+            setCreds(updated);
+            setNewSecret('');
+            setSecretMsg('✅ Clave actualizada y verificada con Amazon.');
+        } catch (err: any) {
+            setSecretMsg(`❌ ${err?.message ?? 'No se pudo actualizar la clave.'}`);
+        } finally {
+            setUpdatingSecret(false);
         }
     };
 
@@ -79,6 +113,27 @@ export const AmazonConnect: React.FC = () => {
                             <p className="font-bold dark:text-white">{creds.region}</p>
                         </div>
                     </div>
+                    <form onSubmit={handleUpdateSecret} className="space-y-2 pt-4 border-t border-slate-100 dark:border-slate-700">
+                        <label className="block text-xs font-bold text-slate-500">Actualizar clave secreta (LWA Client Secret)</label>
+                        <p className="text-xs text-slate-400">Amazon la vence cada 180 días. Renuévala en Seller Central → Desarrollar aplicaciones → "Rotate secret" y pégala aquí.</p>
+                        <div className="flex gap-2">
+                            <input
+                                type="password"
+                                value={newSecret}
+                                onChange={(e) => setNewSecret(e.target.value)}
+                                placeholder="Nueva clave secreta"
+                                className="flex-1 px-3 py-2 border border-slate-300 dark:border-slate-600 rounded-lg dark:bg-slate-900 dark:text-white text-sm focus:ring-2 focus:ring-orange-500 focus:border-transparent outline-none transition-all"
+                            />
+                            <button
+                                type="submit"
+                                disabled={updatingSecret || !newSecret.trim()}
+                                className="bg-[#FF9900] hover:bg-[#ffad33] text-black font-bold px-4 py-2 rounded-lg text-sm shadow-sm transition-all disabled:opacity-50 whitespace-nowrap"
+                            >
+                                {updatingSecret ? 'Verificando...' : 'Probar y guardar'}
+                            </button>
+                        </div>
+                        {secretMsg && <p className={`text-xs font-bold ${secretMsg.startsWith('✅') ? 'text-green-600' : 'text-red-500'}`}>{secretMsg}</p>}
+                    </form>
                     <button
                         onClick={handleDisconnect}
                         className="text-red-500 hover:text-red-700 text-sm font-bold border border-red-200 hover:bg-red-50 px-4 py-2 rounded-lg transition-colors"
