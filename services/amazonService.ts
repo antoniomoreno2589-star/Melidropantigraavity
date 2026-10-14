@@ -35,15 +35,17 @@ class AmazonService {
 
     async saveCredentials(creds: AmazonCredentials) {
         localStorage.setItem(this.credentialsKey, JSON.stringify(creds));
-        
-        // Sync to Supabase
+
+        // Server-side jobs (the Actualizador, scans) read this Supabase copy, not
+        // the browser's — a save that fails silently leaves them on old keys.
         const { data: { user } } = await supabase.auth.getUser();
         if (user) {
-            await supabase.from('user_connections').upsert({
+            const { error } = await supabase.from('user_connections').upsert({
                 user_id: user.id,
                 amazon_credentials: creds,
                 updated_at: new Date().toISOString()
             });
+            if (error) throw new Error(`No se pudieron guardar las credenciales en el servidor: ${error.message}`);
         }
     }
 
@@ -80,8 +82,8 @@ class AmazonService {
         return !!this.getCredentials();
     }
 
-    private async callProxy(action: string, params?: any) {
-        const credentials = this.getCredentials();
+    private async callProxy(action: string, params?: any, credentialsOverride?: AmazonCredentials) {
+        const credentials = credentialsOverride ?? this.getCredentials();
         if (!credentials) {
             throw new Error('No Amazon credentials found');
         }
@@ -108,28 +110,20 @@ class AmazonService {
         return data.data;
     }
 
-    /**
-     * Test the connection. 
-     * In a real implementation, this would call specific valid endpoint like /sellers/v1/marketplaceParticipations
-     */
-    async testConnection(creds: AmazonCredentials): Promise<boolean> {
+    // Tests the given credentials without saving them anywhere. Confirmed live
+    // that the old version (1) temporarily saved them, then "restored" the old
+    // ones, both unawaited — racing the caller's own save, so Supabase could end
+    // up holding the previous, expired client secret while this browser had the
+    // new one; and (2) only refreshed the LWA token, which still succeeds with an
+    // expired client secret — Amazon rejects it only on real SP-API calls. So it
+    // runs a real catalog search instead, and returns Amazon's own error.
+    async testConnection(creds: AmazonCredentials): Promise<{ ok: boolean; error?: string }> {
         try {
-            // Temporarily save credentials for testing
-            const originalCreds = this.getCredentials();
-            this.saveCredentials(creds);
-
-            // Try to refresh token
-            await this.callProxy('refreshToken');
-
-            // Restore original credentials if test was successful
-            if (originalCreds) {
-                this.saveCredentials(originalCreds);
-            }
-
-            return true;
-        } catch (error) {
+            await this.callProxy('searchProducts', { query: 'amazon' }, creds);
+            return { ok: true };
+        } catch (error: any) {
             console.error('Amazon connection test failed:', error);
-            return false;
+            return { ok: false, error: error?.message ?? String(error) };
         }
     }
 
