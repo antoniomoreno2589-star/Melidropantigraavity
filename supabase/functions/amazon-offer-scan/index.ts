@@ -170,6 +170,93 @@ async function runScan(supabase: any, userId: string) {
     return { scanned, singles, remaining };
 }
 
+// PostgREST returns at most 1000 rows per request.
+async function selectAll(build: (from: number, to: number) => any): Promise<any[]> {
+    const rows: any[] = [];
+    for (let from = 0; ; from += 1000) {
+        const { data, error } = await build(from, from + 999);
+        if (error) throw new Error(error.message);
+        rows.push(...(data ?? []));
+        if (!data || data.length < 1000) return rows;
+    }
+}
+
+// Excel runs a cell that starts with = + - @ as a formula, and titles are
+// written by third-party sellers, so those get a leading apostrophe.
+function csvField(value: unknown): string {
+    let s = value == null ? "" : String(value);
+    if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`;
+    return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+
+// The scan's answer as a spreadsheet: every ASIN whose only seller is not
+// Amazon, with the owner's listing title and ML IDs, uploaded to a private
+// bucket and handed back as a signed download link.
+async function exportSingleSellerCsv(supabase: any, userId: string) {
+    const scans = await selectAll((from, to) => supabase
+        .from("asin_offer_scan")
+        .select("asin,seller_ids,buybox_seller_id,offer_count")
+        .eq("user_id", userId)
+        .eq("marketplace_id", MARKETPLACE_MXN)
+        .eq("single_non_amazon_seller", true)
+        .order("asin")
+        .range(from, to));
+    const products = await selectAll((from, to) => supabase
+        .from("products").select("asin,sku,title,meli_id,status,last_updated").eq("user_id", userId).order("id").range(from, to));
+    const testProducts = await selectAll((from, to) => supabase
+        .from("test_products").select("asin,title,meli_id,status,updated_at").eq("user_id", userId).order("id").range(from, to));
+
+    // Same ASIN normalization the queue was built with: products fall back to
+    // the SKU when the ASIN column is empty.
+    const listings = new Map<string, { title: string | null; at: string; meliIds: Set<string>; statuses: Set<string> }>();
+    const addListing = (rawAsin: string | null, title: string | null, meliId: string | null, status: string | null, at: string | null) => {
+        const asin = (rawAsin ?? "").trim().toUpperCase();
+        if (!asin) return;
+        const l = listings.get(asin) ?? { title: null, at: "", meliIds: new Set<string>(), statuses: new Set<string>() };
+        if (title && (!l.title || (at ?? "") > l.at)) { l.title = title; l.at = at ?? ""; }
+        if (meliId) l.meliIds.add(meliId);
+        if (status) l.statuses.add(status);
+        listings.set(asin, l);
+    };
+    for (const p of products) addListing(p.asin ? p.asin : p.sku, p.title, p.meli_id, p.status, p.last_updated);
+    for (const t of testProducts) addListing(t.asin, t.title, t.meli_id, t.status, t.updated_at);
+
+    const perSeller = new Map<string, number>();
+    for (const s of scans) perSeller.set(s.seller_ids[0], (perSeller.get(s.seller_ids[0]) ?? 0) + 1);
+    scans.sort((a, b) => (perSeller.get(b.seller_ids[0])! - perSeller.get(a.seller_ids[0])!)
+        || a.seller_ids[0].localeCompare(b.seller_ids[0]) || a.asin.localeCompare(b.asin));
+
+    const header = ["ASIN", "Vendedor (Seller ID)", "ASINs de este vendedor en la lista", "Tiene Buy Box", "Ofertas nuevas",
+        "Título", "Publicaciones ML", "Estado ML", "Link Amazon", "Link vendedor"];
+    const lines = [header.map(csvField).join(",")];
+    for (const s of scans) {
+        const seller = s.seller_ids[0];
+        const l = listings.get(s.asin);
+        lines.push([
+            s.asin, seller, perSeller.get(seller), s.buybox_seller_id === seller ? "Sí" : "No", s.offer_count,
+            l?.title ?? "", [...(l?.meliIds ?? [])].join(" "), [...(l?.statuses ?? [])].join("/"),
+            `https://www.amazon.com.mx/dp/${s.asin}`, `https://www.amazon.com.mx/sp?seller=${seller}`,
+        ].map(csvField).join(","));
+    }
+    // The BOM makes Excel read the file as UTF-8 (accents in titles).
+    const csv = "\uFEFF" + lines.join("\r\n") + "\r\n";
+
+    const fileName = `vendedor-unico-${new Date().toISOString().slice(0, 10)}.csv`;
+    const path = `${userId}/${fileName}`;
+    // Private: only the service role and signed links can read it. Creating
+    // an existing bucket just returns an error, which is fine to ignore.
+    await supabase.storage.createBucket("exports", { public: false });
+    const { error: uploadErr } = await supabase.storage.from("exports")
+        .upload(path, new Blob([csv], { type: "text/csv" }), { upsert: true, contentType: "text/csv; charset=utf-8" });
+    if (uploadErr) throw new Error(`upload failed: ${uploadErr.message}`);
+    const { data: signed, error: signErr } = await supabase.storage.from("exports")
+        .createSignedUrl(path, 7 * 24 * 3600, { download: fileName });
+    if (signErr) throw new Error(`signed URL failed: ${signErr.message}`);
+
+    console.log(`[amazon-offer-scan] exported ${scans.length} ASINs from ${perSeller.size} sellers to exports/${path}`);
+    return { rows: scans.length, sellers: perSeller.size, url: signed.signedUrl };
+}
+
 Deno.serve(async (req) => {
     const supabase = createClient(Deno.env.get("SUPABASE_URL") ?? "", Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "");
 
@@ -184,8 +271,17 @@ Deno.serve(async (req) => {
     const secret = cfg?.value as string | undefined;
     if (!secret || req.headers.get("x-scan-secret") !== secret) return json({ error: "forbidden" }, 403);
 
-    const { userId } = await req.json().catch(() => ({}));
+    const { userId, action } = await req.json().catch(() => ({}));
     if (!userId) return json({ error: "userId required" }, 400);
+
+    if (action === "export") {
+        try {
+            return json(await exportSingleSellerCsv(supabase, userId));
+        } catch (e) {
+            console.error("[amazon-offer-scan] export failed:", e);
+            return json({ error: String(e) }, 500);
+        }
+    }
 
     const work = runScan(supabase, userId).catch(e => {
         console.error("[amazon-offer-scan] run failed:", e);
