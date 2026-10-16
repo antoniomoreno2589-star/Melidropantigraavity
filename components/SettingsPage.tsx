@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { AmazonConnect } from './AmazonConnect';
+import { BlocklistSettings } from './BlocklistSettings';
 import { supabase } from '../services/supabase';
 import { meliService } from '../services/meliService';
 import { amazonService } from '../services/amazonService';
@@ -411,7 +412,13 @@ export const SettingsPage = () => {
     const [isUpdatingDolar, setIsUpdatingDolar] = useState(false);
     const [isDetecting, setIsDetecting] = useState(false);
     const [detectStatus, setDetectStatus] = useState('');
-    const [globalFilters, setGlobalFilters] = useState("Nike\nAdidas\nReacondicionado");
+    // This used to start from the hardcoded defaults instead of the saved
+    // list, and every section's save writes all fields — so saving any
+    // section (e.g. margins) overwrote the saved list with these 3 words.
+    // App.tsx copies the saved list into localStorage at startup.
+    const [globalFilters, setGlobalFilters] = useState(() =>
+        localStorage.getItem('melidrop_global_filters') ?? "Nike\nAdidas\nReacondicionado"
+    );
 
     const [warrantyMonths, setWarrantyMonths] = useState<number>(() =>
         parseInt(localStorage.getItem('melidrop_warranty_months') || '1')
@@ -897,6 +904,8 @@ export const SettingsPage = () => {
                             </button>
                         </div>
                     </section>
+
+                    <BlocklistSettings />
 
                     {/* GARANTÍA Y DESCRIPCIÓN */}
                     <section className="flex flex-col lg:col-span-2 bg-surface-light dark:bg-surface-dark rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 overflow-hidden">
