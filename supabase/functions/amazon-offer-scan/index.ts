@@ -8,8 +8,10 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 const LWA_URL = "https://api.amazon.com/auth/o2/token";
 const MARKETPLACE_MXN = "A1AM78C64UM0Y8";
 // Amazon's own retail seller IDs: the two amazon-ml-updater treats as Amazon
-// México and Amazon USA, plus Amazon.com's own merchant ID.
-const AMAZON_SELLER_IDS = new Set(["AVDBXBAVVSXLQ", "A1G99GVHAT2WD8", "ATVPDKIKX0DER"]);
+// México and Amazon USA, Amazon.com's own merchant ID, and Amazon Europe —
+// identified by the owner from its seller page; it is on 3,618 of the owner's
+// ASINs, third only to the other two Amazon sellers.
+const AMAZON_SELLER_IDS = new Set(["AVDBXBAVVSXLQ", "A1G99GVHAT2WD8", "ATVPDKIKX0DER", "A1F023WJX36N4W"]);
 const BATCH = 20;
 // getItemOffersBatch is limited to 0.1 requests per second (burst 1).
 const BATCH_INTERVAL_MS = 10_500;
