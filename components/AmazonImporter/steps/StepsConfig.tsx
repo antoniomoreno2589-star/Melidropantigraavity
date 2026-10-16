@@ -117,6 +117,7 @@ export const Step2Asins: React.FC<Props> = ({
     asinInput, setAsinInput,
     loadedProducts,
     loadingAsins,
+    blockedProducts,
     processingProgress,
     processingStartedAt,
     lastRunDurationMs,
@@ -185,6 +186,21 @@ export const Step2Asins: React.FC<Props> = ({
                 </p>
             )}
         </div>
+
+        {!loadingAsins && blockedProducts.length > 0 && (
+            <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-xl p-4">
+                <p className="text-sm font-black text-red-700 dark:text-red-400 flex items-center gap-2">
+                    <span className="material-symbols-outlined text-[18px]">block</span>
+                    {blockedProducts.length} producto{blockedProducts.length === 1 ? '' : 's'} bloqueado{blockedProducts.length === 1 ? '' : 's'} por riesgo de denuncia — no se procesa{blockedProducts.length === 1 ? '' : 'n'} con IA ni se publica{blockedProducts.length === 1 ? '' : 'n'}
+                </p>
+                <ul className="mt-2 space-y-0.5 text-xs text-red-700/80 dark:text-red-300/80 max-h-40 overflow-y-auto">
+                    {blockedProducts.map(b => (
+                        <li key={b.asin}><span className="font-mono font-bold">{b.asin}</span>: {b.reason}</li>
+                    ))}
+                </ul>
+                <p className="mt-2 text-[10px] text-red-600/70 dark:text-red-400/70">La lista de bloqueo se edita en Configuración → Marcas bloqueadas.</p>
+            </div>
+        )}
 
         {loadedProducts.length > 0 && (
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">

@@ -4,6 +4,7 @@ import { aiImporterService, aiServiceStatus, ProcessedProduct } from '../../serv
 import { meliService } from '../../services/meliService';
 import { api } from '../../services/api';
 import { supabase } from '../../services/supabase';
+import { publishBlocklist } from '../../services/publishBlocklist';
 import { Step, Marketplace, ListingType, LoadedProduct } from './types';
 
 // Sanitizes a raw attribute value against ML's own attribute definition (value_type +
@@ -213,6 +214,9 @@ export function useAmazonImporter() {
     const [asinInput, setAsinInput] = useState('');
     const [loadedProducts, setLoadedProducts] = useState<LoadedProduct[]>([]);
     const [loadingAsins, setLoadingAsins] = useState(false);
+    // ASINs the last load left out because they (or their brand) are on the
+    // user's publish blocklist, with the reason shown in Step 2.
+    const [blockedProducts, setBlockedProducts] = useState<{ asin: string; reason: string }[]>([]);
 
     // ── Step 3: AI Processing ──────────────────────────────────────────
     const [processedProducts, setProcessedProducts] = useState<ProcessedProduct[]>([]);
@@ -269,11 +273,32 @@ export function useAmazonImporter() {
 
     // ── Step 2 handler ─────────────────────────────────────────────────
     const handleLoadAsins = async () => {
-        const asins = asinInput
+        const requested = asinInput
             .split(/[\n,\s]+/)
             .map(a => a.trim().toUpperCase())
             .filter(a => /^[A-Z0-9]{10}$/.test(a));
-        if (asins.length === 0) return;
+        if (requested.length === 0) return;
+
+        // Blocked ASINs are dropped before anything is fetched or sent to AI;
+        // blocked brands right after Amazon returns each product's brand. If
+        // the blocklist can't be read, nothing is loaded.
+        const blocked: { asin: string; reason: string }[] = [];
+        const asins: string[] = [];
+        try {
+            for (const asin of requested) {
+                const hit = await publishBlocklist.check({ asin });
+                if (hit) blocked.push({ asin, reason: publishBlocklist.describe(hit) });
+                else asins.push(asin);
+            }
+        } catch (e: any) {
+            alert(`No se cargó nada: ${e.message}`);
+            return;
+        }
+        setBlockedProducts(blocked);
+        if (asins.length === 0) {
+            setLoadedProducts([]);
+            return;
+        }
 
         setLoadingAsins(true);
         const initial: LoadedProduct[] = asins.map(asin => ({
@@ -346,7 +371,21 @@ export function useAmazonImporter() {
 
         await Promise.all(Array.from({ length: Math.min(CONCURRENCY, asins.length) }, () => worker()));
 
-        setLoadedProducts(results.map(product => ({
+        const kept: any[] = [];
+        for (const product of results) {
+            let reason: string | null = null;
+            try {
+                const hit = await publishBlocklist.check({ asin: product.asin, brand: product.brand });
+                if (hit) reason = publishBlocklist.describe(hit);
+            } catch (e: any) {
+                reason = `no se pudo revisar la lista de bloqueo (${e.message})`;
+            }
+            if (reason) blocked.push({ asin: product.asin, reason });
+            else kept.push(product);
+        }
+        setBlockedProducts([...blocked]);
+
+        setLoadedProducts(kept.map(product => ({
             asin: product.asin,
             title: product.title,
             description: product.description,
@@ -596,9 +635,13 @@ export function useAmazonImporter() {
             const catId = selectedCategories[product.asin]?.id;
 
             const dupCheck = await meliService.checkDuplicate(product.asin);
-            const titleToCheck = (editedTitles[product.asin] || processed.optimizedTitle).toLowerCase();
-            const hasForbiddenWords = forbiddenWords.some(w => titleToCheck.includes(w));
-            const forbiddenWord = forbiddenWords.find(w => titleToCheck.includes(w));
+            // The edited title has the brand stripped out (handleProcessWithAI),
+            // so a brand on the list never matched it — check the brand and
+            // Amazon's original title too.
+            const textToCheck = [editedTitles[product.asin] || processed.optimizedTitle, product.title, product.brand]
+                .filter(Boolean).join('\n').toLowerCase();
+            const forbiddenWord = forbiddenWords.find(w => textToCheck.includes(w));
+            const hasForbiddenWords = !!forbiddenWord;
 
             nextValidations[product.asin] = {
                 isDuplicate: dupCheck.isDuplicate,
@@ -1625,6 +1668,7 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
         asinInput, setAsinInput,
         loadedProducts, setLoadedProducts,
         loadingAsins,
+        blockedProducts,
         handleLoadAsins,
         refetchProductPrice,
         handleRetryAllPrices,

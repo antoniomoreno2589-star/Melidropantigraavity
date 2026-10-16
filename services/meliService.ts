@@ -1,6 +1,7 @@
 import { api } from './api';
 import { supabase } from './supabase';
 import { mlProxyFetch } from './mlProxy';
+import { publishBlocklist } from './publishBlocklist';
 import { Product } from '../types';
 
 // Map raw ML order statuses to the narrower set allowed by the DB CHECK
@@ -1120,6 +1121,19 @@ class MeliService {
     // body.required_fields/family_name even when the sandbox publish of the
     // same payload didn't, so every publish call site needs this, not just one.
     async publishItemWithFallbacks(itemData: any, isDraft: boolean = false, customToken?: string): Promise<any> {
+        // Every publish path goes through here, so this is where brands and
+        // ASINs on the user's blocklist (IP-complaint risk) are stopped. If the
+        // list can't be read, nothing is published unchecked.
+        let blocked;
+        try {
+            blocked = await publishBlocklist.checkPayload(itemData);
+        } catch (e: any) {
+            return { error: `No se publicó: ${e.message}`, cause: [] };
+        }
+        if (blocked) {
+            return { error: `No se publicó: ${publishBlocklist.describe(blocked)} (riesgo de denuncia).`, cause: [], blocked: true };
+        }
+
         let payload = itemData;
         let result = await this.publishItem(payload, isDraft, customToken);
 
