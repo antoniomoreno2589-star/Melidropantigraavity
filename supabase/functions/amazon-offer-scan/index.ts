@@ -193,9 +193,15 @@ function csvField(value: unknown): string {
 
 // The scan's answer as a spreadsheet: every ASIN whose only seller is not
 // Amazon, with the owner's listing title and ML IDs, uploaded to a private
-// bucket and handed back as a signed download link.
+// bucket and handed back as a signed download link. Sellers the owner has
+// excluded (offer_scan_excluded_sellers) are left out.
 async function exportSingleSellerCsv(supabase: any, userId: string) {
-    const scans = await selectAll((from, to) => supabase
+    const { data: excludedRows, error: excludedErr } = await supabase
+        .from("offer_scan_excluded_sellers").select("seller_id").eq("user_id", userId);
+    if (excludedErr) throw new Error(excludedErr.message);
+    const excluded = new Set<string>((excludedRows ?? []).map((r: any) => r.seller_id));
+
+    const allScans = await selectAll((from, to) => supabase
         .from("asin_offer_scan")
         .select("asin,seller_ids,buybox_seller_id,offer_count")
         .eq("user_id", userId)
@@ -203,6 +209,7 @@ async function exportSingleSellerCsv(supabase: any, userId: string) {
         .eq("single_non_amazon_seller", true)
         .order("asin")
         .range(from, to));
+    const scans = allScans.filter(s => !excluded.has(s.seller_ids[0]));
     const products = await selectAll((from, to) => supabase
         .from("products").select("asin,sku,title,meli_id,status,last_updated").eq("user_id", userId).order("id").range(from, to));
     const testProducts = await selectAll((from, to) => supabase
@@ -255,8 +262,9 @@ async function exportSingleSellerCsv(supabase: any, userId: string) {
         .createSignedUrl(path, 7 * 24 * 3600, { download: fileName });
     if (signErr) throw new Error(`signed URL failed: ${signErr.message}`);
 
-    console.log(`[amazon-offer-scan] exported ${scans.length} ASINs from ${perSeller.size} sellers to exports/${path}`);
-    return { rows: scans.length, sellers: perSeller.size, url: signed.signedUrl };
+    const excludedAsins = allScans.length - scans.length;
+    console.log(`[amazon-offer-scan] exported ${scans.length} ASINs from ${perSeller.size} sellers to exports/${path} (${excludedAsins} left out from ${excluded.size} excluded sellers)`);
+    return { rows: scans.length, sellers: perSeller.size, excludedSellers: excluded.size, excludedAsins, url: signed.signedUrl };
 }
 
 Deno.serve(async (req) => {
