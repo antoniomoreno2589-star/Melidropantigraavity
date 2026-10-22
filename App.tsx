@@ -16,10 +16,16 @@ import { SecurityHistoryPage } from './components/SecurityHistoryPage';
 import { AnalyticsPage } from './components/AnalyticsPage';
 import { TestProductsPage } from './components/TestProductsPage';
 import { UpdaterPage } from './components/UpdaterPage';
-import { User } from './types';
-import { getDashboardStats } from './services/mockService';
+import { User, DashboardStats } from './types';
 import { meliService } from './services/meliService';
 import { claimUserCache } from './services/userCache';
+
+// Shown until (or unless) Mercado Libre's real numbers load. This used to be
+// mockService's sample data (12 sales, $15,400...), which a brand-new account
+// with no sales read as real.
+const NO_STATS: DashboardStats = {
+  questionsUnanswered: 0, messagesUnread: 0, salesToday: 0, incomeToday: 0, questionsToday: 0, avgTicket: 0,
+};
 
 const App = () => {
   const [session, setSession] = useState<any>(null);
@@ -179,9 +185,9 @@ const App = () => {
   }
 
   return (
-    <Layout user={user} onLogout={handleLogout} meliData={meliMetrics} stats={meliMetrics?.stats || getDashboardStats()}>
+    <Layout user={user} onLogout={handleLogout} meliData={meliMetrics} stats={meliMetrics?.stats || NO_STATS}>
       <Routes>
-        <Route path="/" element={<DashboardPage user={user} stats={meliMetrics?.stats || getDashboardStats()} meliData={meliMetrics} />} />
+        <Route path="/" element={<DashboardPage user={user} stats={meliMetrics?.stats || NO_STATS} meliData={meliMetrics} />} />
         <Route path="/importar" element={<AmazonImporter />} />
         <Route path="/productos-prueba" element={<TestProductsPage />} />
         <Route path="/publicaciones" element={<CatalogTable />} />

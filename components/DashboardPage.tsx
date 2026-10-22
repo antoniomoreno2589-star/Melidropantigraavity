@@ -181,10 +181,6 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ user, stats, meliD
               <span className="text-sm font-medium text-slate-500 dark:text-slate-400">Ventas</span>
             </div>
             <p className="text-3xl font-black text-slate-900 dark:text-white leading-none">{stats.salesToday}</p>
-            <div className="flex items-center gap-1 mt-2 text-xs font-bold text-green-500">
-              <span className="material-symbols-outlined text-[14px]">trending_up</span>
-              <span>+15% vs ayer</span>
-            </div>
           </div>
 
           <div className="bg-white dark:bg-slate-800 p-5 rounded-2xl border border-slate-200 dark:border-slate-700 shadow-sm flex flex-col">
