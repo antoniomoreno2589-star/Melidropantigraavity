@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { AmazonConnect } from './AmazonConnect';
 import { BlocklistSettings } from './BlocklistSettings';
 import { supabase } from '../services/supabase';
-import { meliService } from '../services/meliService';
+import { meliService, meliAuthBaseUrl } from '../services/meliService';
 import { amazonService } from '../services/amazonService';
 import { mlProxyFetch } from '../services/mlProxy';
 
@@ -185,8 +185,8 @@ export const SettingsPage = () => {
         sessionStorage.setItem('test_oauth_verifier', verifier);
 
         const redirectUri = encodeURIComponent(`${window.location.origin}/perfil`);
-        const site = localStorage.getItem('meli_auth_site_domain') || 'mx';
-        const authUrl = `https://auth.mercadolibre.com.${site}/authorization?response_type=code&client_id=${creds.appId}&redirect_uri=${redirectUri}&code_challenge=${challenge}&code_challenge_method=S256&state=test_user`;
+        const site = localStorage.getItem('meli_auth_site_domain');
+        const authUrl = `${meliAuthBaseUrl(site)}/authorization?response_type=code&client_id=${creds.appId}&redirect_uri=${redirectUri}&code_challenge=${challenge}&code_challenge_method=S256&state=test_user`;
 
         const popup = window.open(authUrl, 'ml_test_oauth', 'width=520,height=720,left=200,top=100');
         if (!popup) {

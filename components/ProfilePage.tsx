@@ -2,7 +2,7 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { mlProxyFetch } from '../services/mlProxy';
-import { meliService } from '../services/meliService';
+import { meliService, meliAuthBaseUrl } from '../services/meliService';
 import { supabase } from '../services/supabase';
 
 type AccountType = 'amazon' | 'meli' | null;
@@ -48,7 +48,10 @@ export const ProfilePage = () => {
 
     const [meliAppId, setMeliAppId] = useState('');
     const [meliSecret, setMeliSecret] = useState('');
-    const [meliSite, setMeliSite] = useState(() => localStorage.getItem('meli_auth_site_domain') || 'mx');
+    const [meliSite, setMeliSite] = useState(() => {
+        const saved = localStorage.getItem('meli_auth_site_domain');
+        return !saved || saved === 'mx' ? 'com.mx' : saved;
+    });
     const [errorMessage, setErrorMessage] = useState('');
 
     // Real State for connections from LocalStorage
@@ -382,7 +385,7 @@ export const ProfilePage = () => {
                 setMeliAppId('');
                 setMeliSecret('');
 
-                window.location.href = `https://auth.mercadolibre.com.${meliSite}/authorization?response_type=code&client_id=${meliAppId}&redirect_uri=${redirectUri}&code_challenge=${codeChallenge}&code_challenge_method=S256&scope=read:items write:items read:orders write:orders read:questions write:questions read:messages write:messages read:accounts read:payments offline_access`;
+                window.location.href = `${meliAuthBaseUrl(meliSite)}/authorization?response_type=code&client_id=${meliAppId}&redirect_uri=${redirectUri}&code_challenge=${codeChallenge}&code_challenge_method=S256&scope=read:items write:items read:orders write:orders read:questions write:questions read:messages write:messages read:accounts read:payments offline_access`;
             } catch (err) {
                 console.error("PKCE Generation failed", err);
                 setErrorMessage("Error al generar seguridad PKCE");

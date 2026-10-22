@@ -74,6 +74,16 @@ import App from './App';
   }
 })();
 
+// The real account's OAuth redirect lands on /perfil?code=... with no hash too,
+// so HashRouter showed the dashboard and the code sat unused until someone
+// happened to open Mi Perfil, where ProfilePage exchanges it. Go there directly.
+{
+  const params = new URLSearchParams(window.location.search);
+  if (params.get('code') && window.location.pathname === '/perfil' && !window.location.hash) {
+    window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}#/perfil`);
+  }
+}
+
 const rootElement = document.getElementById('root');
 if (!rootElement) {
   throw new Error("Could not find root element to mount to");
