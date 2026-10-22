@@ -14,7 +14,9 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 const ML = "https://api.mercadolibre.com";
 const BATCH = 20;            // ML multiget limit
 const CONCURRENCY = 4;
-const TIME_BUDGET_MS = 110_000;
+// Under the cron's 1-minute interval, so runs don't overlap.
+const TIME_BUDGET_MS = 50_000;
+const PAGE = 1000;           // PostgREST's max rows per request
 const ITEM_FIELDS = "id,title,category_id,price,currency_id,listing_type_id,pictures,attributes,sale_terms";
 const KEPT_SALE_TERMS = new Set(["WARRANTY_TYPE", "WARRANTY_TIME", "MANUFACTURING_TIME"]);
 
@@ -108,47 +110,53 @@ async function recover(supabase: any, fromUserId: string, toUserId: string, limi
     }
     const settings = settingsFrom(owner?.margin_rules);
 
-    const { data: rows, error: rowsErr } = await supabase.from("test_products")
-        .select("id,user_id,title,asin,price_mxn,currency,source_meli_id,source_description")
-        .eq("user_id", toUserId).is("publish_payload", null).is("recovery_error", null)
-        .not("source_meli_id", "is", null).order("id").limit(limit);
-    if (rowsErr) return { error: rowsErr.message };
-    if (!rows?.length) return { done: true, recovered: 0, failed: 0 };
+    let recovered = 0, failed = 0, processed = 0, stoppedOn: string | null = null;
+    // Page after page until the time budget, the limit, or nothing is left:
+    // each page is the next pending rows, since finished ones drop out.
+    while (!stoppedOn && processed < limit && Date.now() - startedAt < TIME_BUDGET_MS) {
+        const { data: rows, error: rowsErr } = await supabase.from("test_products")
+            .select("id,user_id,title,asin,price_mxn,currency,source_meli_id,source_description")
+            .eq("user_id", toUserId).is("publish_payload", null).is("recovery_error", null)
+            .not("source_meli_id", "is", null).order("id").limit(Math.min(PAGE, limit - processed));
+        if (rowsErr) return { error: rowsErr.message };
+        if (!rows?.length) break;
+        processed += rows.length;
 
-    const chunks: any[][] = [];
-    for (let i = 0; i < rows.length; i += BATCH) chunks.push(rows.slice(i, i + BATCH));
+        const chunks: any[][] = [];
+        for (let i = 0; i < rows.length; i += BATCH) chunks.push(rows.slice(i, i + BATCH));
 
-    let recovered = 0, failed = 0, next = 0, stoppedOn: string | null = null;
-    const worker = async () => {
-        while (next < chunks.length && !stoppedOn && Date.now() - startedAt < TIME_BUDGET_MS) {
-            const chunk = chunks[next++];
-            const ids = chunk.map(r => r.source_meli_id).join(",");
-            const res = await fetch(`${ML}/items?ids=${ids}&attributes=${ITEM_FIELDS}`, { headers: { Authorization: `Bearer ${token}` } });
-            if (!res.ok) {
-                // Auth or rate-limit trouble applies to every chunk: stop and leave
-                // the rest pending for the next run.
-                stoppedOn = `ML multiget HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`;
-                return;
-            }
-            const results: any[] = await res.json();
-            const byId = new Map(results.map((r: any) => [r?.body?.id, r]));
-            const updates = chunk.map(row => {
-                const r: any = byId.get(row.source_meli_id);
-                const item = r?.code === 200 ? r.body : null;
-                if (!item?.category_id) {
-                    failed++;
-                    return { id: row.id, user_id: row.user_id, title: row.title,
-                        recovery_error: `ML ${r?.code ?? "sin respuesta"}: ${String(r?.body?.message ?? r?.body?.error ?? "sin categoría").slice(0, 120)}` };
+        let next = 0;
+        const worker = async () => {
+            while (next < chunks.length && !stoppedOn && Date.now() - startedAt < TIME_BUDGET_MS) {
+                const chunk = chunks[next++];
+                const ids = chunk.map(r => r.source_meli_id).join(",");
+                const res = await fetch(`${ML}/items?ids=${ids}&attributes=${ITEM_FIELDS}`, { headers: { Authorization: `Bearer ${token}` } });
+                if (!res.ok) {
+                    // Auth or rate-limit trouble applies to every chunk: stop and leave
+                    // the rest pending for the next run.
+                    stoppedOn = `ML multiget HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`;
+                    return;
                 }
-                recovered++;
-                return { id: row.id, user_id: row.user_id, title: row.title, category: item.category_id,
-                    publish_payload: buildPayload(item, row, settings) };
-            });
-            const { error: upErr } = await supabase.from("test_products").upsert(updates, { onConflict: "id" });
-            if (upErr) { stoppedOn = `could not save: ${upErr.message}`; return; }
-        }
-    };
-    await Promise.all(Array.from({ length: CONCURRENCY }, () => worker()));
+                const results: any[] = await res.json();
+                const byId = new Map(results.map((r: any) => [r?.body?.id, r]));
+                const updates = chunk.map(row => {
+                    const r: any = byId.get(row.source_meli_id);
+                    const item = r?.code === 200 ? r.body : null;
+                    if (!item?.category_id) {
+                        failed++;
+                        return { id: row.id, user_id: row.user_id, title: row.title,
+                            recovery_error: `ML ${r?.code ?? "sin respuesta"}: ${String(r?.body?.message ?? r?.body?.error ?? "sin categoría").slice(0, 120)}` };
+                    }
+                    recovered++;
+                    return { id: row.id, user_id: row.user_id, title: row.title, category: item.category_id,
+                        publish_payload: buildPayload(item, row, settings) };
+                });
+                const { error: upErr } = await supabase.from("test_products").upsert(updates, { onConflict: "id" });
+                if (upErr) { stoppedOn = `could not save: ${upErr.message}`; return; }
+            }
+        };
+        await Promise.all(Array.from({ length: CONCURRENCY }, () => worker()));
+    }
 
     const { count: remaining } = await supabase.from("test_products")
         .select("*", { count: "exact", head: true })
@@ -168,7 +176,7 @@ Deno.serve(async (req) => {
 
     const { fromUserId, toUserId, limit, wait } = await req.json().catch(() => ({}));
     if (!fromUserId || !toUserId) return json({ error: "fromUserId and toUserId required" }, 400);
-    const work = recover(supabase, fromUserId, toUserId, Math.min(Number(limit) || 3000, 3000)).catch(e => {
+    const work = recover(supabase, fromUserId, toUserId, Math.min(Number(limit) || 50_000, 50_000)).catch(e => {
         console.error("[listing-recovery] run failed:", e);
         return { error: String(e) };
     });
