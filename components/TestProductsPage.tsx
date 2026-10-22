@@ -74,28 +74,45 @@ export const TestProductsPage = () => {
 
     const [testProducts, setTestProducts] = useState<TestProduct[]>([]);
     const [isLoading, setIsLoading] = useState(true);
+    // A catalog can be tens of thousands of rows: show how far the load got,
+    // and say when it failed — the table used to show "No se encontraron
+    // productos" both while loading and after a failed load.
+    const [loadProgress, setLoadProgress] = useState<{ loaded: number; total: number | null } | null>(null);
+    const [loadError, setLoadError] = useState<string | null>(null);
     const [testUser, setTestUser] = useState<any>(null);
     const [isCreatingUser, setIsCreatingUser] = useState(false);
 
+    const loadProducts = async () => {
+        setIsLoading(true);
+        setLoadError(null);
+        try {
+            setTestProducts(await api.testProducts.list((loaded, total) => setLoadProgress({ loaded, total })));
+        } catch (err: any) {
+            console.error("Error fetching test products:", err);
+            setLoadError(err?.message || String(err));
+        } finally {
+            setIsLoading(false);
+            setLoadProgress(null);
+        }
+    };
+
     useEffect(() => {
-        const fetchData = async () => {
+        loadProducts();
+
+        // Loaded separately: this used to wait for the product list, so a list
+        // that failed to load also left the test user missing.
+        const fetchTestUser = async () => {
             try {
-                const data = await api.testProducts.list();
-                setTestProducts(data);
-                
-                // Fetch test user from Supabase
                 const { data: { user: authUser } } = await supabase.auth.getUser();
                 if (authUser) {
                     const { data: userData } = await supabase.from('user_connections').select('meli_test_user').eq('user_id', authUser.id).maybeSingle();
                     if (userData?.meli_test_user) setTestUser(userData.meli_test_user);
                 }
             } catch (err) {
-                console.error("Error fetching data:", err);
-            } finally {
-                setIsLoading(false);
+                console.error("Error fetching test user:", err);
             }
         };
-        fetchData();
+        fetchTestUser();
     }, []);
 
     const handleCreateTestUser = async () => {
@@ -1083,7 +1100,27 @@ export const TestProductsPage = () => {
                                         </tr>
                                     </thead>
                                     <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                                        {filteredProducts.length === 0 ? (
+                                        {isLoading ? (
+                                            <tr>
+                                                <td colSpan={7} className="px-6 py-20 text-center text-slate-400">
+                                                    Cargando publicaciones…
+                                                    {loadProgress && loadProgress.loaded > 0 && (
+                                                        <> {loadProgress.loaded.toLocaleString()}{loadProgress.total ? ` de ${loadProgress.total.toLocaleString()}` : ''}</>
+                                                    )}
+                                                </td>
+                                            </tr>
+                                        ) : loadError ? (
+                                            <tr>
+                                                <td colSpan={7} className="px-6 py-20 text-center text-red-500">
+                                                    No se pudieron cargar las publicaciones: {loadError}
+                                                    <div className="mt-3">
+                                                        <button onClick={loadProducts} className="px-4 py-2 rounded-lg bg-primary text-white text-sm font-bold">
+                                                            Reintentar
+                                                        </button>
+                                                    </div>
+                                                </td>
+                                            </tr>
+                                        ) : filteredProducts.length === 0 ? (
                                             <tr>
                                                 <td colSpan={7} className="px-6 py-20 text-center text-slate-400">
                                                     No se encontraron productos en el catálogo de test.

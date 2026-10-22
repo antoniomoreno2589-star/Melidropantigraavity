@@ -473,7 +473,7 @@ export const api = {
     },
 
     testProducts: {
-        async list(): Promise<any[]> {
+        async list(onProgress?: (loaded: number, total: number | null) => void): Promise<any[]> {
             // Supabase/PostgREST caps a single request at 1000 rows by default —
             // confirmed live that a catalog past that size (2,578 rows for the
             // active account) was silently truncated to the first 1000, hiding
@@ -483,24 +483,51 @@ export const api = {
             // publish_payload is left out (only the publish handlers need it, and
             // they fetch it per product with getPayload): confirmed live that an
             // account handed 27k listings would otherwise download ~80 MB every
-            // time this page opens. payload_category says whether one exists.
+            // time this page opens. has_payload says whether one exists — this
+            // used to read it as publish_payload->>category_id, which unpacks
+            // every row's whole payload: confirmed live that with 27k rows each
+            // request then took over 8 s and failed on the API's time limit, so
+            // the page never loaded.
+            //
+            // Each page starts after the last id the previous one got, instead of
+            // at an offset (page N re-read the N×1000 rows before it), and the id
+            // range is split into slices that load in parallel — ids are random
+            // UUIDs, so equal slices of the range hold about as many rows each.
             const PAGE_SIZE = 1000;
+            const SLICES = 8;
             const COLUMNS = 'id,title,asin,sku,currency,price_mxn,cost_usd,stock_provider,stock_meli,status,image_url,category,meli_id,'
-                + 'is_published_to_real,created_at,updated_at,published_to_real_at,sub_status,payload_category:publish_payload->>category_id';
-            let allRows: any[] = [];
-            let from = 0;
-            while (true) {
-                const { data, error } = await supabase
-                    .from('test_products')
-                    .select(COLUMNS)
-                    .order('created_at', { ascending: false })
-                    .range(from, from + PAGE_SIZE - 1);
+                + 'is_published_to_real,created_at,updated_at,published_to_real_at,sub_status,has_payload';
+            const sliceStart = (i: number) => `${(i * 16 / SLICES).toString(16)}0000000-0000-0000-0000-000000000000`;
 
-                if (error) throw error;
-                allRows = allRows.concat(data);
-                if (data.length < PAGE_SIZE) break;
-                from += PAGE_SIZE;
-            }
+            let total: number | null = null;
+            let loaded = 0;
+            supabase.from('test_products').select('id', { count: 'exact', head: true })
+                .then(({ count }) => { total = count; onProgress?.(loaded, total); });
+
+            const readSlice = async (i: number) => {
+                const rows: any[] = [];
+                let after: string | null = null;
+                while (true) {
+                    let query = supabase.from('test_products').select(COLUMNS).gte('id', sliceStart(i));
+                    if (i < SLICES - 1) query = query.lt('id', sliceStart(i + 1));
+                    if (after) query = query.gt('id', after);
+                    const { data, error } = await query.order('id').limit(PAGE_SIZE);
+
+                    if (error) throw error;
+                    const page: any[] = data;
+                    rows.push(...page);
+                    loaded += page.length;
+                    onProgress?.(loaded, total);
+                    if (page.length < PAGE_SIZE) return rows;
+                    after = page[page.length - 1].id;
+                }
+            };
+            const allRows = (await Promise.all(Array.from({ length: SLICES }, (_, i) => readSlice(i)))).flat();
+
+            // Newest first, as before. id breaks ties: rows copied in one
+            // statement all share a created_at.
+            allRows.sort((a, b) => a.created_at < b.created_at ? 1 : a.created_at > b.created_at ? -1
+                : a.id < b.id ? 1 : a.id > b.id ? -1 : 0);
 
             return allRows.map(p => ({
                 id: p.id,
@@ -516,7 +543,7 @@ export const api = {
                 imageUrl: p.image_url,
                 category: p.category,
                 meliId: p.meli_id,
-                hasPayload: !!p.payload_category,
+                hasPayload: !!p.has_payload,
                 isPublishedToReal: p.is_published_to_real,
                 creationDate: new Date(p.created_at).toISOString().split('T')[0],
                 updatedDate: p.updated_at ? new Date(p.updated_at).toISOString().split('T')[0] : new Date(p.created_at).toISOString().split('T')[0],
