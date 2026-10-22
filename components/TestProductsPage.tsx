@@ -382,7 +382,7 @@ export const TestProductsPage = () => {
         const product = testProducts.find(p => p.id === id);
         if (!product) return;
 
-        if (!product.publishPayload) {
+        if (!product.hasPayload) {
             alert('Este producto debe publicarse primero en el sandbox antes de pasar a producción. Vuelve a importarlo desde el Amazon Importer.');
             return;
         }
@@ -419,7 +419,12 @@ export const TestProductsPage = () => {
 
         try {
             // Extract description for separate posting (ML rejects description in POST /items)
-            const payload = product.publishPayload;
+            // Fetched now rather than with the list (see api.testProducts.list).
+            const payload = await api.testProducts.getPayload(id);
+            if (!payload) {
+                alert('No se encontraron los datos de esta publicación. Vuelve a importarla desde el Amazon Importer.');
+                return;
+            }
             const descriptionText = payload?.description?.plain_text;
             const itemPayload = { ...payload, description: undefined, attributes: sanitizePublishAttributes(payload?.attributes) };
 
@@ -566,7 +571,7 @@ export const TestProductsPage = () => {
 
         for (const product of toPublish) {
             if (bulkPublishCancelRef.current) break;
-            if (!product.publishPayload) {
+            if (!product.hasPayload) {
                 markDone({ success: false, id: product.id, title: product.title, message: 'sin payload (re-importar)' });
                 continue;
             }
@@ -583,8 +588,13 @@ export const TestProductsPage = () => {
                     continue;
                 }
 
-                const descriptionText = product.publishPayload?.description?.plain_text;
-                const itemPayload = { ...product.publishPayload, description: undefined, attributes: sanitizePublishAttributes(product.publishPayload?.attributes) };
+                const payload = await api.testProducts.getPayload(product.id);
+                if (!payload) {
+                    markDone({ success: false, id: product.id, title: product.title, message: 'sin payload (re-importar)' });
+                    continue;
+                }
+                const descriptionText = payload.description?.plain_text;
+                const itemPayload = { ...payload, description: undefined, attributes: sanitizePublishAttributes(payload.attributes) };
                 const result = await meliService.publishItemWithFallbacks(itemPayload, false);
 
                 if (result.error) {
