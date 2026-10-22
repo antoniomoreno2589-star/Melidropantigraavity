@@ -512,6 +512,9 @@ export const SettingsPage = () => {
                     warranty_months: warrantyMonths,
                     amazon_delivery_usa: deliveryDaysUsa,
                     amazon_delivery_mx: deliveryDaysMx,
+                    // Was only ever kept in this browser, so another device or
+                    // account couldn't get it.
+                    description_suffix: descriptionSuffix,
                 }
             }, { onConflict: 'user_id' });
         }
