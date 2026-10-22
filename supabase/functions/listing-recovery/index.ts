@@ -19,6 +19,14 @@ const TIME_BUDGET_MS = 50_000;
 const PAGE = 1000;           // PostgREST's max rows per request
 const ITEM_FIELDS = "id,title,category_id,price,currency_id,listing_type_id,pictures,attributes,sale_terms";
 const KEPT_SALE_TERMS = new Set(["WARRANTY_TYPE", "WARRANTY_TIME", "MANUFACTURING_TIME"]);
+// Descriptions have no multiget: one call per listing.
+const DESC_PAGE = 200;
+const DESC_CONCURRENCY = 10;
+// "0", "0 cm", "0.0 kg". Confirmed live: old listings carry thousands of
+// these, which ML now rejects ("Value must be greater than 0"). A pack of 0
+// becomes the importer's default of 1; any other zero says nothing and is dropped.
+const ZERO_VALUE = /^\s*0+([.,]0+)?\s*[^\d\s]*\s*$/;
+const PACK_ATTRS = new Set(["UNITS_PER_PACK", "UNITS_PER_PACKAGE"]);
 
 const json = (body: unknown, status = 200) =>
     new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
@@ -45,11 +53,14 @@ function buildPayload(item: any, row: any, s: Settings) {
     // As listed on ML; SELLER_SKU is the ASIN, as the importer sets it.
     const attributes = (item.attributes ?? [])
         .filter((a: any) => a?.id && a.id !== "SELLER_SKU" && (a.value_name != null || a.value_id != null))
-        .map((a: any) => ({
-            id: a.id,
-            ...(a.value_id != null ? { value_id: a.value_id } : {}),
-            ...(a.value_name != null ? { value_name: a.value_name } : {}),
-        }));
+        .filter((a: any) => !(ZERO_VALUE.test(a.value_name ?? "") && !PACK_ATTRS.has(a.id)))
+        .map((a: any) => PACK_ATTRS.has(a.id) && ZERO_VALUE.test(a.value_name ?? "")
+            ? { id: a.id, value_name: "1" }
+            : {
+                id: a.id,
+                ...(a.value_id != null ? { value_id: a.value_id } : {}),
+                ...(a.value_name != null ? { value_name: a.value_name } : {}),
+            });
     attributes.push({ id: "SELLER_SKU", value_name: row.asin });
 
     const saleTerms = (item.sale_terms ?? [])
@@ -158,11 +169,54 @@ async function recover(supabase: any, fromUserId: string, toUserId: string, limi
         await Promise.all(Array.from({ length: CONCURRENCY }, () => worker()));
     }
 
+    // Then the descriptions: the Catálogo rarely kept them (they were posted to
+    // ML separately from the listing), so fetch each original one.
+    // source_description '' marks a listing that has none, so it isn't asked again.
+    // apply_recovered_descriptions writes them inside the database: confirmed
+    // live that round-tripping each full payload through here instead hit the
+    // edge runtime's compute limit (WORKER_RESOURCE_LIMIT) mid-run.
+    let described = 0, undescribed = 0;
+    while (!stoppedOn && Date.now() - startedAt < TIME_BUDGET_MS) {
+        const { data: rows, error: rowsErr } = await supabase.from("test_products")
+            .select("id,source_meli_id")
+            .eq("user_id", toUserId).not("source_meli_id", "is", null).not("publish_payload", "is", null)
+            .is("source_description", null).is("publish_payload->description", null)
+            .order("id").limit(DESC_PAGE);
+        if (rowsErr) return { error: rowsErr.message };
+        if (!rows?.length) break;
+
+        const found: { id: string; text: string }[] = [];
+        let next = 0;
+        const worker = async () => {
+            while (next < rows.length && !stoppedOn) {
+                const row = rows[next++];
+                const res = await fetch(`${ML}/items/${row.source_meli_id}/description`, { headers: { Authorization: `Bearer ${token}` } });
+                if ([401, 403, 429].includes(res.status)) {
+                    stoppedOn = `ML description HTTP ${res.status}`;
+                    return;
+                }
+                const body = res.ok ? await res.json().catch(() => null) : null;
+                const text = String(body?.plain_text ?? "").trim().slice(0, 5000);
+                if (text) described++; else undescribed++;
+                found.push({ id: row.id, text });
+            }
+        };
+        await Promise.all(Array.from({ length: DESC_CONCURRENCY }, () => worker()));
+        if (found.length) {
+            const { error: rpcErr } = await supabase.rpc("apply_recovered_descriptions", { p_user: toUserId, p_items: found });
+            if (rpcErr) { stoppedOn = `could not save descriptions: ${rpcErr.message}`; break; }
+        }
+    }
+
     const { count: remaining } = await supabase.from("test_products")
         .select("*", { count: "exact", head: true })
         .eq("user_id", toUserId).is("publish_payload", null).is("recovery_error", null).not("source_meli_id", "is", null);
-    console.log(`[listing-recovery] recovered=${recovered} failed=${failed} remaining=${remaining}${stoppedOn ? ` stopped: ${stoppedOn}` : ""}`);
-    return { recovered, failed, remaining, ...(stoppedOn ? { stoppedOn } : {}) };
+    const { count: descriptionsLeft } = await supabase.from("test_products")
+        .select("*", { count: "exact", head: true })
+        .eq("user_id", toUserId).not("source_meli_id", "is", null).not("publish_payload", "is", null)
+        .is("source_description", null).is("publish_payload->description", null);
+    console.log(`[listing-recovery] recovered=${recovered} failed=${failed} remaining=${remaining} described=${described} without_description=${undescribed} descriptions_left=${descriptionsLeft}${stoppedOn ? ` stopped: ${stoppedOn}` : ""}`);
+    return { recovered, failed, remaining, described, undescribed, descriptionsLeft, ...(stoppedOn ? { stoppedOn } : {}) };
 }
 
 Deno.serve(async (req) => {

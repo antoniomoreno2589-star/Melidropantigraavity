@@ -479,13 +479,20 @@ export const api = {
             // active account) was silently truncated to the first 1000, hiding
             // everything imported after that with no error or warning. Page
             // through in 1000-row chunks instead of a single unbounded query.
+            //
+            // publish_payload is left out (only the publish handlers need it, and
+            // they fetch it per product with getPayload): confirmed live that an
+            // account handed 27k listings would otherwise download ~80 MB every
+            // time this page opens. payload_category says whether one exists.
             const PAGE_SIZE = 1000;
+            const COLUMNS = 'id,title,asin,sku,currency,price_mxn,cost_usd,stock_provider,stock_meli,status,image_url,category,meli_id,'
+                + 'is_published_to_real,created_at,updated_at,published_to_real_at,sub_status,payload_category:publish_payload->>category_id';
             let allRows: any[] = [];
             let from = 0;
             while (true) {
                 const { data, error } = await supabase
                     .from('test_products')
-                    .select('*')
+                    .select(COLUMNS)
                     .order('created_at', { ascending: false })
                     .range(from, from + PAGE_SIZE - 1);
 
@@ -509,13 +516,20 @@ export const api = {
                 imageUrl: p.image_url,
                 category: p.category,
                 meliId: p.meli_id,
-                publishPayload: p.publish_payload,
+                hasPayload: !!p.payload_category,
                 isPublishedToReal: p.is_published_to_real,
                 creationDate: new Date(p.created_at).toISOString().split('T')[0],
                 updatedDate: p.updated_at ? new Date(p.updated_at).toISOString().split('T')[0] : new Date(p.created_at).toISOString().split('T')[0],
                 publishedToRealDate: p.published_to_real_at ? new Date(p.published_to_real_at).toISOString().split('T')[0] : null,
                 subStatus: Array.isArray(p.sub_status) ? p.sub_status : []
             }));
+        },
+
+        // The full Mercado Libre payload for one sandbox product (list() leaves it out).
+        async getPayload(id: string): Promise<any | null> {
+            const { data, error } = await supabase.from('test_products').select('publish_payload').eq('id', id).maybeSingle();
+            if (error) throw error;
+            return data?.publish_payload ?? null;
         },
 
         async create(product: any): Promise<void> {
