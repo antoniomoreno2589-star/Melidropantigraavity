@@ -14,6 +14,7 @@ interface TestProduct extends Product {
     subStatus: string[];  // ML's real sub_status array (e.g. ["deleted"] when ML itself removed the listing)
     prepTime: string;
     category: string;
+    hasPayload: boolean;  // a saved publish_payload exists (the list leaves the payload itself out)
 }
 
 // Split into two independent filters (used to be one SandboxStatusFilter
@@ -54,6 +55,7 @@ export const TestProductsPage = () => {
         errors: { title: string; message: string }[];
         finished: boolean;
         cancelled: boolean;
+        sandbox?: boolean; // a "Probar en Sandbox" run (test account), not a real publish
     } | null>(null);
     const bulkPublishCancelRef = useRef(false);
     const [isSyncing, setIsSyncing] = useState(false);
@@ -636,6 +638,77 @@ export const TestProductsPage = () => {
         setBulkPublishRun(prev => prev && { ...prev, finished: true, cancelled: bulkPublishCancelRef.current });
     };
 
+    // The importer's "Probar" step for rows that already have their data — such
+    // as listings handed over from another account, which never went through
+    // the importer here. Publishes the saved payload to the sandbox test user
+    // with buildItemPayload(isSandbox)'s differences (price ×10 so nobody can
+    // buy it by accident, the test account's shipping block) and records the
+    // test listing's id, so the row then reads like any other tested product
+    // and "Publicar Real" works as usual.
+    const handleBulkSandboxTest = async () => {
+        const toTest = testProducts.filter(p => selectedIds.includes(p.id) && !p.isPublishedToReal && p.hasPayload);
+        if (toTest.length === 0) {
+            alert('Ninguno de los seleccionados se puede probar: ya están publicados en tu cuenta real o no tienen sus datos guardados.');
+            return;
+        }
+        if (!confirm(`¿Probar ${toTest.length} producto(s) en tu cuenta de PRUEBA de MercadoLibre? No se publica nada en tu cuenta real.`)) return;
+
+        let testToken: string | undefined;
+        try { testToken = (await meliService.autoRefreshTestUserToken()) ?? undefined; } catch { testToken = undefined; }
+        if (!testToken) {
+            alert('No hay un usuario de prueba conectado. Créalo arriba con "Crear Usuario Test" y vuelve a intentar.');
+            return;
+        }
+
+        bulkPublishCancelRef.current = false;
+        setBulkPublishRun({ total: toTest.length, done: 0, successCount: 0, errors: [], finished: false, cancelled: false, sandbox: true });
+        const failedIds: string[] = [];
+        const markDone = (ok: boolean, product: TestProduct, message = '') => {
+            if (!ok) failedIds.push(product.id);
+            setBulkPublishRun(prev => prev && {
+                ...prev,
+                done: prev.done + 1,
+                successCount: prev.successCount + (ok ? 1 : 0),
+                errors: ok ? prev.errors : [...prev.errors, { title: product.title, message }],
+            });
+        };
+
+        for (const product of toTest) {
+            if (bulkPublishCancelRef.current) break;
+            try {
+                const payload = await api.testProducts.getPayload(product.id);
+                if (!payload) { markDone(false, product, 'sin payload (re-importar)'); continue; }
+                const descriptionText = payload.description?.plain_text;
+                const testPayload = {
+                    ...payload,
+                    description: undefined,
+                    attributes: sanitizePublishAttributes(payload.attributes),
+                    price: Math.round(Number(payload.price) * 10),
+                    shipping: { mode: 'me2', free_shipping: true, local_pick_up: false, handling_time: 30 },
+                };
+                const result = await meliService.publishItemWithFallbacks(testPayload, false, testToken);
+                if (result.error) {
+                    const causes = result.cause?.map((c: any) => c.message || c.code).join(', ') || result.error;
+                    console.error('[Melidrop] handleBulkSandboxTest error:', { asin: product.asin, error: result.error, cause: result.cause, raw: result.raw });
+                    markDone(false, product, causes);
+                    continue;
+                }
+                if (result.id && descriptionText) {
+                    try { await meliService.postDescription(result.id, descriptionText, testToken); } catch { /* the listing itself is up */ }
+                }
+                const status = result.status ?? 'active';
+                await api.testProducts.update(product.id, { meli_id: result.id, status });
+                setTestProducts(prev => prev.map(p => p.id === product.id ? { ...p, meliId: result.id, status } : p));
+                markDone(true, product);
+            } catch (err: any) {
+                markDone(false, product, err.message);
+            }
+        }
+
+        setSelectedIds(failedIds);
+        setBulkPublishRun(prev => prev && { ...prev, finished: true, cancelled: bulkPublishCancelRef.current });
+    };
+
     const clearSandbox = async () => {
         const confirmClear = window.confirm('¿Estás seguro de limpiar todo el entorno de pruebas? Esta acción eliminará permanentemente todos los productos del catálogo de test, incluyendo sus publicaciones en la cuenta de prueba de MercadoLibre.');
         if (!confirmClear) return;
@@ -1154,6 +1227,14 @@ export const TestProductsPage = () => {
                                 </button>
                             )}
                             <button
+                                onClick={handleBulkSandboxTest}
+                                disabled={selectedIds.length === 0}
+                                title="Sube los seleccionados a tu cuenta de prueba, sin tocar tu cuenta real"
+                                className={`text-xs font-bold px-4 py-2 rounded-lg transition-all border ${selectedIds.length > 0 ? 'bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100 dark:bg-amber-900/20 dark:text-amber-400 dark:border-amber-800' : 'bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed'}`}
+                            >
+                                Probar en Sandbox
+                            </button>
+                            <button
                                 onClick={handleBulkPublish}
                                 disabled={selectedIds.length === 0}
                                 className={`text-xs font-bold px-4 py-2 rounded-lg transition-all ${selectedIds.length > 0 ? 'bg-primary text-white shadow-md hover:bg-primary-dark' : 'bg-slate-100 text-slate-400 cursor-not-allowed'}`}
@@ -1184,9 +1265,13 @@ export const TestProductsPage = () => {
                     <div className="bg-white dark:bg-slate-800 rounded-xl shadow-2xl w-full max-w-lg overflow-hidden animate-scale-up flex flex-col max-h-[85vh]">
                         <div className="p-4 border-b border-slate-200 dark:border-slate-700 flex justify-between items-center">
                             <h3 className="font-bold text-slate-900 dark:text-white">
-                                {!bulkPublishRun.finished
-                                    ? 'Publicando en Mercado Libre...'
-                                    : bulkPublishRun.cancelled ? 'Publicación cancelada' : 'Publicación terminada'}
+                                {bulkPublishRun.sandbox
+                                    ? (!bulkPublishRun.finished
+                                        ? 'Probando en tu cuenta de prueba...'
+                                        : bulkPublishRun.cancelled ? 'Prueba cancelada' : 'Prueba terminada')
+                                    : (!bulkPublishRun.finished
+                                        ? 'Publicando en Mercado Libre...'
+                                        : bulkPublishRun.cancelled ? 'Publicación cancelada' : 'Publicación terminada')}
                             </h3>
                             {bulkPublishRun.finished && (
                                 <button onClick={() => setBulkPublishRun(null)}>
@@ -1231,7 +1316,7 @@ export const TestProductsPage = () => {
                             )}
                             {bulkPublishRun.finished && bulkPublishRun.errors.length > 0 && (
                                 <p className="text-xs text-slate-400 italic">
-                                    Los productos con error quedaron seleccionados — corrige lo que haga falta y dale "Publicar seleccionados" de nuevo para reintentar solo esos.
+                                    Los productos con error quedaron seleccionados — corrige lo que haga falta y dale "{bulkPublishRun.sandbox ? 'Probar en Sandbox' : 'Publicar seleccionados'}" de nuevo para reintentar solo esos.
                                 </p>
                             )}
                         </div>
