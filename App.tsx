@@ -19,12 +19,17 @@ import { UpdaterPage } from './components/UpdaterPage';
 import { User } from './types';
 import { getDashboardStats } from './services/mockService';
 import { meliService } from './services/meliService';
+import { claimUserCache } from './services/userCache';
 
 const App = () => {
   const [session, setSession] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [user, setUser] = useState<User | null>(null);
   const [meliMetrics, setMeliMetrics] = useState<any>(null);
+  // The user whose browser cache has been checked and synced. Pages only
+  // render once it matches the session, so none of them can read (and, by
+  // renewing a token, save) another user's cached Mercado Libre keys.
+  const [cacheReadyFor, setCacheReadyFor] = useState<string | null>(null);
 
   // Intercept OAuth popup callbacks (test user connect flow)
   useEffect(() => {
@@ -78,13 +83,22 @@ const App = () => {
     const init = async () => {
       // 1. Sync credentials and settings from Supabase FIRST
       try {
-        const { data: rows } = await supabase
+        const { data: rows, error: rowsError } = await supabase
           .from('user_connections')
           .select('*')
           .eq('user_id', session.user.id)
           .order('updated_at', { ascending: false })
           .limit(1);
         const data = rows?.[0] ?? null;
+
+        // Drop another user's cached keys and settings before anything below
+        // reads them (see services/userCache.ts). Only judged on a successful
+        // read: a failed one would make every cache look foreign.
+        if (!rowsError && claimUserCache(session.user.id, data?.meli_credentials?.id)) {
+          console.warn('App: browser cache belonged to another account — cleared');
+          meliService.resetCaches();
+          setMeliMetrics(null);
+        }
 
         if (data) {
           console.log('App: Sincronizando configuraciones desde la nube...');
@@ -106,6 +120,7 @@ const App = () => {
       } catch (err) {
         console.error('App: Error sincronizando configuraciones:', err);
       }
+      setCacheReadyFor(session.user.id);
 
       // 2. NOW read localStorage (already populated) and fetch ML metrics
       const credsRaw = localStorage.getItem('melidrop_meli_credentials');
@@ -157,6 +172,10 @@ const App = () => {
         <Route path="*" element={<LoginPage />} />
       </Routes>
     );
+  }
+
+  if (cacheReadyFor !== session.user.id) {
+    return <div className="min-h-screen flex items-center justify-center bg-gray-100">Cargando...</div>;
   }
 
   return (
