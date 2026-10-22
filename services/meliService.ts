@@ -25,6 +25,14 @@ export interface MeliCredentials {
     expiresAt: number;
 }
 
+// Mercado Libre's OAuth host for a site. The Mi Perfil dropdown stores the
+// domain suffix ("com.mx", "cl"); older versions stored just "mx" for México.
+// Confirmed in code: URLs were built as "auth.mercadolibre.com." + site, so
+// picking México in the dropdown produced auth.mercadolibre.com.com.mx.
+export function meliAuthBaseUrl(site?: string | null): string {
+    return `https://auth.mercadolibre.${!site || site === 'mx' ? 'com.mx' : site}`;
+}
+
 class MeliService {
     private baseUrl = 'https://api.mercadolibre.com';
     private statsCache: any = null;
