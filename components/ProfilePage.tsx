@@ -2,6 +2,8 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { mlProxyFetch } from '../services/mlProxy';
+import { meliService } from '../services/meliService';
+import { supabase } from '../services/supabase';
 
 type AccountType = 'amazon' | 'meli' | null;
 type ConnectStep = 'input' | 'processing' | 'success';
@@ -15,6 +17,15 @@ export const ProfilePage = () => {
     const [searchParams, setSearchParams] = useSearchParams();
     const [connectModal, setConnectModal] = useState<AccountType>(null);
     const [connectStep, setConnectStep] = useState<ConnectStep>('input');
+    // The signed-in user's own name and email (this section used to show
+    // hardcoded sample data, which read as someone else's account).
+    const [account, setAccount] = useState<{ name: string; email: string } | null>(null);
+    useEffect(() => {
+        supabase.auth.getSession().then(({ data: { session } }) => {
+            const u = session?.user;
+            setAccount({ name: u?.user_metadata?.full_name || '', email: u?.email || '' });
+        });
+    }, []);
 
     // Check for test user OAuth immediately on mount
     React.useMemo(() => {
@@ -254,9 +265,24 @@ export const ProfilePage = () => {
                         console.warn("Proxy error fetching user info", infoErr);
                     }
 
-                    // Save Credentials
-                    localStorage.setItem('melidrop_meli_credentials', JSON.stringify(newCreds));
-                    console.log("Credentials saved to localStorage");
+                    // Mercado Libre connects whichever ML account is signed in on this
+                    // browser. Confirmed live: on a shared computer a newly registered
+                    // Melidrop account ended up with the owner's ML account. So an ML
+                    // account another Melidrop account already uses needs an explicit OK.
+                    const { data: linkedElsewhere, error: linkErr } = await supabase.rpc(
+                        'meli_account_linked_elsewhere', { p_meli_user_id: String(data.user_id) });
+                    if (linkErr) console.warn("Could not check whether this ML account is linked elsewhere", linkErr);
+                    if (linkedElsewhere && !confirm(
+                        `La cuenta de Mercado Libre "${newCreds.nickname}" ya está conectada a otra cuenta de Melidrop.\n\n` +
+                        `Si no es tu cuenta, cancela, cierra la sesión de Mercado Libre en este navegador, entra con la tuya y vuelve a conectar.\n\n` +
+                        `¿Conectarla de todos modos?`)) {
+                        throw new Error(`No se conectó "${newCreds.nickname}": ya está conectada a otra cuenta de Melidrop. Cierra la sesión de Mercado Libre en este navegador, entra con tu cuenta y vuelve a conectar.`);
+                    }
+
+                    // Saved to Supabase too, not just this browser: the server-side jobs
+                    // and the next sign-in read it from there.
+                    await meliService.saveCredentials(newCreds);
+                    console.log("Credentials saved");
 
                     // Cleanup temps
                     localStorage.removeItem('temp_meli_app_id');
@@ -399,16 +425,16 @@ export const ProfilePage = () => {
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                                 <label className="flex flex-col gap-2">
                                     <span className="text-sm font-medium text-slate-700 dark:text-slate-300">Nombre Completo</span>
-                                    <input className="form-input w-full rounded-lg border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-white focus:border-primary focus:ring-primary h-12 px-4 transition-colors" type="text" defaultValue="Ricardo González" />
+                                    <input className="form-input w-full rounded-lg border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-white focus:border-primary focus:ring-primary h-12 px-4 transition-colors" type="text" key={account?.name ?? ''} defaultValue={account?.name ?? ''} placeholder="Tu nombre" />
                                 </label>
                                 <label className="flex flex-col gap-2">
                                     <span className="text-sm font-medium text-slate-700 dark:text-slate-300">Correo Electrónico</span>
-                                    <input className="form-input w-full rounded-lg border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-500 h-12 px-4 cursor-not-allowed" disabled type="email" defaultValue="ricardo@vendedorpro.mx" />
+                                    <input className="form-input w-full rounded-lg border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-500 h-12 px-4 cursor-not-allowed" disabled type="email" value={account?.email ?? ''} readOnly />
                                     <span className="text-xs text-slate-400 flex items-center gap-1"><span className="material-symbols-outlined text-[14px]">lock</span> Contacta a soporte para cambiar</span>
                                 </label>
                                 <label className="flex flex-col gap-2">
                                     <span className="text-sm font-medium text-slate-700 dark:text-slate-300">Número de Teléfono</span>
-                                    <input className="form-input w-full rounded-lg border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-white focus:border-primary focus:ring-primary h-12 px-4 transition-colors" type="tel" defaultValue="+52 55 1234 5678" />
+                                    <input className="form-input w-full rounded-lg border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-white focus:border-primary focus:ring-primary h-12 px-4 transition-colors" type="tel" defaultValue="" placeholder="+52 ..." />
                                 </label>
                                 <div className="flex flex-col gap-2">
                                     <span className="text-sm font-medium text-slate-700 dark:text-slate-300">Contraseña</span>

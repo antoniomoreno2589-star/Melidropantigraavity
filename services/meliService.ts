@@ -34,12 +34,19 @@ class MeliService {
     // of identical /categories/{id}/attributes calls into one per distinct category.
     private categoryAttrsCache = new Map<string, any[]>();
 
+    // Dashboard stats belong to whoever was signed in; App drops them when a
+    // different user signs in without reloading the page.
+    resetCaches() {
+        this.statsCache = null;
+        this.lastStatsFetch = 0;
+    }
+
     public getCredentials(): MeliCredentials | null {
         const stored = localStorage.getItem('melidrop_meli_credentials');
         return stored ? JSON.parse(stored) : null;
     }
 
-    private async saveCredentials(creds: MeliCredentials) {
+    async saveCredentials(creds: MeliCredentials) {
         localStorage.setItem('melidrop_meli_credentials', JSON.stringify(creds));
 
         const { data: { user } } = await supabase.auth.getUser();
