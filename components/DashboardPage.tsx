@@ -100,15 +100,24 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ user, stats, meliD
           <div className="flex flex-col gap-2 min-w-[280px]">
             <div className="flex justify-between items-center mb-1">
               <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Tu Reputación</span>
-              <span className={`text-[10px] font-black uppercase tracking-widest flex items-center gap-1 ${meliData?.user?.reputation?.includes('green') ? 'text-green-500' :
-                meliData?.user?.reputation?.includes('yellow') ? 'text-yellow-500' : 'text-red-500'
+              {/* A seller with no reputation yet (new account, or ML's data not
+                  loaded) used to fall through to "Riesgo Crítico". */}
+              {!meliData?.user?.reputation || meliData.user.reputation === 'unknown' ? (
+                <span className="text-[10px] font-black uppercase tracking-widest flex items-center gap-1 text-slate-400">
+                  Sin reputación todavía
+                  <span className="material-symbols-outlined text-[14px]">schedule</span>
+                </span>
+              ) : (
+              <span className={`text-[10px] font-black uppercase tracking-widest flex items-center gap-1 ${meliData.user.reputation.includes('green') ? 'text-green-500' :
+                meliData.user.reputation.includes('yellow') ? 'text-yellow-500' : 'text-red-500'
                 }`}>
-                {meliData?.user?.reputation?.includes('green') ? 'Excelente salud' :
-                  meliData?.user?.reputation?.includes('yellow') ? 'Atención necesaria' : 'Riesgo Crítico'}
+                {meliData.user.reputation.includes('green') ? 'Excelente salud' :
+                  meliData.user.reputation.includes('yellow') ? 'Atención necesaria' : 'Riesgo Crítico'}
                 <span className="material-symbols-outlined text-[14px]">
-                  {meliData?.user?.reputation?.includes('green') ? 'check_circle' : 'warning'}
+                  {meliData.user.reputation.includes('green') ? 'check_circle' : 'warning'}
                 </span>
               </span>
+              )}
             </div>
             <div className="flex gap-1.5 h-3">
               {[
@@ -118,8 +127,8 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ user, stats, meliD
                 { id: '4_light_green', color: 'bg-green-400' },
                 { id: '5_green', color: 'bg-green-500' }
               ].map((level, idx) => {
-                const isActive = meliData?.user?.reputation === level.id ||
-                  (meliData?.user?.reputation === 'unknown' && idx === 4); // Default to green if unknown for now or handle appropriately
+                // No reputation yet lights no segment (it used to light green).
+                const isActive = meliData?.user?.reputation === level.id;
 
                 return (
                   <div
