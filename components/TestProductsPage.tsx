@@ -39,15 +39,23 @@ const isDeletedByMl = (p: TestProduct): boolean =>
 // counted and shown as active listings that don't exist on Mercado Libre.
 const isUnpublished = (p: TestProduct): boolean => !p.meliId;
 
-// Attributes a publish had to complete or drop (services/attributeRepair) go
-// back into the saved payload, so later tries — the test or "Publicar Real" —
-// start from them instead of repeating the repair. True when there were any.
-async function saveRepairedAttributes(id: string, payload: any, result: any): Promise<boolean> {
-    if (!result?.repairedAttributes) return false;
+// What a publish had to fix (services/attributeRepair: attributes completed
+// or dropped, a title cut to the length ML allows) goes back into the saved
+// product, so later tries — the test or "Publicar Real" — start from it
+// instead of repeating the repair. True when there was anything.
+async function saveRepairs(id: string, payload: any, result: any): Promise<boolean> {
+    if (!result?.repairedAttributes && !result?.repairedTitle) return false;
     try {
-        await api.testProducts.update(id, { publish_payload: { ...payload, attributes: result.repairedAttributes } });
+        await api.testProducts.update(id, {
+            publish_payload: {
+                ...payload,
+                ...(result.repairedAttributes ? { attributes: result.repairedAttributes } : {}),
+                ...(result.repairedTitle ? { title: result.repairedTitle } : {}),
+            },
+            ...(result.repairedTitle ? { title: result.repairedTitle } : {}),
+        });
     } catch (e) {
-        console.warn('[Melidrop] Could not save repaired attributes:', e);
+        console.warn('[Melidrop] Could not save publish repairs:', e);
     }
     return true;
 }
@@ -462,7 +470,7 @@ export const TestProductsPage = () => {
             const itemPayload = { ...payload, description: undefined, attributes: sanitizePublishAttributes(payload?.attributes) };
 
             const result = await meliService.publishItemWithFallbacks(itemPayload, false);
-            await saveRepairedAttributes(id, payload, result);
+            await saveRepairs(id, payload, result);
 
             if (result.error) {
                 const causes: string[] = [];
@@ -633,7 +641,7 @@ export const TestProductsPage = () => {
                 const descriptionText = payload.description?.plain_text;
                 const itemPayload = { ...payload, description: undefined, attributes: sanitizePublishAttributes(payload.attributes) };
                 const result = await meliService.publishItemWithFallbacks(itemPayload, false);
-                if (await saveRepairedAttributes(product.id, payload, result)) {
+                if (await saveRepairs(product.id, payload, result)) {
                     setBulkPublishRun(prev => prev && { ...prev, repaired: (prev.repaired ?? 0) + 1 });
                 }
 
@@ -728,7 +736,7 @@ export const TestProductsPage = () => {
                     shipping: { mode: 'me2', free_shipping: true, local_pick_up: false, handling_time: 30 },
                 };
                 const result = await meliService.publishItemWithFallbacks(testPayload, false, testToken);
-                if (await saveRepairedAttributes(product.id, payload, result)) {
+                if (await saveRepairs(product.id, payload, result)) {
                     setBulkPublishRun(prev => prev && { ...prev, repaired: (prev.repaired ?? 0) + 1 });
                 }
                 if (result.error) {
