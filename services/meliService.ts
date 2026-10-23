@@ -3,7 +3,7 @@ import { supabase } from './supabase';
 import { mlProxyFetch } from './mlProxy';
 import { publishBlocklist } from './publishBlocklist';
 import { amazonService } from './amazonService';
-import { analyzeCauses, asinOf, hasRepairableCauses, placeholderAttributeIds, repairAttributes, replacePlaceholders } from './attributeRepair';
+import { analyzeCauses, asinOf, fillerAttributeIds, hasRepairableCauses, repairAttributes, replacePlaceholders } from './attributeRepair';
 import { Product } from '../types';
 
 // Map raw ML order statuses to the narrower set allowed by the DB CHECK
@@ -1155,14 +1155,21 @@ class MeliService {
         let payload = itemData;
         const repairs: string[] = [];
 
-        // Required attributes still holding filler (their own name as the
-        // value) get the real value when the title or Amazon has it. Done
-        // before the first try: ML accepts the filler, so it never reports it.
+        // Filler (an attribute's own name as its value): optional attributes
+        // holding it are left out, required ones get the real value when the
+        // title or Amazon has it. Done before the first try: ML accepts the
+        // filler, so it never reports it.
         if (payload.category_id) {
-            const categoryAttributes = await this.getCategoryAttributes(payload.category_id, customToken);
-            const placeholders = placeholderAttributeIds(payload.attributes, categoryAttributes);
-            if (placeholders.length > 0) {
-                const fix = replacePlaceholders(payload.attributes, placeholders, {
+            const fetched = await this.getCategoryAttributes(payload.category_id, customToken);
+            const categoryAttributes = Array.isArray(fetched) ? fetched : [];
+            const filler = fillerAttributeIds(payload.attributes, categoryAttributes);
+            if (filler.optional.length > 0) {
+                const names = new Map<string, string>(categoryAttributes.map((d: any) => [d.id, d.name]));
+                payload = { ...payload, attributes: payload.attributes.filter((a: any) => !filler.optional.includes(a.id)) };
+                repairs.push(...filler.optional.map(id => `${names.get(id) ?? id}: quitado (relleno)`));
+            }
+            if (filler.required.length > 0) {
+                const fix = replacePlaceholders(payload.attributes, filler.required, {
                     title: payload.title ?? payload.family_name ?? '',
                     categoryAttributes,
                     amazonAttributes: await this.amazonAttributesFor(asinOf(payload)),

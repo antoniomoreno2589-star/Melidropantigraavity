@@ -420,19 +420,20 @@ export function repairAttributes(attributes: any[] | undefined, causes: any[] | 
     };
 }
 
-// Required attributes whose value is just the attribute's own name ("Número de
-// parte: Número de parte") — filler the transferred listings brought along;
-// Mercado Libre's own generated titles even appended it ("… Color Nombre Del
-// Diseño"). Optional ones were removed from the saved payloads outright;
-// required ones can't be, or ML rejects the listing.
-export function placeholderAttributeIds(attributes: any[] | undefined, categoryAttributes: any[]): string[] {
+// Attributes whose value is just the attribute's own name ("Color: Color",
+// "Número de parte: Número de parte") — filler the transferred listings
+// brought along; Mercado Libre's own generated titles even appended it
+// ("… Color Nombre Del Diseño"). Optional ones are simply left out; required
+// ones can't be, or ML rejects the listing (see replacePlaceholders).
+export function fillerAttributeIds(attributes: any[] | undefined, categoryAttributes: any[]): { required: string[]; optional: string[] } {
     const defs = new Map<string, any>((Array.isArray(categoryAttributes) ? categoryAttributes : []).map((d: any) => [d.id, d]));
-    return (attributes ?? [])
-        .filter(a => {
-            const def = defs.get(a?.id);
-            return def && isRequired(def) && a.value_name && normalize(String(a.value_name)) === normalize(String(def.name ?? ''));
-        })
-        .map(a => a.id);
+    const out = { required: [] as string[], optional: [] as string[] };
+    for (const a of attributes ?? []) {
+        const def = defs.get(a?.id);
+        if (!def || !a.value_name || normalize(String(a.value_name)) !== normalize(String(def.name ?? ''))) continue;
+        (isRequired(def) ? out.required : out.optional).push(a.id);
+    }
+    return out;
 }
 
 // Those placeholders replaced with the real value where the title or Amazon
