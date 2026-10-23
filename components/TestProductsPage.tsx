@@ -659,9 +659,9 @@ export const TestProductsPage = () => {
     // as listings handed over from another account, which never went through
     // the importer here. Publishes the saved payload to the sandbox test user
     // with buildItemPayload(isSandbox)'s differences (price ×10 so nobody can
-    // buy it by accident, the test account's shipping block) and records the
-    // test listing's id, so the row then reads like any other tested product
-    // and "Publicar Real" works as usual.
+    // buy it by accident, always Clásica, the test account's shipping block)
+    // and records the test listing's id, so the row then reads like any other
+    // tested product and "Publicar Real" works as usual.
     const handleBulkSandboxTest = async () => {
         const toTest = testProducts.filter(p => selectedIds.includes(p.id) && !p.isPublishedToReal && p.hasPayload);
         if (toTest.length === 0) {
@@ -701,6 +701,9 @@ export const TestProductsPage = () => {
                     description: undefined,
                     attributes: sanitizePublishAttributes(payload.attributes),
                     price: Math.round(Number(payload.price) * 10),
+                    // Never Premium on the test account; the saved payload keeps its
+                    // own type for "Publicar Real".
+                    listing_type_id: 'gold_special',
                     shipping: { mode: 'me2', free_shipping: true, local_pick_up: false, handling_time: 30 },
                 };
                 const result = await meliService.publishItemWithFallbacks(testPayload, false, testToken);
