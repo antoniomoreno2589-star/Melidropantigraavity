@@ -998,7 +998,9 @@ Compra con confianza, estamos comprometidos en ofrecerte productos de excelente 
             currency_id: marketplace === 'MLM' ? 'MXN' : 'USD',
             available_quantity: availableQty,
             buying_mode: 'buy_it_now',
-            listing_type_id: listingType,
+            // Test listings are always Clásica: the chosen type (Premium included)
+            // only applies to the real account, via the production payload.
+            listing_type_id: isSandbox ? 'gold_special' : listingType,
             condition: 'new',
             description: { plain_text: descriptionText },
             seller_custom_field: processed.asin,
