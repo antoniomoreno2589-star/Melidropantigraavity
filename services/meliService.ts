@@ -3,7 +3,7 @@ import { supabase } from './supabase';
 import { mlProxyFetch } from './mlProxy';
 import { publishBlocklist } from './publishBlocklist';
 import { amazonService } from './amazonService';
-import { analyzeCauses, asinOf, hasRepairableCauses, repairAttributes } from './attributeRepair';
+import { analyzeCauses, asinOf, hasRepairableCauses, placeholderAttributeIds, repairAttributes, replacePlaceholders } from './attributeRepair';
 import { Product } from '../types';
 
 // Map raw ML order statuses to the narrower set allowed by the DB CHECK
@@ -1153,6 +1153,27 @@ class MeliService {
         }
 
         let payload = itemData;
+        const repairs: string[] = [];
+
+        // Required attributes still holding filler (their own name as the
+        // value) get the real value when the title or Amazon has it. Done
+        // before the first try: ML accepts the filler, so it never reports it.
+        if (payload.category_id) {
+            const categoryAttributes = await this.getCategoryAttributes(payload.category_id, customToken);
+            const placeholders = placeholderAttributeIds(payload.attributes, categoryAttributes);
+            if (placeholders.length > 0) {
+                const fix = replacePlaceholders(payload.attributes, placeholders, {
+                    title: payload.title ?? payload.family_name ?? '',
+                    categoryAttributes,
+                    amazonAttributes: await this.amazonAttributesFor(asinOf(payload)),
+                });
+                if (fix.changed) {
+                    payload = { ...payload, attributes: fix.attributes };
+                    repairs.push(...fix.filled);
+                }
+            }
+        }
+
         let result = await this.publishItem(payload, isDraft, customToken);
 
         // Some ML categories require family_name and reject title when it's provided.
@@ -1182,7 +1203,6 @@ class MeliService {
         // attributeRepair). A few rounds, since ML can report a problem only
         // once an earlier one is fixed. Callers save repairedAttributes so the
         // next publish starts from them.
-        const repairs: string[] = [];
         let unresolved: string[] = [];
         for (let round = 0; round < 3 && result.error && hasRepairableCauses(result.cause); round++) {
             const categoryAttributes = await this.getCategoryAttributes(payload.category_id, customToken);

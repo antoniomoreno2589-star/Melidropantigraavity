@@ -15,9 +15,9 @@
 // ML references: developers.mercadolibre.com.mx/es_ar/atributos (types, tags,
 // N/A, package dimensions) and /es_ar/validaciones (error codes).
 
-type Kind = 'length' | 'mass' | 'volume';
+type Kind = 'length' | 'mass' | 'volume' | 'data';
 
-// Factor from each unit to its kind's base unit (cm, g, mL). Keys cover both
+// Factor from each unit to its kind's base unit (cm, g, mL, MB). Keys cover both
 // ML's unit ids ('"', 'cm', 'fl oz', …) and SP-API's unit names ('inches',
 // 'kilograms', …), lowercased.
 const UNIT_FACTORS: Record<Kind, Record<string, number>> = {
@@ -36,6 +36,10 @@ const UNIT_FACTORS: Record<Kind, Record<string, number>> = {
         // come up for mass attributes, which use the table above.
         'fl oz': 29.5735295625, fluid_ounces: 29.5735295625, oz: 29.5735295625, ounces: 29.5735295625,
         gal: 3785.411784, gallons: 3785.411784, cups: 236.5882365, quarts: 946.352946, pints: 473.176473,
+    },
+    // Storage, in the decimal units products are sold by (a "128 GB" card).
+    data: {
+        kb: 0.001, kilobytes: 0.001, mb: 1, megabytes: 1, gb: 1000, gigabytes: 1000, tb: 1000000, terabytes: 1000000,
     },
 };
 
@@ -72,6 +76,7 @@ const WEIGHT_SOURCES: Record<string, string[]> = {
     PRODUCT_WEIGHT: ['item_weight'], UNIT_WEIGHT: ['item_weight'], NET_WEIGHT: ['item_net_weight'],
 };
 const VOLUME_KEYS = ['capacity', 'liquid_volume', 'item_volume'];
+const DATA_KEYS = ['memory_storage_capacity', 'capacity'];
 const TEXT_SOURCES: Record<string, string[]> = {
     MODEL: ['model_number', 'model_name', 'part_number'],
     ALPHANUMERIC_MODEL: ['model_number', 'part_number'],
@@ -91,6 +96,8 @@ const VOLUME_TOKENS: Record<string, string> = {
     ml: 'ml', mililitro: 'ml', mililitros: 'ml', cc: 'cc', l: 'l', lt: 'l', lts: 'l', litro: 'l', litros: 'l',
     oz: 'fl oz', onza: 'fl oz', onzas: 'fl oz', gal: 'gal', galon: 'gal', galones: 'gal',
 };
+// A storage size in the title, e.g. "Memoria Micro Sd 128gb".
+const DATA_IN_TEXT = /(\d+(?:[.,]\d+)?)\s*(tb|gb|mb|kb)\b/;
 
 export interface RepairContext {
     title: string;
@@ -114,7 +121,7 @@ export interface CauseAnalysis {
 }
 
 const normalize = (s: string): string =>
-    s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
+    s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/\s+/g, ' ').trim();
 
 const escapeRegExp = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
@@ -128,7 +135,7 @@ const formatNumber = (n: number): string => {
 // The attribute's kind of measurement, from its allowed units ('oz' alone is
 // ambiguous, so it doesn't count).
 function measureKind(def: any): Kind | null {
-    const counts: Record<Kind, number> = { length: 0, mass: 0, volume: 0 };
+    const counts = Object.fromEntries(Object.keys(UNIT_FACTORS).map(k => [k, 0])) as Record<Kind, number>;
     for (const u of def?.allowed_units ?? []) {
         const id = String(u.id ?? u.name ?? '').toLowerCase();
         if (id === 'oz') continue;
@@ -239,6 +246,17 @@ export function inferAttributeValue(def: any, ctx: RepairContext): { value: { va
                 if (formatted) return { value: { value_name: formatted }, source: 'Amazon' };
             }
         }
+        if (kind === 'data' && /CAPACITY|MEMORY|STORAGE/.test(id)) {
+            // Title first, for the same reason as volumes.
+            const m = normalize(ctx.title).match(DATA_IN_TEXT);
+            const titleValue = m && toAllowedUnit(def, kind, Number(m[1].replace(',', '.')), m[2]);
+            if (titleValue) return { value: { value_name: titleValue }, source: 'título' };
+            for (const key of DATA_KEYS) {
+                const am = asMeasure(amazonEntry(amazon, key));
+                const formatted = am && toAllowedUnit(def, kind, am.value, am.unit);
+                if (formatted) return { value: { value_name: formatted }, source: 'Amazon' };
+            }
+        }
         return null;
     }
 
@@ -259,7 +277,7 @@ export function inferAttributeValue(def: any, ctx: RepairContext): { value: { va
 
     // Free text (ML suggests values but accepts others).
     const sources = TEXT_SOURCES[id]
-        ?? (/MATERIAL$/.test(id) ? ['material'] : /(^|_)COLOR$/.test(id) ? ['color'] : null);
+        ?? (/MATERIALS?$/.test(id) ? ['material'] : /(^|_)COLOR$/.test(id) ? ['color'] : null);
     const text = sources ? amazonText(amazon, sources) : null;
     if (text) return { value: { value_name: text.slice(0, 255) }, source: 'Amazon' };
     if (hasValues) {
@@ -365,19 +383,26 @@ export function repairAttributes(attributes: any[] | undefined, causes: any[] | 
         if (reason) set('EMPTY_GTIN_REASON', reason, 'sin código universal');
     }
 
+    // Values ML just rejected, so the same one isn't offered back to it.
+    const rejected = new Map<string, string>();
     for (const id of invalid) {
         const reason = id === 'EMPTY_GTIN_REASON' ? emptyGtinReason(defs.get(id)) : null;
         if (reason) { set(id, reason, 'valor de la categoría'); continue; }
         // A required attribute still needs a value — look for a valid one
         // below; an optional one is better left out than rejected.
-        if (isRequired(defs.get(id))) { attrs.delete(id); missing.add(id); continue; }
+        if (isRequired(defs.get(id))) {
+            rejected.set(id, normalize(String(attrs.get(id)?.value_name ?? '')));
+            attrs.delete(id);
+            missing.add(id);
+            continue;
+        }
         if (attrs.delete(id)) dropped.push(label(id));
     }
 
     for (const id of missing) {
         const def = defs.get(id);
         const inferred = def ? inferAttributeValue(def, ctx) : null;
-        if (inferred) set(id, inferred.value, inferred.source);
+        if (inferred && rejected.get(id) !== normalize(inferred.value.value_name)) set(id, inferred.value, inferred.source);
         else unresolved.push(label(id));
     }
 
@@ -393,6 +418,37 @@ export function repairAttributes(attributes: any[] | undefined, causes: any[] | 
         changed: filled.length > 0 || dropped.length > 0,
         filled, dropped, unresolved,
     };
+}
+
+// Required attributes whose value is just the attribute's own name ("Número de
+// parte: Número de parte") — filler the transferred listings brought along;
+// Mercado Libre's own generated titles even appended it ("… Color Nombre Del
+// Diseño"). Optional ones were removed from the saved payloads outright;
+// required ones can't be, or ML rejects the listing.
+export function placeholderAttributeIds(attributes: any[] | undefined, categoryAttributes: any[]): string[] {
+    const defs = new Map<string, any>((Array.isArray(categoryAttributes) ? categoryAttributes : []).map((d: any) => [d.id, d]));
+    return (attributes ?? [])
+        .filter(a => {
+            const def = defs.get(a?.id);
+            return def && isRequired(def) && a.value_name && normalize(String(a.value_name)) === normalize(String(def.name ?? ''));
+        })
+        .map(a => a.id);
+}
+
+// Those placeholders replaced with the real value where the title or Amazon
+// has one; the rest are left as they are (still publishable).
+export function replacePlaceholders(attributes: any[] | undefined, ids: string[], ctx: RepairContext): RepairResult {
+    const defs = new Map<string, any>((Array.isArray(ctx.categoryAttributes) ? ctx.categoryAttributes : []).map((d: any) => [d.id, d]));
+    const attrs = new Map<string, any>((attributes ?? []).filter(a => a?.id).map(a => [a.id, a]));
+    const filled: string[] = [];
+    for (const id of ids) {
+        const def = defs.get(id);
+        const inferred = def ? inferAttributeValue(def, ctx) : null;
+        if (!inferred) continue;
+        attrs.set(id, { id, ...inferred.value });
+        filled.push(`${def.name ?? id}: ${inferred.value.value_name} (${inferred.source}, en lugar de "${def.name ?? id}")`);
+    }
+    return { attributes: Array.from(attrs.values()), changed: filled.length > 0, filled, dropped: [], unresolved: [] };
 }
 
 // The listing's ASIN: Melidrop stores it as the seller SKU.
