@@ -39,6 +39,19 @@ const isDeletedByMl = (p: TestProduct): boolean =>
 // counted and shown as active listings that don't exist on Mercado Libre.
 const isUnpublished = (p: TestProduct): boolean => !p.meliId;
 
+// Attributes a publish had to complete or drop (services/attributeRepair) go
+// back into the saved payload, so later tries — the test or "Publicar Real" —
+// start from them instead of repeating the repair. True when there were any.
+async function saveRepairedAttributes(id: string, payload: any, result: any): Promise<boolean> {
+    if (!result?.repairedAttributes) return false;
+    try {
+        await api.testProducts.update(id, { publish_payload: { ...payload, attributes: result.repairedAttributes } });
+    } catch (e) {
+        console.warn('[Melidrop] Could not save repaired attributes:', e);
+    }
+    return true;
+}
+
 export const TestProductsPage = () => {
     const [activeTab, setActiveTab] = useState<'config' | 'products'>('products');
     const [searchField, setSearchField] = useState<'title' | 'asin' | 'sku'>('title');
@@ -56,6 +69,7 @@ export const TestProductsPage = () => {
         finished: boolean;
         cancelled: boolean;
         sandbox?: boolean; // a "Probar en Sandbox" run (test account), not a real publish
+        repaired?: number; // products whose attributes the publish completed (attributeRepair)
     } | null>(null);
     const bulkPublishCancelRef = useRef(false);
     const [isSyncing, setIsSyncing] = useState(false);
@@ -448,6 +462,7 @@ export const TestProductsPage = () => {
             const itemPayload = { ...payload, description: undefined, attributes: sanitizePublishAttributes(payload?.attributes) };
 
             const result = await meliService.publishItemWithFallbacks(itemPayload, false);
+            await saveRepairedAttributes(id, payload, result);
 
             if (result.error) {
                 const causes: string[] = [];
@@ -489,7 +504,10 @@ export const TestProductsPage = () => {
 
             await trackPublishedProduct(product, result, itemPayload, descriptionText);
 
-            alert(`✅ Producto publicado exitosamente.\nID: ${result.id}\nVer: ${result.permalink || 'En tu panel de MercadoLibre'}`);
+            const repaired = result.attributeRepairs?.length
+                ? `\n\nAtributos completados automáticamente:\n• ${result.attributeRepairs.join('\n• ')}`
+                : '';
+            alert(`✅ Producto publicado exitosamente.\nID: ${result.id}\nVer: ${result.permalink || 'En tu panel de MercadoLibre'}${repaired}`);
         } catch (err: any) {
             console.error("Error publishing to real account:", err);
             alert(`Error: ${err.message}`);
@@ -615,6 +633,9 @@ export const TestProductsPage = () => {
                 const descriptionText = payload.description?.plain_text;
                 const itemPayload = { ...payload, description: undefined, attributes: sanitizePublishAttributes(payload.attributes) };
                 const result = await meliService.publishItemWithFallbacks(itemPayload, false);
+                if (await saveRepairedAttributes(product.id, payload, result)) {
+                    setBulkPublishRun(prev => prev && { ...prev, repaired: (prev.repaired ?? 0) + 1 });
+                }
 
                 if (result.error) {
                     const causes = result.cause?.map((c: any) => c.message || c.code).join(', ') || result.error;
@@ -707,6 +728,9 @@ export const TestProductsPage = () => {
                     shipping: { mode: 'me2', free_shipping: true, local_pick_up: false, handling_time: 30 },
                 };
                 const result = await meliService.publishItemWithFallbacks(testPayload, false, testToken);
+                if (await saveRepairedAttributes(product.id, payload, result)) {
+                    setBulkPublishRun(prev => prev && { ...prev, repaired: (prev.repaired ?? 0) + 1 });
+                }
                 if (result.error) {
                     const causes = result.cause?.map((c: any) => c.message || c.code).join(', ') || result.error;
                     console.error('[Melidrop] handleBulkSandboxTest error:', { asin: product.asin, error: result.error, cause: result.cause, raw: result.raw });
@@ -1337,6 +1361,12 @@ export const TestProductsPage = () => {
                                     <span className="material-symbols-outlined text-[16px]">check_circle</span>
                                     {bulkPublishRun.successCount} exitosos
                                 </span>
+                                {!!bulkPublishRun.repaired && (
+                                    <span className="flex items-center gap-1.5 text-primary font-bold" title="Atributos que Mercado Libre pedía, completados con los datos de Amazon o del título">
+                                        <span className="material-symbols-outlined text-[16px]">auto_fix_high</span>
+                                        {bulkPublishRun.repaired} con atributos completados
+                                    </span>
+                                )}
                                 {bulkPublishRun.errors.length > 0 && (
                                     <span className="flex items-center gap-1.5 text-red-600 dark:text-red-400 font-bold">
                                         <span className="material-symbols-outlined text-[16px]">error</span>
