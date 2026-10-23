@@ -452,6 +452,19 @@ export function replacePlaceholders(attributes: any[] | undefined, ids: string[]
     return { attributes: Array.from(attrs.values()), changed: filled.length > 0, filled, dropped: [], unresolved: [] };
 }
 
+// A title (or family_name) cut after the last whole word that fits, with no
+// connector or punctuation left dangling — the same rule as ml_fit_title in
+// the database.
+export function fitToWords(text: string, limit: number): string {
+    const clean = String(text ?? '').replace(/\s+/g, ' ').trim();
+    if (clean.length <= limit) return clean;
+    let cut = clean.slice(0, limit + 1).replace(/\s+\S*$/, '');
+    if (cut.length > limit) cut = cut.slice(0, limit);
+    return cut
+        .replace(/(\s+(de|del|con|para|por|en|sin|y|la|las|el|los|al|que))+$/i, '')
+        .replace(/[\s,;:/+&-]+$/, '');
+}
+
 // The listing's ASIN: Melidrop stores it as the seller SKU.
 export function asinOf(payload: any): string | null {
     const sku = payload?.attributes?.find((a: any) => a?.id === 'SELLER_SKU')?.value_name ?? payload?.seller_custom_field;

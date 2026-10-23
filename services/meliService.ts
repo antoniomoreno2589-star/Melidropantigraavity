@@ -3,7 +3,7 @@ import { supabase } from './supabase';
 import { mlProxyFetch } from './mlProxy';
 import { publishBlocklist } from './publishBlocklist';
 import { amazonService } from './amazonService';
-import { analyzeCauses, asinOf, fillerAttributeIds, hasRepairableCauses, repairAttributes, replacePlaceholders } from './attributeRepair';
+import { analyzeCauses, asinOf, fillerAttributeIds, fitToWords, hasRepairableCauses, repairAttributes, replacePlaceholders } from './attributeRepair';
 import { Product } from '../types';
 
 // Map raw ML order statuses to the narrower set allowed by the DB CHECK
@@ -1194,6 +1194,29 @@ class MeliService {
             result = await this.publishItem(payload, isDraft, customToken);
         }
 
+        // A title over the limit ML applies. Confirmed live: some domains cap
+        // family_name at 60 even where their category's max_title_length says
+        // 200 ("Family Name length is over of 60 character"). Cut after the
+        // last whole word under the limit ML names, never inside one.
+        let repairedTitle: string | undefined;
+        const lengthCause = result.error && result.cause?.find((c: any) => {
+            const text = `${c.code ?? ''} ${c.message ?? ''}`;
+            // Too long only — item.title.minimum_length asks for the opposite.
+            return /family.?name|title/i.test(text) && /length_invalid|over|exceed|too long/i.test(text) && !/minimum/i.test(text);
+        });
+        const field = payload.family_name ? 'family_name' : 'title';
+        if (lengthCause && payload[field]) {
+            const limit = Number(String(lengthCause.message ?? '').match(/(\d+)\s*char/i)?.[1]) || 60;
+            const fitted = fitToWords(payload[field], limit);
+            if (fitted && fitted !== payload[field]) {
+                console.log(`[Melidrop] ${field} over ${limit} characters — retrying as "${fitted}"`);
+                payload = { ...payload, [field]: fitted };
+                repairedTitle = fitted;
+                repairs.push(`Título: recortado a ${limit} caracteres, en palabra completa`);
+                result = await this.publishItem(payload, isDraft, customToken);
+            }
+        }
+
         // Some categories reject the hardcoded WARRANTY_TYPE free-text value —
         // they expect one of a fixed set of value_ids instead. sale_terms are
         // optional enrichment, not required to publish, so drop them and retry
@@ -1233,6 +1256,7 @@ class MeliService {
             result.repairedAttributes = payload.attributes;
             result.attributeRepairs = repairs;
         }
+        if (repairedTitle) result.repairedTitle = repairedTitle;
         if (result.error && unresolved.length > 0 && hasRepairableCauses(result.cause)) {
             result.cause = [
                 { type: 'error', code: 'melidrop.attributes.unresolved', message: `Faltan datos que no están en Amazon ni en el título: ${unresolved.join(', ')}` },
