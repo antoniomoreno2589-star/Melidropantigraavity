@@ -210,6 +210,17 @@ class AmazonService {
         }
     }
 
+    // Raw SP-API catalog attributes (item_dimensions, item_package_weight,
+    // capacity, model_number, …) without getProduct's pricing call — see
+    // services/attributeRepair.ts, which reads these to complete listings.
+    async getCatalogAttributes(asin: string): Promise<Record<string, any[]>> {
+        if (!this.isAuthenticated()) {
+            throw new Error('Not authenticated with Amazon');
+        }
+        const result = await this.callProxy('getCatalogAttributes', { asin });
+        return result?.attributes ?? {};
+    }
+
     async searchProducts(query: string): Promise<any[]> {
         if (!this.isAuthenticated()) {
             throw new Error('Not authenticated with Amazon');

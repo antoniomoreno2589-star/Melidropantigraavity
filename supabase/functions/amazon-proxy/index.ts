@@ -15,7 +15,7 @@ interface AmazonCredentials {
 }
 
 interface AmazonRequest {
-    action: 'getProduct' | 'searchProducts' | 'updatePrice' | 'refreshToken' | 'estimateDelivery';
+    action: 'getProduct' | 'getCatalogAttributes' | 'searchProducts' | 'updatePrice' | 'refreshToken' | 'estimateDelivery';
     credentials: AmazonCredentials;
     params?: any;
 }
@@ -179,6 +179,20 @@ async function getProduct(credentials: AmazonCredentials, asin: string, params?:
     };
 }
 
+// Just the catalog attributes (dimensions, weights, capacity, model…) — what
+// Melidrop's attribute repair reads to fill in what Mercado Libre requires.
+// Skips getProduct's pricing call, which has a far stricter rate limit and
+// isn't needed for this.
+async function getCatalogAttributes(credentials: AmazonCredentials, asin: string, params?: any) {
+    const accessToken = await getAccessToken(credentials);
+    const endpoint = ENDPOINTS[credentials.region as keyof typeof ENDPOINTS] || ENDPOINTS.na;
+
+    const marketplaceId = params?.marketplaceId || 'A1AM78C64UM0Y8';
+    const catalogPath = `/catalog/2022-04-01/items/${asin}?marketplaceIds=${marketplaceId}&includedData=attributes`;
+    const catalogData = await makeAmazonRequestWithRetry(endpoint, catalogPath, accessToken, 3);
+    return { attributes: catalogData?.attributes ?? {} };
+}
+
 async function searchProducts(credentials: AmazonCredentials, query: string, params?: any) {
     const accessToken = await getAccessToken(credentials);
     const endpoint = ENDPOINTS[credentials.region as keyof typeof ENDPOINTS] || ENDPOINTS.na;
@@ -330,6 +344,11 @@ serve(async (req) => {
             case 'getProduct':
                 if (!params?.asin) throw new Error('ASIN is required');
                 result = await getProduct(credentials, params.asin, params);
+                break;
+
+            case 'getCatalogAttributes':
+                if (!params?.asin) throw new Error('ASIN is required');
+                result = await getCatalogAttributes(credentials, params.asin, params);
                 break;
 
             case 'searchProducts':

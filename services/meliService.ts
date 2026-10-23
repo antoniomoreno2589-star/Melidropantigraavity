@@ -2,6 +2,8 @@ import { api } from './api';
 import { supabase } from './supabase';
 import { mlProxyFetch } from './mlProxy';
 import { publishBlocklist } from './publishBlocklist';
+import { amazonService } from './amazonService';
+import { analyzeCauses, asinOf, hasRepairableCauses, repairAttributes } from './attributeRepair';
 import { Product } from '../types';
 
 // Map raw ML order statuses to the narrower set allowed by the DB CHECK
@@ -41,6 +43,7 @@ class MeliService {
     // import batch keeps hitting the same handful of categories — this turns dozens
     // of identical /categories/{id}/attributes calls into one per distinct category.
     private categoryAttrsCache = new Map<string, any[]>();
+    private amazonAttrsCache = new Map<string, Record<string, any[]>>();
 
     // Dashboard stats belong to whoever was signed in; App drops them when a
     // different user signs in without reloading the page.
@@ -1174,7 +1177,60 @@ class MeliService {
             result = await this.publishItem(payload, isDraft, customToken);
         }
 
+        // Attributes ML reports as missing or invalid: completed from the
+        // category's definitions, the title and the Amazon product (see
+        // attributeRepair). A few rounds, since ML can report a problem only
+        // once an earlier one is fixed. Callers save repairedAttributes so the
+        // next publish starts from them.
+        const repairs: string[] = [];
+        let unresolved: string[] = [];
+        for (let round = 0; round < 3 && result.error && hasRepairableCauses(result.cause); round++) {
+            const categoryAttributes = await this.getCategoryAttributes(payload.category_id, customToken);
+            // Amazon is only asked when there are values to look up — not for
+            // problems solved by dropping or swapping a value.
+            const { missing, invalid, packageDimensions } = analyzeCauses(result.cause, categoryAttributes);
+            const needsAmazon = missing.size > 0 || invalid.size > 0 || packageDimensions;
+            const repair = repairAttributes(payload.attributes, result.cause, {
+                title: payload.title ?? payload.family_name ?? '',
+                categoryAttributes,
+                amazonAttributes: needsAmazon ? await this.amazonAttributesFor(asinOf(payload)) : null,
+            });
+            unresolved = repair.unresolved;
+            if (!repair.changed) break;
+            repairs.push(...repair.filled, ...repair.dropped.map(name => `${name}: quitado (valor no válido)`));
+            console.log('[Melidrop] Retrying with repaired attributes:', repairs);
+            payload = { ...payload, attributes: repair.attributes };
+            result = await this.publishItem(payload, isDraft, customToken);
+        }
+        if (repairs.length > 0) {
+            result.repairedAttributes = payload.attributes;
+            result.attributeRepairs = repairs;
+        }
+        if (result.error && unresolved.length > 0 && hasRepairableCauses(result.cause)) {
+            result.cause = [
+                { type: 'error', code: 'melidrop.attributes.unresolved', message: `Faltan datos que no están en Amazon ni en el título: ${unresolved.join(', ')}` },
+                ...(result.cause ?? []),
+            ];
+        }
+
         return result;
+    }
+
+    // Amazon catalog attributes for attributeRepair — null without an ASIN,
+    // an Amazon connection or an answer. Only answers are cached, so a failed
+    // lookup is tried again next time.
+    private async amazonAttributesFor(asin: string | null): Promise<Record<string, any[]> | null> {
+        if (!asin) return null;
+        const cached = this.amazonAttrsCache.get(asin);
+        if (cached) return cached;
+        try {
+            const attrs = await amazonService.getCatalogAttributes(asin);
+            this.amazonAttrsCache.set(asin, attrs);
+            return attrs;
+        } catch (e) {
+            console.warn(`[Melidrop] ${asin}: no Amazon data for attribute repair:`, e);
+            return null;
+        }
     }
 
     async postDescription(meliId: string, descriptionText: string, customToken?: string): Promise<void> {
@@ -1299,11 +1355,13 @@ class MeliService {
         }
     }
 
-    async getCategoryAttributes(categoryId: string): Promise<any[]> {
+    // customToken: publishing to the test user mustn't depend on the real
+    // account's token being valid (the definitions are the same either way).
+    async getCategoryAttributes(categoryId: string, customToken?: string): Promise<any[]> {
         const cached = this.categoryAttrsCache.get(categoryId);
         if (cached) return cached;
         try {
-            const response = await this.fetchWithAuth(`/categories/${categoryId}/attributes`);
+            const response = await this.fetchWithAuth(`/categories/${categoryId}/attributes`, {}, customToken);
             if (!response.ok) return [];
             const data = await response.json();
             // Only cache genuine successes — a transient failure returns [] uncached
