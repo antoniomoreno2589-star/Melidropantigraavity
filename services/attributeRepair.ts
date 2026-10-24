@@ -140,9 +140,10 @@ export interface RepairContext {
 export interface RepairResult {
     attributes: any[];
     changed: boolean;
-    filled: string[];      // e.g. "Altura: 36 cm (Amazon)"
-    dropped: string[];     // optional attributes removed because ML rejected their value
-    unresolved: string[];  // required attributes still without a value, by name
+    filled: string[];        // e.g. "Altura: 36 cm (Amazon)"
+    dropped: string[];       // optional attributes removed because ML rejected their value
+    unresolved: string[];    // required attributes still without a value, by name
+    unresolvedIds: string[]; // the same, by attribute id (for the seller to fill in by hand)
 }
 
 export interface CauseAnalysis {
@@ -507,6 +508,8 @@ export function repairAttributes(attributes: any[] | undefined, causes: any[] | 
     const filled: string[] = [];
     const dropped: string[] = [];
     const unresolved: string[] = [];
+    const unresolvedIds: string[] = [];
+    const leaveOpen = (name: string, ...ids: string[]) => { unresolved.push(name); unresolvedIds.push(...ids); };
 
     const set = (id: string, value: { value_id?: string; value_name: string }, source: string) => {
         attrs.set(id, { id, ...value });
@@ -517,7 +520,7 @@ export function repairAttributes(attributes: any[] | undefined, causes: any[] | 
     if (titleGender) {
         const match = matchAllowedValue(defs.get('GENDER'), [ctx.title]);
         if (match && attrs.get('GENDER')?.value_name !== match.name) set('GENDER', { value_id: match.id, value_name: match.name }, 'título');
-        else unresolved.push('Género (no coincide con el título)');
+        else leaveOpen('Género (no coincide con el título)', 'GENDER');
     }
 
     // "Pack" needs more than one unit ("Ingresa un valor diferente a 1 porque
@@ -537,7 +540,7 @@ export function repairAttributes(attributes: any[] | undefined, causes: any[] | 
             set('SALE_FORMAT', { value_id: unit.id, value_name: unit.name }, 'se vende como una pieza');
             set(unitsId, { value_name: '1' }, 'se vende como una pieza');
         } else {
-            unresolved.push(label('SALE_FORMAT'));
+            leaveOpen(label('SALE_FORMAT'), 'SALE_FORMAT', unitsId);
         }
     }
 
@@ -567,20 +570,36 @@ export function repairAttributes(attributes: any[] | undefined, causes: any[] | 
         const def = defs.get(id);
         const inferred = def ? inferAttributeValue(def, ctx) : null;
         if (inferred && rejected.get(id) !== normalize(inferred.value.value_name)) set(id, inferred.value, inferred.source);
-        else unresolved.push(label(id));
+        else leaveOpen(label(id), id);
     }
 
     if (needsPackage) {
         const fromAmazon = packageDimensions(ctx.amazonAttributes);
         const pkg = fromAmazon ?? roundedPackageDimensions(attrs);
         if (pkg) for (const id of PACKAGE_ATTRS) set(id, { value_name: pkg[id] }, fromAmazon ? 'Amazon' : 'redondeado');
-        else unresolved.push('Medidas y peso del paquete');
+        else leaveOpen('Medidas y peso del paquete', ...PACKAGE_ATTRS);
     }
 
     return {
         attributes: Array.from(attrs.values()),
         changed: filled.length > 0 || dropped.length > 0,
-        filled, dropped, unresolved,
+        filled, dropped, unresolved, unresolvedIds,
+    };
+}
+
+// What the seller's form needs to ask for an attribute: its name, its type
+// and, depending on it, the allowed units or the category's own values.
+export function attributeFormDef(def: any, id: string) {
+    return {
+        id,
+        name: def?.name ?? id,
+        value_type: def?.value_type ?? 'string',
+        ...(Array.isArray(def?.allowed_units) && def.allowed_units.length
+            ? { allowed_units: def.allowed_units.map((u: any) => ({ id: u.id ?? u.name, name: u.name ?? u.id })), default_unit: def.default_unit ?? null }
+            : {}),
+        ...(Array.isArray(def?.values) && def.values.length
+            ? { values: def.values.slice(0, 300).map((v: any) => ({ id: v.id, name: v.name })) }
+            : {}),
     };
 }
 
@@ -613,7 +632,7 @@ export function replacePlaceholders(attributes: any[] | undefined, ids: string[]
         attrs.set(id, { id, ...inferred.value });
         filled.push(`${def.name ?? id}: ${inferred.value.value_name} (${inferred.source}, en lugar de "${def.name ?? id}")`);
     }
-    return { attributes: Array.from(attrs.values()), changed: filled.length > 0, filled, dropped: [], unresolved: [] };
+    return { attributes: Array.from(attrs.values()), changed: filled.length > 0, filled, dropped: [], unresolved: [], unresolvedIds: [] };
 }
 
 // A title (or family_name) cut after the last whole word that fits, with no
