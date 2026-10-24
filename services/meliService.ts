@@ -3,7 +3,7 @@ import { supabase } from './supabase';
 import { mlProxyFetch } from './mlProxy';
 import { publishBlocklist } from './publishBlocklist';
 import { amazonService } from './amazonService';
-import { analyzeCauses, asinOf, explainUnfixable, fillerAttributeIds, fitToWords, hasRepairableCauses, repairAttributes, replacePlaceholders } from './attributeRepair';
+import { analyzeCauses, asinOf, attributeFormDef, explainUnfixable, fillerAttributeIds, fitToWords, hasRepairableCauses, repairAttributes, replacePlaceholders } from './attributeRepair';
 import { Product } from '../types';
 
 // Map raw ML order statuses to the narrower set allowed by the DB CHECK
@@ -1234,8 +1234,11 @@ class MeliService {
         // once an earlier one is fixed. Callers save repairedAttributes so the
         // next publish starts from them.
         let unresolved: string[] = [];
+        let unresolvedIds: string[] = [];
+        let definitions: any[] = [];
         for (let round = 0; round < 3 && result.error && hasRepairableCauses(result.cause); round++) {
             const categoryAttributes = await this.getCategoryAttributes(payload.category_id, customToken);
+            definitions = Array.isArray(categoryAttributes) ? categoryAttributes : [];
             // Amazon is only asked when there are values to look up — not for
             // problems solved by dropping or swapping a value.
             const { missing, invalid, packageDimensions } = analyzeCauses(result.cause, categoryAttributes);
@@ -1246,6 +1249,7 @@ class MeliService {
                 amazonAttributes: needsAmazon ? await this.amazonAttributesFor(asinOf(payload)) : null,
             });
             unresolved = repair.unresolved;
+            unresolvedIds = repair.unresolvedIds;
             if (!repair.changed) break;
             repairs.push(...repair.filled, ...repair.dropped.map(name => `${name}: quitado (valor no válido)`));
             console.log('[Melidrop] Retrying with repaired attributes:', repairs);
@@ -1262,6 +1266,10 @@ class MeliService {
                 { type: 'error', code: 'melidrop.attributes.unresolved', message: `Faltan datos que no están en Amazon ni en el título: ${unresolved.join(', ')}` },
                 ...(result.cause ?? []),
             ];
+            // What the seller has to fill in by hand, with what the form needs
+            // to ask for each (type, units, the category's values).
+            const byId = new Map(definitions.map((d: any) => [d.id, d]));
+            result.missingAttributes = [...new Set(unresolvedIds)].map(id => attributeFormDef(byId.get(id), id));
         }
         const unfixable = result.error ? explainUnfixable(result.cause) : [];
         if (unfixable.length > 0) {

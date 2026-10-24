@@ -15,6 +15,7 @@ interface TestProduct extends Product {
     prepTime: string;
     category: string;
     hasPayload: boolean;  // a saved publish_payload exists (the list leaves the payload itself out)
+    missingAttributes: any[] | null; // required attributes the last publish couldn't fill, for the seller to complete
 }
 
 // Split into two independent filters (used to be one SandboxStatusFilter
@@ -44,25 +45,172 @@ const isUnpublished = (p: TestProduct): boolean => !p.meliId;
 // one — confirmed live they made up most of each error line, burying the reason.
 const blockingCauses = (cause: any): any[] => (Array.isArray(cause) ? cause : []).filter((c: any) => c?.type !== 'warning');
 
-// What a publish had to fix (services/attributeRepair: attributes completed
-// or dropped, a title cut to the length ML allows) goes back into the saved
-// product, so later tries — the test or "Publicar Real" — start from it
-// instead of repeating the repair. True when there was anything.
-async function saveRepairs(id: string, payload: any, result: any): Promise<boolean> {
-    if (!result?.repairedAttributes && !result?.repairedTitle) return false;
-    try {
-        await api.testProducts.update(id, {
-            publish_payload: {
-                ...payload,
-                ...(result.repairedAttributes ? { attributes: result.repairedAttributes } : {}),
-                ...(result.repairedTitle ? { title: result.repairedTitle } : {}),
-            },
+// What a publish learned about a product, saved with it: what it had to fix
+// (services/attributeRepair: attributes completed or dropped, a title cut to
+// the length ML allows), so later tries — the test or "Publicar Real" — start
+// from it instead of repeating the repair; and the required attributes it
+// couldn't fill, for the seller to complete by hand (cleared once a try needs
+// nothing more). Returns what the list on screen should show now.
+async function saveOutcome(product: TestProduct, payload: any, result: any): Promise<{ repaired: boolean; missingAttributes: any[] | null; title?: string }> {
+    const repaired = !!(result?.repairedAttributes || result?.repairedTitle);
+    const missingAttributes = result?.error && Array.isArray(result?.missingAttributes) && result.missingAttributes.length
+        ? result.missingAttributes : null;
+    const updates: any = {};
+    if (repaired) {
+        updates.publish_payload = {
+            ...payload,
+            ...(result.repairedAttributes ? { attributes: result.repairedAttributes } : {}),
             ...(result.repairedTitle ? { title: result.repairedTitle } : {}),
-        });
-    } catch (e) {
-        console.warn('[Melidrop] Could not save publish repairs:', e);
+        };
+        if (result.repairedTitle) updates.title = result.repairedTitle;
     }
-    return true;
+    if (JSON.stringify(missingAttributes) !== JSON.stringify(product.missingAttributes ?? null)) updates.missing_attributes = missingAttributes;
+    if (Object.keys(updates).length > 0) {
+        try {
+            await api.testProducts.update(product.id, updates);
+        } catch (e) {
+            console.warn('[Melidrop] Could not save the publish outcome:', e);
+        }
+    }
+    return { repaired, missingAttributes, ...(result?.repairedTitle ? { title: result.repairedTitle } : {}) };
+}
+
+// The required attributes a publish couldn't fill (product.missingAttributes,
+// from attributeRepair), asked the way Mercado Libre takes each: one of the
+// category's own values, a number with one of its units, or text. Saved into
+// the product's payload, so the next "Probar en Sandbox" or "Publicar" sends
+// them; the ones left blank stay listed.
+function MissingDataModal({ product, onClose, onSaved }: {
+    product: TestProduct;
+    onClose: () => void;
+    onSaved: (remaining: any[] | null) => void;
+}) {
+    const defs: any[] = product.missingAttributes ?? [];
+    const [values, setValues] = useState<Record<string, { text: string; unit: string }>>(() =>
+        Object.fromEntries(defs.map(d => [d.id, { text: '', unit: d.default_unit ?? d.allowed_units?.[0]?.id ?? '' }])));
+    const [saving, setSaving] = useState(false);
+    const [error, setError] = useState<string | null>(null);
+    const setField = (id: string, patch: Partial<{ text: string; unit: string }>) =>
+        setValues(prev => ({ ...prev, [id]: { ...prev[id], ...patch } }));
+    const closedList = (d: any) => Array.isArray(d.values) && d.values.length > 0 && (d.value_type === 'list' || d.value_type === 'boolean');
+
+    // The attribute as ML takes it — null while the field is blank or not a valid number.
+    const toAttribute = (d: any): any | null => {
+        const field = values[d.id];
+        const text = (field?.text ?? '').trim();
+        if (!text) return null;
+        if (closedList(d)) {
+            const option = d.values.find((o: any) => String(o.id) === text);
+            return option ? { id: d.id, value_id: String(option.id), value_name: option.name } : null;
+        }
+        if (d.value_type === 'number_unit' || d.value_type === 'number') {
+            const n = Number(text.replace(',', '.'));
+            if (!(n > 0)) return null;
+            // Package dimensions only take whole cm and g (ML error 5402).
+            const value = /^SELLER_PACKAGE_/.test(d.id) ? Math.ceil(n) : n;
+            if (d.value_type === 'number') return { id: d.id, value_name: String(value) };
+            const unit = d.allowed_units?.find((u: any) => u.id === field.unit) ?? d.allowed_units?.[0];
+            return { id: d.id, value_name: unit ? `${value} ${unit.name}` : String(value) };
+        }
+        return { id: d.id, value_name: text.slice(0, 255) };
+    };
+
+    const save = async () => {
+        const filled = defs.map(toAttribute).filter(Boolean);
+        if (filled.length === 0) { setError('Escribe al menos un dato.'); return; }
+        setSaving(true);
+        setError(null);
+        try {
+            const payload = await api.testProducts.getPayload(product.id);
+            if (!payload) throw new Error('No se encontraron los datos de este producto.');
+            const ids = new Set(filled.map((a: any) => a.id));
+            const attributes = [...(payload.attributes ?? []).filter((a: any) => !ids.has(a.id)), ...filled];
+            const remaining = defs.filter(d => !ids.has(d.id));
+            await api.testProducts.update(product.id, {
+                publish_payload: { ...payload, attributes },
+                missing_attributes: remaining.length ? remaining : null,
+            });
+            onSaved(remaining.length ? remaining : null);
+        } catch (e: any) {
+            setError(e?.message || String(e));
+        } finally {
+            setSaving(false);
+        }
+    };
+
+    const inputCls = 'w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2 text-sm text-slate-900 dark:text-white focus:ring-2 focus:ring-primary focus:border-primary';
+
+    return (
+        <div className="fixed inset-0 z-[130] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm" onClick={onClose}>
+            <div className="bg-white dark:bg-slate-800 rounded-xl shadow-2xl w-full max-w-lg overflow-hidden flex flex-col max-h-[85vh]" onClick={e => e.stopPropagation()}>
+                <div className="p-4 border-b border-slate-200 dark:border-slate-700 flex justify-between items-start gap-3">
+                    <div>
+                        <h3 className="font-bold text-slate-900 dark:text-white">Completar datos</h3>
+                        <p className="text-xs text-slate-500 dark:text-slate-400 line-clamp-2">{product.title}</p>
+                    </div>
+                    <button onClick={onClose}>
+                        <span className="material-symbols-outlined text-slate-400">close</span>
+                    </button>
+                </div>
+                <div className="p-6 space-y-4 overflow-y-auto">
+                    <p className="text-xs text-slate-500 dark:text-slate-400">
+                        Mercado Libre pide estos datos y no están ni en Amazon ni en el título. Escríbelos como vienen en el
+                        producto (puedes revisarlo en Amazon con el ASIN {product.asin}). Los que dejes en blanco seguirán pendientes.
+                    </p>
+                    {defs.map(d => (
+                        <label key={d.id} className="block">
+                            <span className="text-xs font-bold text-slate-700 dark:text-slate-300">{d.name}</span>
+                            <div className="mt-1 flex gap-2">
+                                {closedList(d) ? (
+                                    <select className={inputCls} value={values[d.id]?.text ?? ''} onChange={e => setField(d.id, { text: e.target.value })}>
+                                        <option value="">Elige…</option>
+                                        {d.values.map((o: any) => <option key={o.id} value={o.id}>{o.name}</option>)}
+                                    </select>
+                                ) : d.value_type === 'number_unit' || d.value_type === 'number' ? (
+                                    <>
+                                        <input
+                                            type="number" min="0" step="any" inputMode="decimal" className={inputCls}
+                                            value={values[d.id]?.text ?? ''} onChange={e => setField(d.id, { text: e.target.value })}
+                                        />
+                                        {d.value_type === 'number_unit' && d.allowed_units?.length > 0 && (
+                                            <select className={`${inputCls} w-28`} value={values[d.id]?.unit ?? ''} onChange={e => setField(d.id, { unit: e.target.value })}>
+                                                {d.allowed_units.map((u: any) => <option key={u.id} value={u.id}>{u.name}</option>)}
+                                            </select>
+                                        )}
+                                    </>
+                                ) : (
+                                    <>
+                                        <input
+                                            type="text" maxLength={255} className={inputCls} list={`suggest-${d.id}`}
+                                            value={values[d.id]?.text ?? ''} onChange={e => setField(d.id, { text: e.target.value })}
+                                        />
+                                        {Array.isArray(d.values) && d.values.length > 0 && (
+                                            <datalist id={`suggest-${d.id}`}>
+                                                {d.values.map((o: any) => <option key={o.id} value={o.name} />)}
+                                            </datalist>
+                                        )}
+                                    </>
+                                )}
+                            </div>
+                        </label>
+                    ))}
+                    {error && <p className="text-xs font-bold text-red-500">{error}</p>}
+                </div>
+                <div className="p-4 bg-slate-50 dark:bg-slate-900/50 border-t border-slate-200 dark:border-slate-700 flex justify-end gap-2">
+                    <button onClick={onClose} className="px-4 py-2 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg text-sm font-bold transition-all">
+                        Cancelar
+                    </button>
+                    <button
+                        onClick={save}
+                        disabled={saving}
+                        className="px-4 py-2 bg-primary text-white rounded-lg text-sm font-bold shadow-sm hover:shadow active:scale-95 transition-all disabled:opacity-50"
+                    >
+                        {saving ? 'Guardando…' : 'Guardar'}
+                    </button>
+                </div>
+            </div>
+        </div>
+    );
 }
 
 export const TestProductsPage = () => {
@@ -78,7 +226,7 @@ export const TestProductsPage = () => {
         total: number;
         done: number;
         successCount: number;
-        errors: { title: string; message: string }[];
+        errors: { title: string; message: string; id?: string }[];
         finished: boolean;
         cancelled: boolean;
         sandbox?: boolean; // a "Probar en Sandbox" run (test account), not a real publish
@@ -89,6 +237,10 @@ export const TestProductsPage = () => {
     const [syncProgress, setSyncProgress] = useState<{ done: number; total: number } | null>(null);
     const [filterStatus, setFilterStatus] = useState<SandboxStatusFilter>('all');
     const [filterPublished, setFilterPublished] = useState<PublishedFilter>('all');
+    // Only products with required data to complete by hand, and the one whose
+    // form is open (see MissingDataModal).
+    const [filterMissing, setFilterMissing] = useState(false);
+    const [completing, setCompleting] = useState<TestProduct | null>(null);
     const [dateFilterType, setDateFilterType] = useState<'created' | 'updated' | 'published'>('created');
     // Range instead of a single exact-match date — "products published between
     // the 5th and the 12th" needed two bounds, not one day at a time.
@@ -192,6 +344,8 @@ export const TestProductsPage = () => {
     const filteredProducts = useMemo(() => {
         const q = searchQuery.toLowerCase();
         return testProducts.filter(p => {
+            if (filterMissing && !p.missingAttributes?.length) return false;
+
             // 1. Search filter, scoped to whichever field the dropdown has selected
             const matchesSearch = !q ? true
                 : searchField === 'asin' ? p.asin.toLowerCase().includes(q)
@@ -229,7 +383,7 @@ export const TestProductsPage = () => {
 
             return matchesSearch && matchesStatus && matchesPublished && matchesDate;
         });
-    }, [testProducts, searchField, searchQuery, filterStatus, filterPublished, dateFilterType, filterDateFrom, filterDateTo]);
+    }, [testProducts, searchField, searchQuery, filterStatus, filterPublished, filterMissing, dateFilterType, filterDateFrom, filterDateTo]);
 
     // Counts for the status pill row — always over the full catalog, not the
     // currently filtered/searched subset, same as ML's own seller panel.
@@ -245,12 +399,14 @@ export const TestProductsPage = () => {
         }
         return counts;
     }, [testProducts]);
+    const missingCount = useMemo(() => testProducts.filter(p => p.missingAttributes?.length).length, [testProducts]);
+    const productById = useMemo(() => new Map(testProducts.map(p => [p.id, p])), [testProducts]);
 
     // Jumping back to page 1 on a new search/filter avoids landing on a page
     // that no longer has any rows once the filtered set shrinks.
     useEffect(() => {
         setCurrentPage(1);
-    }, [searchField, searchQuery, filterStatus, filterPublished, dateFilterType, filterDateFrom, filterDateTo]);
+    }, [searchField, searchQuery, filterStatus, filterPublished, filterMissing, dateFilterType, filterDateFrom, filterDateTo]);
 
     const totalPages = Math.max(1, Math.ceil(filteredProducts.length / PAGE_SIZE));
 
@@ -424,6 +580,16 @@ export const TestProductsPage = () => {
         }
     };
 
+    // The list on screen, kept in step with what saveOutcome saved — touched
+    // only when something changed, since a bulk run calls this per product.
+    const applyOutcome = (product: TestProduct, outcome: { missingAttributes: any[] | null; title?: string }) => {
+        const sameMissing = JSON.stringify(outcome.missingAttributes) === JSON.stringify(product.missingAttributes ?? null);
+        if (sameMissing && !outcome.title) return;
+        setTestProducts(prev => prev.map(p => p.id === product.id
+            ? { ...p, missingAttributes: outcome.missingAttributes, ...(outcome.title ? { title: outcome.title } : {}) }
+            : p));
+    };
+
     const handlePublishToReal = async (id: string) => {
         const product = testProducts.find(p => p.id === id);
         if (!product) return;
@@ -475,7 +641,7 @@ export const TestProductsPage = () => {
             const itemPayload = { ...payload, description: undefined, attributes: sanitizePublishAttributes(payload?.attributes) };
 
             const result = await meliService.publishItemWithFallbacks(itemPayload, false);
-            await saveRepairs(id, payload, result);
+            applyOutcome(product, await saveOutcome(product, payload, result));
 
             if (result.error) {
                 const causes: string[] = [];
@@ -607,13 +773,16 @@ export const TestProductsPage = () => {
         // stale snapshot — state updates queued during the loop aren't
         // guaranteed to be flushed back into this closure by the time it ends.
         const failedIds: string[] = [];
-        const markDone = (result: { success: true } | { success: false; id: string; title: string; message: string }) => {
-            if (!result.success) failedIds.push(result.id);
+        // One shape for both outcomes: this project compiles without
+        // strictNullChecks, where a { success: true } | { success: false; … }
+        // union never narrows.
+        const markDone = (result: { success: boolean; id?: string; title?: string; message?: string }) => {
+            if (!result.success && result.id) failedIds.push(result.id);
             setBulkPublishRun(prev => prev && {
                 ...prev,
                 done: prev.done + 1,
                 successCount: prev.successCount + (result.success ? 1 : 0),
-                errors: result.success ? prev.errors : [...prev.errors, { title: result.title, message: result.message }],
+                errors: result.success ? prev.errors : [...prev.errors, { title: result.title ?? '', message: result.message ?? '', id: result.id }],
             });
         };
 
@@ -644,7 +813,9 @@ export const TestProductsPage = () => {
                 const descriptionText = payload.description?.plain_text;
                 const itemPayload = { ...payload, description: undefined, attributes: sanitizePublishAttributes(payload.attributes) };
                 const result = await meliService.publishItemWithFallbacks(itemPayload, false);
-                if (await saveRepairs(product.id, payload, result)) {
+                const outcome = await saveOutcome(product, payload, result);
+                applyOutcome(product, outcome);
+                if (outcome.repaired) {
                     setBulkPublishRun(prev => prev && { ...prev, repaired: (prev.repaired ?? 0) + 1 });
                 }
 
@@ -718,7 +889,7 @@ export const TestProductsPage = () => {
                 ...prev,
                 done: prev.done + 1,
                 successCount: prev.successCount + (ok ? 1 : 0),
-                errors: ok ? prev.errors : [...prev.errors, { title: product.title, message }],
+                errors: ok ? prev.errors : [...prev.errors, { title: product.title, message, id: product.id }],
             });
         };
 
@@ -739,7 +910,9 @@ export const TestProductsPage = () => {
                     shipping: { mode: 'me2', free_shipping: true, local_pick_up: false, handling_time: 30 },
                 };
                 const result = await meliService.publishItemWithFallbacks(testPayload, false, testToken);
-                if (await saveRepairs(product.id, payload, result)) {
+                const outcome = await saveOutcome(product, payload, result);
+                applyOutcome(product, outcome);
+                if (outcome.repaired) {
                     setBulkPublishRun(prev => prev && { ...prev, repaired: (prev.repaired ?? 0) + 1 });
                 }
                 if (result.error) {
@@ -1112,6 +1285,14 @@ export const TestProductsPage = () => {
                                     </span>
                                     <span className={filterStatus === 'deleted_by_ml' ? 'text-primary' : 'text-slate-400 dark:text-slate-500'}>{statusCounts.deletedByMl}</span>
                                 </button>
+                                <button
+                                    onClick={() => setFilterMissing(v => !v)}
+                                    title="Productos a los que Mercado Libre les pide datos que no están ni en Amazon ni en el título. Ábrelos con 'Completar' y escríbelos."
+                                    className={`font-bold flex items-baseline gap-1.5 transition-colors ${filterMissing ? 'text-amber-600' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'}`}
+                                >
+                                    Faltan datos
+                                    <span className={filterMissing ? 'text-amber-600' : 'text-slate-400 dark:text-slate-500'}>{missingCount}</span>
+                                </button>
                             </div>
                         </div>
 
@@ -1193,6 +1374,17 @@ export const TestProductsPage = () => {
                                                             <div>
                                                                 <p className="font-bold text-slate-900 dark:text-white line-clamp-1">{p.title}</p>
                                                                 <span className="text-[10px] font-bold text-slate-400 uppercase">{p.category}</span>
+                                                                {!!p.missingAttributes?.length && (
+                                                                    <button
+                                                                        type="button"
+                                                                        onClick={() => setCompleting(p)}
+                                                                        title={p.missingAttributes.map((a: any) => a.name).join(', ')}
+                                                                        className="mt-1 flex items-center gap-1 text-[10px] font-bold text-amber-700 dark:text-amber-300 bg-amber-100 dark:bg-amber-900/30 hover:bg-amber-200 dark:hover:bg-amber-900/50 px-2 py-0.5 rounded-full w-fit transition-colors"
+                                                                    >
+                                                                        <span className="material-symbols-outlined text-[12px]">edit_note</span>
+                                                                        Faltan {p.missingAttributes.length} dato{p.missingAttributes.length > 1 ? 's' : ''} · Completar
+                                                                    </button>
+                                                                )}
                                                             </div>
                                                         </div>
                                                     </td>
@@ -1387,12 +1579,23 @@ export const TestProductsPage = () => {
                             </div>
                             {bulkPublishRun.errors.length > 0 && (
                                 <div className="space-y-1.5 max-h-60 overflow-y-auto border border-slate-200 dark:border-slate-700 rounded-lg p-3">
-                                    {bulkPublishRun.errors.map((e, i) => (
-                                        <div key={i} className="text-xs">
-                                            <span className="font-bold text-slate-700 dark:text-slate-300">{e.title}:</span>{' '}
-                                            <span className="text-red-500">{e.message}</span>
-                                        </div>
-                                    ))}
+                                    {bulkPublishRun.errors.map((e, i) => {
+                                        const product = e.id ? productById.get(e.id) : undefined;
+                                        return (
+                                            <div key={i} className="text-xs">
+                                                <span className="font-bold text-slate-700 dark:text-slate-300">{e.title}:</span>{' '}
+                                                <span className="text-red-500">{e.message}</span>
+                                                {!!product?.missingAttributes?.length && (
+                                                    <button
+                                                        onClick={() => setCompleting(product)}
+                                                        className="ml-2 font-bold text-amber-700 dark:text-amber-300 hover:underline"
+                                                    >
+                                                        Completar datos
+                                                    </button>
+                                                )}
+                                            </div>
+                                        );
+                                    })}
                                 </div>
                             )}
                             {bulkPublishRun.finished && bulkPublishRun.errors.length > 0 && (
@@ -1420,6 +1623,18 @@ export const TestProductsPage = () => {
                         </div>
                     </div>
                 </div>
+            )}
+
+            {completing && (
+                <MissingDataModal
+                    product={completing}
+                    onClose={() => setCompleting(null)}
+                    onSaved={remaining => {
+                        const id = completing.id;
+                        setTestProducts(prev => prev.map(p => p.id === id ? { ...p, missingAttributes: remaining } : p));
+                        setCompleting(null);
+                    }}
+                />
             )}
 
             {previewImage && (
