@@ -3,7 +3,7 @@ import { supabase } from './supabase';
 import { mlProxyFetch } from './mlProxy';
 import { publishBlocklist } from './publishBlocklist';
 import { amazonService } from './amazonService';
-import { analyzeCauses, asinOf, fillerAttributeIds, fitToWords, hasRepairableCauses, repairAttributes, replacePlaceholders } from './attributeRepair';
+import { analyzeCauses, asinOf, explainUnfixable, fillerAttributeIds, fitToWords, hasRepairableCauses, repairAttributes, replacePlaceholders } from './attributeRepair';
 import { Product } from '../types';
 
 // Map raw ML order statuses to the narrower set allowed by the DB CHECK
@@ -1260,6 +1260,13 @@ class MeliService {
         if (result.error && unresolved.length > 0 && hasRepairableCauses(result.cause)) {
             result.cause = [
                 { type: 'error', code: 'melidrop.attributes.unresolved', message: `Faltan datos que no están en Amazon ni en el título: ${unresolved.join(', ')}` },
+                ...(result.cause ?? []),
+            ];
+        }
+        const unfixable = result.error ? explainUnfixable(result.cause) : [];
+        if (unfixable.length > 0) {
+            result.cause = [
+                ...unfixable.map(message => ({ type: 'error', code: 'melidrop.unfixable', message })),
                 ...(result.cause ?? []),
             ];
         }

@@ -15,11 +15,11 @@
 // ML references: developers.mercadolibre.com.mx/es_ar/atributos (types, tags,
 // N/A, package dimensions) and /es_ar/validaciones (error codes).
 
-type Kind = 'length' | 'mass' | 'volume' | 'data';
+type Kind = 'length' | 'mass' | 'volume' | 'data' | 'power' | 'apparent' | 'voltage' | 'area';
 
-// Factor from each unit to its kind's base unit (cm, g, mL, MB). Keys cover both
-// ML's unit ids ('"', 'cm', 'fl oz', …) and SP-API's unit names ('inches',
-// 'kilograms', …), lowercased.
+// Factor from each unit to its kind's base unit (cm, g, mL, MB, W, VA, V,
+// mm²). Keys cover both ML's unit ids ('"', 'cm', 'fl oz', …) and SP-API's
+// unit names ('inches', 'kilograms', …), lowercased.
 const UNIT_FACTORS: Record<Kind, Record<string, number>> = {
     length: {
         '"': 2.54, in: 2.54, inch: 2.54, inches: 2.54, cm: 1, centimeters: 1,
@@ -27,9 +27,13 @@ const UNIT_FACTORS: Record<Kind, Record<string, number>> = {
         ft: 30.48, feet: 30.48,
     },
     mass: {
-        g: 1, grams: 1, kg: 1000, kilograms: 1000, mg: 0.001, milligrams: 0.001,
-        lb: 453.59237, pounds: 453.59237, oz: 28.349523125, ounces: 28.349523125,
+        g: 1, grams: 1, kg: 1000, kilograms: 1000, mg: 0.001, milligrams: 0.001, mcg: 0.000001,
+        lb: 453.59237, pounds: 453.59237, oz: 28.349523125, ounces: 28.349523125, t: 1000000, ct: 0.2,
     },
+    power: { w: 1, watts: 1, kw: 1000, kilowatts: 1000 },
+    apparent: { va: 1, kva: 1000 },
+    voltage: { v: 1, volts: 1, kv: 1000, mv: 0.001 },
+    area: { 'mm²': 1, mm2: 1, 'cm²': 100, cm2: 100, 'm²': 1000000, m2: 1000000 },
     volume: {
         ml: 1, milliliters: 1, cc: 1, 'cm³': 1, cubic_centimeters: 1, l: 1000, liters: 1000,
         // A capacity in "ounces" is fluid ounces; weight ounces only ever
@@ -73,10 +77,15 @@ const DIMENSION_SOURCES: Record<string, 'height' | 'width' | 'length' | 'depth'>
 const DIMENSION_KEYS = ['item_depth_width_height', 'item_length_width_height', 'item_dimensions', 'item_width_height'];
 const WEIGHT_SOURCES: Record<string, string[]> = {
     WEIGHT: ['item_weight'], TOTAL_WEIGHT: ['item_weight'], ITEM_WEIGHT: ['item_weight'],
-    PRODUCT_WEIGHT: ['item_weight'], UNIT_WEIGHT: ['item_weight'], NET_WEIGHT: ['item_net_weight'],
+    PRODUCT_WEIGHT: ['item_weight'], UNIT_WEIGHT: ['item_weight'], BAR_WEIGHT: ['item_weight'],
+    NET_WEIGHT: ['item_net_weight'],
 };
 const VOLUME_KEYS = ['capacity', 'liquid_volume', 'item_volume'];
 const DATA_KEYS = ['memory_storage_capacity', 'capacity'];
+// The device's own power in watts — not RMS or peak figures, which titles
+// rarely state as such ("1200w" on a subwoofer is its peak).
+const POWER_IDS = new Set(['POWER', 'POWER_OUTPUT', 'OUTPUT_POWER', 'WATTAGE', 'RATED_POWER']);
+const POWER_KEYS = ['wattage', 'output_wattage'];
 const TEXT_SOURCES: Record<string, string[]> = {
     MODEL: ['model_number', 'model_name', 'part_number'],
     ALPHANUMERIC_MODEL: ['model_number', 'part_number'],
@@ -88,6 +97,13 @@ const TEXT_SOURCES: Record<string, string[]> = {
 const COUNT_SOURCES: Record<string, string[]> = {
     UNITS_PER_PACK: ['number_of_items', 'item_package_quantity'],
     UNITS_PER_PACKAGE: ['number_of_items', 'item_package_quantity'],
+    PIECES_NUMBER: ['number_of_pieces'], NUMBER_OF_PIECES: ['number_of_pieces'],
+};
+// Counts written in the title, e.g. "Juego De Cubiertos 20 Piezas", "Escalera 7 Escalones".
+const PIECES_IN_TEXT = /(\d+)\s*(piezas|pzas|pzs|pcs|pz)\b/;
+const COUNT_IN_TEXT: Record<string, RegExp> = {
+    PIECES_NUMBER: PIECES_IN_TEXT, NUMBER_OF_PIECES: PIECES_IN_TEXT, PIECES_QUANTITY: PIECES_IN_TEXT,
+    STEPS_NUMBER: /(\d+)\s*(escalones|peldanos)\b/,
 };
 
 // A volume written in the title, e.g. "Botella 560 Ml", "Termo 1.2 Litros", "32 oz".
@@ -98,6 +114,22 @@ const VOLUME_TOKENS: Record<string, string> = {
 };
 // A storage size in the title, e.g. "Memoria Micro Sd 128gb".
 const DATA_IN_TEXT = /(\d+(?:[.,]\d+)?)\s*(tb|gb|mb|kb)\b/;
+// Other measurements as titles write them (already lowercased, no accents):
+// "Pedal 9v", "Fuente 850w", "Ups 1500va", "Alimento Seco 2kg", "Monitor 32
+// Pulgadas", "Cable 16 Awg". Each maps the written unit to a UNIT_FACTORS key.
+const MEASURE_IN_TEXT: Partial<Record<Kind, { re: RegExp; unit: (written: string) => string }>> = {
+    voltage: { re: /(\d+(?:[.,]\d+)?)\s*(kv|voltios|volts?|v)\b/, unit: w => (w === 'kv' ? 'kv' : 'v') },
+    power: { re: /(\d+(?:[.,]\d+)?)\s*(kw|watts?|w)\b/, unit: w => (w === 'kw' ? 'kw' : 'w') },
+    apparent: { re: /(\d+(?:[.,]\d+)?)\s*(kva|va)\b/, unit: w => w },
+    mass: {
+        re: /(\d+(?:[.,]\d+)?)\s*(kilogramos?|kilos?|kgs?|gramos?|grs?|g|libras?|lbs?|onzas?|oz)\b/,
+        unit: w => (w.startsWith('k') ? 'kg' : w.startsWith('g') ? 'g' : w.startsWith('l') ? 'lb' : 'oz'),
+    },
+};
+const INCHES_IN_TEXT = /(\d+(?:[.,]\d+)?)\s*(pulgadas?|pulg|in\b|"|'')/;
+const AWG_IN_TEXT = /(\d+)\s*awg\b/;
+// "Paquete 50", "Pack De 3", "3 Paquetes" — how many units one sale holds.
+const PACK_COUNT_IN_TEXT = [/(?:paquete|pack|caja)\s*(?:de|con)?\s*(\d+)\b/, /(\d+)\s*(?:pack|paquetes|unidades)\b/];
 
 export interface RepairContext {
     title: string;
@@ -118,6 +150,8 @@ export interface CauseAnalysis {
     invalid: Set<string>;
     packageDimensions: boolean;
     productCode: boolean;
+    titleGender: boolean;  // 4210: the title names a different gender than GENDER
+    saleUnits: boolean;    // 3709: SALE_FORMAT and the units per pack disagree
 }
 
 const normalize = (s: string): string =>
@@ -180,20 +214,49 @@ function amazonText(attrs: Record<string, any[]> | null | undefined, keys: strin
 const asMeasure = (m: any): { value: number; unit: string } | null =>
     m && typeof m.value === 'number' && typeof m.unit === 'string' ? { value: m.value, unit: m.unit } : null;
 
+// A one-word value with its other gender and number endings — titles say
+// "Alimento Seco" where the category's value is "Seca", "Negra" for "Negro".
+function wordForms(name: string): string[] {
+    if (/\s/.test(name)) return [name];
+    const base = name.replace(/s$/, '');
+    const swapped = /a$/.test(base) ? base.slice(0, -1) + 'o' : /o$/.test(base) ? base.slice(0, -1) + 'a' : base;
+    return [...new Set([name, base, base + 's', swapped, swapped + 's'])];
+}
+
 // The first allowed value whose name appears in the text as a whole word —
 // the longest one when several do. Names under 3 characters ("Sí", "No")
-// are never matched this way.
+// are never matched this way. GENDER only matches exactly: there the ending
+// is the meaning ("Niños" and "Niñas" are different values).
 function matchAllowedValue(def: any, texts: string[]): any | null {
     const haystacks = texts.filter(Boolean).map(normalize);
+    const forms = def?.id === 'GENDER' ? (name: string) => [name] : wordForms;
     let best: any = null;
     for (const v of def?.values ?? []) {
         const name = normalize(String(v?.name ?? ''));
         if (name.length < 3) continue;
-        const re = new RegExp(`(^|[^a-z0-9])${escapeRegExp(name)}([^a-z0-9]|$)`);
-        if (haystacks.some(h => re.test(h)) && (!best || name.length > normalize(best.name).length)) best = v;
+        const found = forms(name).some(form => {
+            const re = new RegExp(`(^|[^a-z0-9])${escapeRegExp(form)}([^a-z0-9]|$)`);
+            return haystacks.some(h => re.test(h));
+        });
+        if (found && (!best || name.length > normalize(best.name).length)) best = v;
     }
     return best;
 }
+
+// A measurement of the given kind written in the text, as { value, unit key }.
+function measureFromText(kind: Kind, text: string): { value: number; unit: string } | null {
+    const spec = MEASURE_IN_TEXT[kind];
+    const m = spec && normalize(text).match(spec.re);
+    const value = m ? Number(m[1].replace(',', '.')) : NaN;
+    return m && value > 0 ? { value, unit: spec!.unit(m[2]) } : null;
+}
+
+// Every value an SP-API attribute holds, joined (power_source_type can list several).
+const amazonAllText = (attrs: Record<string, any[]> | null | undefined, key: string): string =>
+    (Array.isArray(attrs?.[key]) ? attrs![key] : []).map((e: any) => e?.value).filter((v: any) => typeof v === 'string').join(' ');
+
+// American wire gauge to cross-section: d = 0.127 mm × 92^((36 − n) / 39).
+const awgToMm2 = (n: number): number => Math.PI / 4 * (0.127 * Math.pow(92, (36 - n) / 39)) ** 2;
 
 function volumeFromText(text: string): { value: number; unit: string } | null {
     const m = normalize(text).match(VOLUME_IN_TEXT);
@@ -226,6 +289,39 @@ export function inferAttributeValue(def: any, ctx: RepairContext): { value: { va
                 if (formatted) return { value: { value_name: formatted }, source: 'Amazon' };
             }
         }
+        if (kind === 'length' && /DISPLAY_SIZE|SCREEN_SIZE/.test(id)) {
+            const m = normalize(ctx.title).match(INCHES_IN_TEXT);
+            const titleValue = m && toAllowedUnit(def, kind, Number(m[1].replace(',', '.')), 'in');
+            if (titleValue) return { value: { value_name: titleValue }, source: 'título' };
+            for (const key of ['display_size', 'screen_size']) {
+                const am = asMeasure(amazonEntry(amazon, key));
+                const formatted = am && toAllowedUnit(def, kind, am.value, am.unit);
+                if (formatted) return { value: { value_name: formatted }, source: 'Amazon' };
+            }
+        }
+        // Net content is what the pack, and so the title, states ("Alimento 2kg").
+        // Only for NET_WEIGHT: other weights in a title are often a load
+        // capacity ("Escalera 170 Kg").
+        if (kind === 'mass' && id === 'NET_WEIGHT') {
+            const t = measureFromText('mass', ctx.title);
+            const titleValue = t && toAllowedUnit(def, kind, t.value, t.unit);
+            if (titleValue) return { value: { value_name: titleValue }, source: 'título' };
+        }
+        if ((kind === 'power' && POWER_IDS.has(id)) || kind === 'apparent' || (kind === 'voltage' && /VOLTAGE/.test(id))) {
+            const t = measureFromText(kind, ctx.title);
+            const titleValue = t && toAllowedUnit(def, kind, t.value, t.unit);
+            if (titleValue) return { value: { value_name: titleValue }, source: 'título' };
+            for (const key of kind === 'power' ? POWER_KEYS : kind === 'voltage' ? ['voltage'] : []) {
+                const am = asMeasure(amazonEntry(amazon, key));
+                const formatted = am && toAllowedUnit(def, kind, am.value, am.unit);
+                if (formatted) return { value: { value_name: formatted }, source: 'Amazon' };
+            }
+        }
+        if (kind === 'area' && id === 'SECTION_SIZE') {
+            const awg = normalize(ctx.title).match(AWG_IN_TEXT);
+            const titleValue = awg && toAllowedUnit(def, kind, awgToMm2(Number(awg[1])), 'mm²');
+            if (titleValue) return { value: { value_name: titleValue }, source: `título (${awg![1]} AWG)` };
+        }
         if (kind === 'mass' && WEIGHT_SOURCES[id]) {
             for (const key of WEIGHT_SOURCES[id]) {
                 const m = asMeasure(amazonEntry(amazon, key));
@@ -245,6 +341,10 @@ export function inferAttributeValue(def: any, ctx: RepairContext): { value: { va
                 const formatted = m && toAllowedUnit(def, kind, m.value, m.unit);
                 if (formatted) return { value: { value_name: formatted }, source: 'Amazon' };
             }
+            // Amazon's size is often the volume as text ("750 ml", "0.6 Litros").
+            const sized = volumeFromText(amazonText(amazon, ['size']) ?? '');
+            const sizedValue = sized && toAllowedUnit(def, kind, sized.value, sized.unit);
+            if (sizedValue) return { value: { value_name: sizedValue }, source: 'Amazon' };
         }
         if (kind === 'data' && /CAPACITY|MEMORY|STORAGE/.test(id)) {
             // Title first, for the same reason as volumes.
@@ -261,9 +361,28 @@ export function inferAttributeValue(def: any, ctx: RepairContext): { value: { va
     }
 
     if (valueType === 'number') {
+        const inTitle = COUNT_IN_TEXT[id] && normalize(ctx.title).match(COUNT_IN_TEXT[id]);
+        if (inTitle && Number(inTitle[1]) > 0) return { value: { value_name: String(Number(inTitle[1])) }, source: 'título' };
         const text = COUNT_SOURCES[id] ? amazonText(amazon, COUNT_SOURCES[id]) : null;
         const n = text ? Number(text) : NaN;
         return Number.isFinite(n) && n > 0 ? { value: { value_name: String(Math.round(n)) }, source: 'Amazon' } : null;
+    }
+
+    // "Con USB": yes when the title or Amazon says USB; no when Amazon names
+    // a power source that isn't one. Otherwise there's nothing to go on.
+    if (id === 'WITH_USB' && valueType === 'boolean') {
+        const option = (re: RegExp) => def.values?.find((v: any) => re.test(normalize(String(v?.name ?? ''))));
+        const power = amazonAllText(amazon, 'power_source_type');
+        const said = [ctx.title, power, amazonAllText(amazon, 'connectivity_technology')].join(' ');
+        const pick = /\busb\b/i.test(said) ? option(/^si$/) : power ? option(/^no$/) : null;
+        return pick ? { value: { value_id: pick.id, value_name: pick.name }, source: /\busb\b/i.test(ctx.title) ? 'título' : 'Amazon' } : null;
+    }
+
+    // A voltage asked for as text ("Voltaje": "9 V").
+    if (/VOLTAGE/.test(id) && valueType === 'string') {
+        const t = measureFromText('voltage', ctx.title) ?? asMeasure(amazonEntry(amazon, 'voltage'));
+        const factor = t && UNIT_FACTORS.voltage[t.unit.toLowerCase()];
+        if (t && factor) return { value: { value_name: `${formatNumber(t.value * factor)} V` }, source: measureFromText('voltage', ctx.title) ? 'título' : 'Amazon' };
     }
 
     // Closed lists (and booleans) only take one of the category's own values.
@@ -345,12 +464,17 @@ function attributeIdsIn(message: string, idByName: Map<string, string>): string[
 export function analyzeCauses(causes: any[] | undefined, categoryAttributes: any[] = []): CauseAnalysis {
     const defs = Array.isArray(categoryAttributes) ? categoryAttributes : [];
     const idByName = new Map(defs.map((d: any) => [normalize(String(d?.name ?? '')), d.id]));
-    const analysis: CauseAnalysis = { missing: new Set(), invalid: new Set(), packageDimensions: false, productCode: false };
+    const analysis: CauseAnalysis = {
+        missing: new Set(), invalid: new Set(), packageDimensions: false, productCode: false, titleGender: false, saleUnits: false,
+    };
     for (const c of causes ?? []) {
         if (c?.type && c.type !== 'error') continue;
         const code = String(c?.code ?? '');
-        const ids = attributeIdsIn(String(c?.message ?? ''), idByName);
+        const message = String(c?.message ?? '');
+        const ids = attributeIdsIn(message, idByName);
         if (MISSING_CODES.has(code)) ids.forEach(id => analysis.missing.add(id));
+        else if (code === 'invalid.title.gender') analysis.titleGender = true;
+        else if (code === 'item.attribute.invalid_sale_units' || /formato de venta/i.test(message)) analysis.saleUnits = true;
         else if (INVALID_CODES.has(code)) ids.forEach(id => analysis.invalid.add(id));
         else if (PACKAGE_CODE.test(code)) analysis.packageDimensions = true;
         else if (PRODUCT_CODE_CODE.test(code)) analysis.productCode = true;
@@ -360,14 +484,26 @@ export function analyzeCauses(causes: any[] | undefined, categoryAttributes: any
 
 export const hasRepairableCauses = (causes: any[] | undefined): boolean => {
     const a = analyzeCauses(causes);
-    return a.missing.size > 0 || a.invalid.size > 0 || a.packageDimensions || a.productCode;
+    return a.missing.size > 0 || a.invalid.size > 0 || a.packageDimensions || a.productCode || a.titleGender || a.saleUnits;
 };
+
+// Problems no attribute value can solve, said plainly for the seller.
+export function explainUnfixable(causes: any[] | undefined): string[] {
+    const out: string[] = [];
+    for (const c of causes ?? []) {
+        if (c?.type && c.type !== 'error') continue;
+        if (/fashion_grid/.test(String(c?.code ?? ''))) {
+            out.push('Ropa y calzado: Mercado Libre pide una guía de tallas, que se crea en Mercado Libre (no se puede llenar desde aquí)');
+        }
+    }
+    return [...new Set(out)];
+}
 
 export function repairAttributes(attributes: any[] | undefined, causes: any[] | undefined, ctx: RepairContext): RepairResult {
     const defs = new Map<string, any>((Array.isArray(ctx.categoryAttributes) ? ctx.categoryAttributes : []).map((d: any) => [d.id, d]));
     const label = (id: string) => defs.get(id)?.name ?? id;
     const attrs = new Map<string, any>((attributes ?? []).filter(a => a?.id).map(a => [a.id, a]));
-    const { missing, invalid, packageDimensions: needsPackage, productCode } = analyzeCauses(causes, ctx.categoryAttributes);
+    const { missing, invalid, packageDimensions: needsPackage, productCode, titleGender, saleUnits } = analyzeCauses(causes, ctx.categoryAttributes);
     const filled: string[] = [];
     const dropped: string[] = [];
     const unresolved: string[] = [];
@@ -376,6 +512,34 @@ export function repairAttributes(attributes: any[] | undefined, causes: any[] | 
         attrs.set(id, { id, ...value });
         filled.push(`${label(id)}: ${value.value_name} (${source})`);
     };
+
+    // The title is what the buyer reads, so GENDER follows it ("Gorra … Hombre").
+    if (titleGender) {
+        const match = matchAllowedValue(defs.get('GENDER'), [ctx.title]);
+        if (match && attrs.get('GENDER')?.value_name !== match.name) set('GENDER', { value_id: match.id, value_name: match.name }, 'título');
+        else unresolved.push('Género (no coincide con el título)');
+    }
+
+    // "Pack" needs more than one unit ("Ingresa un valor diferente a 1 porque
+    // completaste Pack"). Confirmed live on kits and sets sold as one piece, so
+    // unless the title says how many come in the pack, it is one unit.
+    if (saleUnits) {
+        const format = defs.get('SALE_FORMAT');
+        const unitsId = ['UNITS_PER_PACK', 'UNITS_PER_PACKAGE'].find(id => attrs.has(id) || defs.has(id)) ?? 'UNITS_PER_PACK';
+        const option = (re: RegExp) => format?.values?.find((v: any) => re.test(normalize(String(v?.name ?? ''))));
+        const counted = PACK_COUNT_IN_TEXT.map(re => normalize(ctx.title).match(re)).find(Boolean);
+        const count = counted ? Number(counted[1]) : 0;
+        const pack = option(/^pack$/), unit = option(/^unidad$/);
+        if (count > 1 && pack) {
+            set('SALE_FORMAT', { value_id: pack.id, value_name: pack.name }, 'título');
+            set(unitsId, { value_name: String(count) }, 'título');
+        } else if (unit) {
+            set('SALE_FORMAT', { value_id: unit.id, value_name: unit.name }, 'se vende como una pieza');
+            set(unitsId, { value_name: '1' }, 'se vende como una pieza');
+        } else {
+            unresolved.push(label('SALE_FORMAT'));
+        }
+    }
 
     if (productCode) {
         for (const id of CODE_ATTRS) if (attrs.delete(id)) dropped.push(label(id));
