@@ -39,6 +39,11 @@ const isDeletedByMl = (p: TestProduct): boolean =>
 // counted and shown as active listings that don't exist on Mercado Libre.
 const isUnpublished = (p: TestProduct): boolean => !p.meliId;
 
+// What actually stopped a publish: ML's errors without its warnings ("User has
+// not mode me1", "… ignored because it is not modifiable"), which never block
+// one — confirmed live they made up most of each error line, burying the reason.
+const blockingCauses = (cause: any): any[] => (Array.isArray(cause) ? cause : []).filter((c: any) => c?.type !== 'warning');
+
 // What a publish had to fix (services/attributeRepair: attributes completed
 // or dropped, a title cut to the length ML allows) goes back into the saved
 // product, so later tries — the test or "Publicar Real" — start from it
@@ -474,13 +479,11 @@ export const TestProductsPage = () => {
 
             if (result.error) {
                 const causes: string[] = [];
-                if (result.cause && Array.isArray(result.cause)) {
-                    result.cause.forEach((c: any) => {
-                        const field = c.field ? `[${c.field}] ` : '';
-                        const msg = c.message || c.description || (c.code ? `código ${c.code}` : null) || JSON.stringify(c);
-                        causes.push(`${field}${msg}`);
-                    });
-                }
+                blockingCauses(result.cause).forEach((c: any) => {
+                    const field = c.field ? `[${c.field}] ` : '';
+                    const msg = c.message || c.description || (c.code ? `código ${c.code}` : null) || JSON.stringify(c);
+                    causes.push(`${field}${msg}`);
+                });
                 const errorMsg = causes.length > 0
                     ? `${result.error}\n• ${causes.join('\n• ')}`
                     : result.error;
@@ -646,7 +649,7 @@ export const TestProductsPage = () => {
                 }
 
                 if (result.error) {
-                    const causes = result.cause?.map((c: any) => c.message || c.code).join(', ') || result.error;
+                    const causes = blockingCauses(result.cause).map((c: any) => c.message || c.code).join(', ') || result.error;
                     // See handlePublishToReal's matching log for why: the modal only
                     // shows this flattened line, full detail (cause[].code/references,
                     // raw ML body) is what a fix like an auto-category-correction would
@@ -740,7 +743,7 @@ export const TestProductsPage = () => {
                     setBulkPublishRun(prev => prev && { ...prev, repaired: (prev.repaired ?? 0) + 1 });
                 }
                 if (result.error) {
-                    const causes = result.cause?.map((c: any) => c.message || c.code).join(', ') || result.error;
+                    const causes = blockingCauses(result.cause).map((c: any) => c.message || c.code).join(', ') || result.error;
                     console.error('[Melidrop] handleBulkSandboxTest error:', { asin: product.asin, error: result.error, cause: result.cause, raw: result.raw });
                     markDone(false, product, causes);
                     continue;
