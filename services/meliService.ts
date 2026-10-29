@@ -1125,6 +1125,21 @@ class MeliService {
         if (!response.ok) {
             console.error('[Melidrop] ML publish error:', JSON.stringify(data, null, 2));
             console.error('[Melidrop] ML publish payload:', JSON.stringify(body, null, 2));
+            // ML caps how many listings an account can create in a day.
+            // Confirmed live on the test account after ~10,000 in 24 hours:
+            // 403 {message: "daily_quota.reached", error: "Daily quota reached
+            // per day. (10000)"} for every POST, checked before the item itself
+            // (/items/validate still answers). Flagged so bulk runs stop instead
+            // of failing every remaining product the same way.
+            if (data?.message === 'daily_quota.reached') {
+                const limit = Number(String(data.error ?? '').match(/\((\d+)\)/)?.[1]);
+                return {
+                    error: `Mercado Libre no deja crear más publicaciones hoy en esta cuenta: ya llegó a su límite de ${limit ? limit.toLocaleString('es-MX') : 'publicaciones'} por día.`,
+                    cause: [],
+                    raw: data,
+                    quotaReached: true,
+                };
+            }
             return { error: data.message || "Error al publicar", cause: data.cause, raw: data };
         }
         return data;
