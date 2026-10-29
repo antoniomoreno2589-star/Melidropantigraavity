@@ -96,6 +96,20 @@ class AiImporterService {
     }
 
     /**
+     * Values for required attributes Mercado Libre still asks for after the title
+     * and Amazon's catalog data were tried (see meliService.publishItemWithFallbacks),
+     * keyed by attribute id; {} when the AI can't answer. Checked before use.
+     */
+    async fillAttributes(title: string, productInfo: string, attributes: any[]): Promise<Record<string, any>> {
+        try {
+            return (await callAI('fillAttributes', { title, productInfo, attributes })) ?? {};
+        } catch (e) {
+            console.error('aiImporterService fillAttributes error:', e);
+            return {};
+        }
+    }
+
+    /**
      * Detect and remove contact info/watermarks from an image using Claude Vision + Clipdrop.
      */
     async cleanImage(imageUrl: string): Promise<ProcessedImage> {
