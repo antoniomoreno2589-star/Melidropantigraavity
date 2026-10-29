@@ -496,7 +496,7 @@ export const api = {
             const PAGE_SIZE = 1000;
             const SLICES = 8;
             const COLUMNS = 'id,title,asin,sku,currency,price_mxn,cost_usd,stock_provider,stock_meli,status,image_url,category,meli_id,'
-                + 'is_published_to_real,created_at,updated_at,published_to_real_at,sub_status,has_payload,missing_attributes';
+                + 'is_published_to_real,created_at,updated_at,published_to_real_at,sub_status,has_payload,missing_attributes,brand';
             const sliceStart = (i: number) => `${(i * 16 / SLICES).toString(16)}0000000-0000-0000-0000-000000000000`;
 
             let total: number | null = null;
@@ -546,6 +546,8 @@ export const api = {
                 hasPayload: !!p.has_payload,
                 // Required attributes the last publish couldn't fill (see attributeRepair).
                 missingAttributes: Array.isArray(p.missing_attributes) && p.missing_attributes.length ? p.missing_attributes : null,
+                // The payload's BRAND attribute, kept as a column by a trigger.
+                brand: p.brand ?? null,
                 isPublishedToReal: p.is_published_to_real,
                 creationDate: new Date(p.created_at).toISOString().split('T')[0],
                 updatedDate: p.updated_at ? new Date(p.updated_at).toISOString().split('T')[0] : new Date(p.created_at).toISOString().split('T')[0],

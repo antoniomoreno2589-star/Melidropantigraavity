@@ -223,7 +223,7 @@ function MissingDataModal({ product, onClose, onSaved }: {
 
 export const TestProductsPage = () => {
     const [activeTab, setActiveTab] = useState<'config' | 'products'>('products');
-    const [searchField, setSearchField] = useState<'title' | 'asin' | 'sku'>('title');
+    const [searchField, setSearchField] = useState<'title' | 'asin' | 'sku' | 'brand'>('title');
     const [searchQuery, setSearchQuery] = useState('');
     const [selectedIds, setSelectedIds] = useState<string[]>([]);
     // Live progress for handleBulkPublish — a batch can be thousands of items
@@ -359,6 +359,7 @@ export const TestProductsPage = () => {
             const matchesSearch = !q ? true
                 : searchField === 'asin' ? p.asin.toLowerCase().includes(q)
                 : searchField === 'sku' ? p.sku.toLowerCase().includes(q)
+                : searchField === 'brand' ? (p.brand ?? '').toLowerCase().includes(q)
                 : p.title.toLowerCase().includes(q);
 
             // 2. ML status filter (the pill row)
@@ -1179,6 +1180,7 @@ export const TestProductsPage = () => {
                                         <option value="title">Título</option>
                                         <option value="asin">ASIN</option>
                                         <option value="sku">SKU</option>
+                                        <option value="brand">Marca</option>
                                     </select>
                                     <input
                                         value={searchQuery}
