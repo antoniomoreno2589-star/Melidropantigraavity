@@ -1666,31 +1666,44 @@ class MeliService {
     // the real one — a test product's meli_id lives in a completely separate ML
     // catalog, so deleting it with the real account's token silently fails
     // (item not found under that account) and orphans the sandbox listing.
-    async deleteItem(itemId: string, customToken?: string): Promise<boolean> {
+    //
+    // ML's own two steps for deleting a listing: close it, then mark it deleted
+    // (one under review as "forbidden" takes only the second). Per ML's docs the
+    // second can answer 409 "optimistic locking" until the first has settled, so
+    // that one is retried after a pause. Done when the listing ends up closed or
+    // is already gone; otherwise ML's reason comes back.
+    async deleteItem(itemId: string, customToken?: string): Promise<{ ok: boolean; error?: string }> {
+        const put = async (body: object) => {
+            const res = await this.fetchWithAuth(`/items/${itemId}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body)
+            }, customToken);
+            return { ok: res.ok, status: res.status, data: res.ok ? null : await res.json().catch(() => ({})) };
+        };
         try {
             // Step 1: Set status to closed
-            const res1 = await this.fetchWithAuth(`/items/${itemId}`, {
-                method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ status: 'closed' })
-            }, customToken);
-
-            if (!res1.ok) {
-                const err = await res1.json();
-                console.error("Meli deleteItem step 1 failed:", err);
-            }
+            const closed = await put({ status: 'closed' });
+            if (!closed.ok) console.error("Meli deleteItem step 1 failed:", closed.data);
 
             // Step 2: Delete (hidden from user)
-            const res2 = await this.fetchWithAuth(`/items/${itemId}`, {
-                method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ deleted: 'true' })
-            }, customToken);
+            let deleted = await put({ deleted: 'true' });
+            for (let attempt = 1; deleted.status === 409 && attempt <= 3; attempt++) {
+                await new Promise(resolve => setTimeout(resolve, 2000 * attempt));
+                deleted = await put({ deleted: 'true' });
+            }
+            if (deleted.ok) return { ok: true };
+            console.error("Meli deleteItem step 2 failed:", deleted.data);
 
-            return res2.ok;
-        } catch (e) {
+            const check = await this.fetchWithAuth(`/items/${itemId}?attributes=status`, {}, customToken);
+            if (check.status === 404) return { ok: true };
+            const item = check.ok ? await check.json() : null;
+            if (item?.status === 'closed') return { ok: true };
+            const why = (closed.ok ? deleted.data : closed.data) ?? {};
+            return { ok: false, error: why.message ?? `HTTP ${closed.ok ? deleted.status : closed.status}` };
+        } catch (e: any) {
             console.error("Meli deleteItem exception:", e);
-            return false;
+            return { ok: false, error: e.message };
         }
     }
 }
