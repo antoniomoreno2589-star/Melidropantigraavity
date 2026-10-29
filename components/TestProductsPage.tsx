@@ -45,6 +45,11 @@ const isUnpublished = (p: TestProduct): boolean => !p.meliId;
 // one — confirmed live they made up most of each error line, burying the reason.
 const blockingCauses = (cause: any): any[] => (Array.isArray(cause) ? cause : []).filter((c: any) => c?.type !== 'warning');
 
+// A bulk run stops at the account's daily limit (result.quotaReached): every
+// product after would get the same refusal. The untried ones stay selected.
+const quotaStopReason = (result: any, untried: number): string =>
+    `${result.error} Se detuvo aquí: ${untried === 1 ? 'el que falta quedó seleccionado' : `los ${untried.toLocaleString('es-MX')} que faltan quedaron seleccionados`} para que sigas mañana.`;
+
 // What a publish learned about a product, saved with it: what it had to fix
 // (services/attributeRepair: attributes completed or dropped, a title cut to
 // the length ML allows), so later tries — the test or "Publicar Real" — start
@@ -52,6 +57,9 @@ const blockingCauses = (cause: any): any[] => (Array.isArray(cause) ? cause : []
 // couldn't fill, for the seller to complete by hand (cleared once a try needs
 // nothing more). Returns what the list on screen should show now.
 async function saveOutcome(product: TestProduct, payload: any, result: any): Promise<{ repaired: boolean; missingAttributes: any[] | null; title?: string }> {
+    // Refused for the account's daily limit before ML looked at the product:
+    // nothing was learned, so what's saved (e.g. its missing data) stays.
+    if (result?.quotaReached) return { repaired: false, missingAttributes: product.missingAttributes ?? null };
     const repaired = !!(result?.repairedAttributes || result?.repairedTitle);
     const missingAttributes = result?.error && Array.isArray(result?.missingAttributes) && result.missingAttributes.length
         ? result.missingAttributes : null;
@@ -231,6 +239,7 @@ export const TestProductsPage = () => {
         cancelled: boolean;
         sandbox?: boolean; // a "Probar en Sandbox" run (test account), not a real publish
         repaired?: number; // products whose attributes the publish completed (attributeRepair)
+        stopReason?: string; // why the run stopped before the end (the account's daily limit)
     } | null>(null);
     const bulkPublishCancelRef = useRef(false);
     const [isSyncing, setIsSyncing] = useState(false);
@@ -786,7 +795,8 @@ export const TestProductsPage = () => {
             });
         };
 
-        for (const product of toPublish) {
+        let untried: string[] = [];
+        for (const [index, product] of toPublish.entries()) {
             if (bulkPublishCancelRef.current) break;
             if (!product.hasPayload) {
                 markDone({ success: false, id: product.id, title: product.title, message: 'sin payload (re-importar)' });
@@ -813,6 +823,11 @@ export const TestProductsPage = () => {
                 const descriptionText = payload.description?.plain_text;
                 const itemPayload = { ...payload, description: undefined, attributes: sanitizePublishAttributes(payload.attributes) };
                 const result = await meliService.publishItemWithFallbacks(itemPayload, false);
+                if (result.quotaReached) {
+                    untried = toPublish.slice(index).map(p => p.id);
+                    setBulkPublishRun(prev => prev && { ...prev, stopReason: quotaStopReason(result, untried.length) });
+                    break;
+                }
                 const outcome = await saveOutcome(product, payload, result);
                 applyOutcome(product, outcome);
                 if (outcome.repaired) {
@@ -854,7 +869,8 @@ export const TestProductsPage = () => {
         // Failed items stay selected so retrying is "click Publicar seleccionados
         // again" instead of having to re-find them — successes are already
         // filtered out of any future toPublish (isPublishedToReal is now true).
-        setSelectedIds(failedIds);
+        // So do the ones a stop at the daily limit left untried.
+        setSelectedIds([...failedIds, ...untried]);
         setBulkPublishRun(prev => prev && { ...prev, finished: true, cancelled: bulkPublishCancelRef.current });
     };
 
@@ -893,7 +909,8 @@ export const TestProductsPage = () => {
             });
         };
 
-        for (const product of toTest) {
+        let untried: string[] = [];
+        for (const [index, product] of toTest.entries()) {
             if (bulkPublishCancelRef.current) break;
             try {
                 const payload = await api.testProducts.getPayload(product.id);
@@ -910,6 +927,11 @@ export const TestProductsPage = () => {
                     shipping: { mode: 'me2', free_shipping: true, local_pick_up: false, handling_time: 30 },
                 };
                 const result = await meliService.publishItemWithFallbacks(testPayload, false, testToken);
+                if (result.quotaReached) {
+                    untried = toTest.slice(index).map(p => p.id);
+                    setBulkPublishRun(prev => prev && { ...prev, stopReason: quotaStopReason(result, untried.length) });
+                    break;
+                }
                 const outcome = await saveOutcome(product, payload, result);
                 applyOutcome(product, outcome);
                 if (outcome.repaired) {
@@ -933,7 +955,7 @@ export const TestProductsPage = () => {
             }
         }
 
-        setSelectedIds(failedIds);
+        setSelectedIds([...failedIds, ...untried]);
         setBulkPublishRun(prev => prev && { ...prev, finished: true, cancelled: bulkPublishCancelRef.current });
     };
 
@@ -1535,10 +1557,10 @@ export const TestProductsPage = () => {
                                 {bulkPublishRun.sandbox
                                     ? (!bulkPublishRun.finished
                                         ? 'Probando en tu cuenta de prueba...'
-                                        : bulkPublishRun.cancelled ? 'Prueba cancelada' : 'Prueba terminada')
+                                        : bulkPublishRun.cancelled ? 'Prueba cancelada' : bulkPublishRun.stopReason ? 'Prueba detenida' : 'Prueba terminada')
                                     : (!bulkPublishRun.finished
                                         ? 'Publicando en Mercado Libre...'
-                                        : bulkPublishRun.cancelled ? 'Publicación cancelada' : 'Publicación terminada')}
+                                        : bulkPublishRun.cancelled ? 'Publicación cancelada' : bulkPublishRun.stopReason ? 'Publicación detenida' : 'Publicación terminada')}
                             </h3>
                             {bulkPublishRun.finished && (
                                 <button onClick={() => setBulkPublishRun(null)}>
@@ -1554,7 +1576,7 @@ export const TestProductsPage = () => {
                                 </div>
                                 <div className="w-full h-2.5 bg-slate-100 dark:bg-slate-900 rounded-full overflow-hidden">
                                     <div
-                                        className={`h-full transition-all duration-300 ${bulkPublishRun.finished ? (bulkPublishRun.errors.length > 0 ? 'bg-amber-500' : 'bg-green-500') : 'bg-primary'}`}
+                                        className={`h-full transition-all duration-300 ${bulkPublishRun.finished ? (bulkPublishRun.errors.length > 0 || bulkPublishRun.stopReason ? 'bg-amber-500' : 'bg-green-500') : 'bg-primary'}`}
                                         style={{ width: `${(bulkPublishRun.done / Math.max(bulkPublishRun.total, 1)) * 100}%` }}
                                     />
                                 </div>
@@ -1577,6 +1599,12 @@ export const TestProductsPage = () => {
                                     </span>
                                 )}
                             </div>
+                            {bulkPublishRun.stopReason && (
+                                <div className="flex gap-2 p-3 rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 text-sm text-amber-800 dark:text-amber-200">
+                                    <span className="material-symbols-outlined text-[18px] shrink-0">schedule</span>
+                                    <span>{bulkPublishRun.stopReason}</span>
+                                </div>
+                            )}
                             {bulkPublishRun.errors.length > 0 && (
                                 <div className="space-y-1.5 max-h-60 overflow-y-auto border border-slate-200 dark:border-slate-700 rounded-lg p-3">
                                     {bulkPublishRun.errors.map((e, i) => {
