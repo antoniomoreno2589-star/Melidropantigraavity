@@ -44,6 +44,8 @@ export const CatalogTable: React.FC = () => {
 
   // Selection
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  // "Eliminar" finalizing the selected listings on Mercado Libre, a few requests each
+  const [deleteProgress, setDeleteProgress] = useState<{ done: number; total: number } | null>(null);
 
   // Wizard State
   const [isWizardOpen, setIsWizardOpen] = useState(false);
@@ -127,13 +129,52 @@ export const CatalogTable: React.FC = () => {
   // Bulk Actions
   const handleBulkAction = async (action: string) => {
     if (action === 'delete') {
-      if (!confirm(`¿Estás seguro de eliminar ${selectedIds.length} productos?`)) return;
-      try {
-        await api.products.bulkDelete(selectedIds);
-        refresh();
-      } catch (err) {
-        console.error('Error deleting products:', err);
-        alert('Error al eliminar productos');
+      // Deleting here used to drop only the row: the listing stayed live on
+      // Mercado Libre, out of the Actualizador's reach (no more price/stock
+      // updates), and came back with the next "Sincronizar". Each listing is
+      // now finalized and deleted on ML first, and only those rows are removed.
+      const targets = products.filter(p => selectedIds.includes(p.id));
+      const onMeli = targets.filter(p => p.meliId).length;
+      const question = onMeli > 0
+        ? `¿Eliminar ${targets.length} producto(s)?\n\n${onMeli} se van a FINALIZAR y eliminar también en Mercado Libre: dejan de venderse y ya no se pueden reactivar.\n\nEsto no se puede deshacer.`
+        : `¿Eliminar ${targets.length} producto(s) de la app?`;
+      if (!confirm(question)) return;
+
+      setDeleteProgress({ done: 0, total: targets.length });
+      const removedIds: string[] = [];
+      const failedIds: string[] = [];
+      const errors: string[] = [];
+      const queue = [...targets];
+      const worker = async () => {
+        for (let p = queue.shift(); p; p = queue.shift()) {
+          const result = p.meliId ? await meliService.deleteItem(p.meliId) : { ok: true };
+          if (result.ok) removedIds.push(p.id);
+          else {
+            failedIds.push(p.id);
+            errors.push(`${p.meliId}: ${result.error}`);
+          }
+          setDeleteProgress(prev => prev && { ...prev, done: prev.done + 1 });
+        }
+      };
+      await Promise.all(Array.from({ length: 4 }, worker));
+
+      let rowsError = '';
+      if (removedIds.length > 0) {
+        try {
+          await api.products.bulkDelete(removedIds);
+        } catch (err: any) {
+          console.error('Error deleting products:', err);
+          rowsError = `\n\nYa no están en Mercado Libre, pero no se pudieron quitar de la lista: ${err.message}`;
+        }
+      }
+      setDeleteProgress(null);
+      refresh();
+      setSelectedIds(failedIds);
+
+      if (errors.length === 0) {
+        alert(`✅ ${removedIds.length} eliminados${onMeli > 0 ? ', y finalizados en Mercado Libre' : ''}.${rowsError}`);
+      } else {
+        alert(`⚠️ ${removedIds.length} eliminados. ${errors.length} no se pudieron finalizar en Mercado Libre, así que siguen en la lista (quedaron seleccionados):\n${errors.slice(0, 5).join('\n')}${rowsError}`);
       }
     } else if (action === 'activate' || action === 'pause') {
       const status = action === 'activate' ? 'active' : 'paused';
@@ -404,6 +445,12 @@ export const CatalogTable: React.FC = () => {
         {selectedIds.length > 0 && (
           <div className="bg-primary/10 dark:bg-primary/20 border border-primary/20 rounded-xl p-3 flex items-center justify-between animate-fade-in">
             <span className="text-sm font-bold text-primary px-2">{selectedIds.length} seleccionados</span>
+            {deleteProgress ? (
+              <span className="text-sm font-bold text-red-500 px-2 flex items-center gap-2">
+                <span className="material-symbols-outlined text-sm animate-spin">progress_activity</span>
+                Eliminando en Mercado Libre… {deleteProgress.done} de {deleteProgress.total}
+              </span>
+            ) : (
             <div className="relative group">
               <button className="flex items-center gap-2 bg-white dark:bg-slate-800 border border-primary/30 px-4 py-1.5 rounded-lg text-sm font-bold text-slate-700 dark:text-white shadow-sm hover:shadow">
                 Acciones Masivas
@@ -434,6 +481,7 @@ export const CatalogTable: React.FC = () => {
                 </button>
               </div>
             </div>
+            )}
           </div>
         )}
 
