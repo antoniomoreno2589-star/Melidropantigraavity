@@ -162,6 +162,61 @@ INSTRUCCIONES:
   } catch { return []; }
 }
 
+// Required attributes Mercado Libre still asks for after a publish tried what
+// the title and Amazon's catalog data give directly (services/attributeRepair):
+// a value for each in the shape its type takes — one of the category's own
+// values, a number in one of its units, or text — or null when the product
+// data doesn't settle it. The caller checks every answer against the category
+// before using it and leaves the rest for the seller to fill in by hand.
+async function fillAttributes(title: string, productInfo: string, attributes: any[]): Promise<Record<string, any>> {
+  const attrsForPrompt = attributes.map((a: any) => {
+    const closed = a.value_type === 'list' || a.value_type === 'boolean';
+    return {
+      id: a.id,
+      name: a.name,
+      type: a.value_type,
+      ...(closed && a.values?.length ? { values: a.values.slice(0, 150).map((v: any) => ({ id: v.id, name: v.name })) } : {}),
+      ...(!closed && a.values?.length ? { suggestions: a.values.slice(0, 40).map((v: any) => v.name) } : {}),
+      ...(a.allowed_units?.length ? { units: a.allowed_units.map((u: any) => u.id ?? u.name) } : {}),
+      ...(a.hint ? { hint: a.hint } : {}),
+      ...(a.rejected ? { rejected: a.rejected } : {}),
+    };
+  });
+
+  const prompt = `Eres experto en publicaciones de Mercado Libre México. Para publicar este producto, Mercado Libre pide los atributos de abajo, que no vienen directamente en sus datos. Complétalos con lo que dicen los datos del producto.
+
+PRODUCTO:
+Título: ${title}
+${String(productInfo || '').substring(0, 3500)}
+
+ATRIBUTOS QUE FALTAN:
+${JSON.stringify(attrsForPrompt)}
+
+CÓMO RESPONDER — un objeto JSON con una clave por id de atributo:
+- type "list" o "boolean": {"value_id": "<id exacto de uno de sus values>"}
+- type "number_unit": {"number": <número>, "unit": "<una de sus units, exacta>"}
+- type "number": {"number": <número>}
+- type "string": {"text": "<valor corto en español>"} (si una de sus suggestions aplica, cópiala tal cual)
+- null cuando no se pueda saber
+
+REGLAS:
+1. Datos verificables —medidas, pesos, capacidades, potencias, voltajes, tallas, años, normas o certificaciones, números de parte o de modelo, nombres de personajes o colecciones—: SOLO si aparecen en los datos del producto (puedes convertir unidades). Nunca los estimes ni los inventes.
+2. Usa el dato que corresponde a lo que describe el atributo, no uno parecido (ej. el tamaño de una bocina no es el ancho de su caja).
+3. Tipos y características (tipo de alimento, tipo de alimentación, tipo de pintura, edad, etc.): dedúcelos de lo que es el producto cuando sea claro (ej. croquetas → seca; un cautín eléctrico → eléctrica).
+4. Sí/No: "Sí" solo si los datos lo dicen o el producto lo es por naturaleza (ej. un juego de 12 ollas es un kit de fábrica); "No" si es algo que este producto normalmente no tiene y los datos no lo mencionan.
+5. Si el atributo no aplica a este producto, usa el valor que lo diga con honestidad (ej. "Manual" como tipo de alimentación de algo que no es eléctrico; en listas, solo si esa opción existe). Si no hay forma honesta de decirlo, null. Nunca pongas un valor falso solo para llenar.
+6. "rejected" es un valor que Mercado Libre ya rechazó para ese atributo: no lo repitas.
+7. El género debe corresponder a lo que dice el título.
+8. Responde solo con el JSON, sin explicaciones.`;
+
+  const raw = await callAI(prompt);
+  try {
+    const m = raw.match(/\{[\s\S]*\}/);
+    const parsed = JSON.parse(m?.[0] || '{}');
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch { return {}; }
+}
+
 async function optimizeTitle(title: string, description: string, brand: string): Promise<string> {
   const prompt = `Eres experto en SEO para MercadoLibre México. Tu tarea es generar un título optimizado.
 
@@ -231,6 +286,7 @@ Deno.serve(async (req) => {
     if (action === 'optimizeTitle') result = await optimizeTitle(params.title, params.description, params.brand);
     else if (action === 'detectCategory') result = await detectCategory(params.title, params.description, params.productType, params.siteId || 'MLM');
     else if (action === 'mapAttributes') result = await mapAttributes(params.title, params.description, params.amazonAttrs, params.requiredAttrs);
+    else if (action === 'fillAttributes') result = await fillAttributes(params.title, params.productInfo, params.attributes ?? []);
     else if (action === 'cleanImage') result = await cleanImage(params.imageUrl);
     return new Response(JSON.stringify({ success: true, data: result }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
   } catch (e) { return new Response(JSON.stringify({ success: false, error: e.message }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 500 }); }

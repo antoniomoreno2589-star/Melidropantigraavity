@@ -3,7 +3,8 @@ import { supabase } from './supabase';
 import { mlProxyFetch } from './mlProxy';
 import { publishBlocklist } from './publishBlocklist';
 import { amazonService } from './amazonService';
-import { analyzeCauses, asinOf, attributeFormDef, explainUnfixable, fillerAttributeIds, fitToWords, hasRepairableCauses, repairAttributes, replacePlaceholders } from './attributeRepair';
+import { aiImporterService } from './aiImporterService';
+import { aiMayFill, amazonSummary, analyzeCauses, applyAiValues, asinOf, attributeFormDef, explainUnfixable, fillerAttributeIds, fitToWords, hasRepairableCauses, repairAttributes, replacePlaceholders } from './attributeRepair';
 import { Product } from '../types';
 
 // Map raw ML order statuses to the narrower set allowed by the DB CHECK
@@ -1251,18 +1252,32 @@ class MeliService {
         let unresolved: string[] = [];
         let unresolvedIds: string[] = [];
         let definitions: any[] = [];
+        const askedAi = new Set<string>();
         for (let round = 0; round < 3 && result.error && hasRepairableCauses(result.cause); round++) {
             const categoryAttributes = await this.getCategoryAttributes(payload.category_id, customToken);
             definitions = Array.isArray(categoryAttributes) ? categoryAttributes : [];
             // Amazon is only asked when there are values to look up — not for
             // problems solved by dropping or swapping a value.
-            const { missing, invalid, packageDimensions } = analyzeCauses(result.cause, categoryAttributes);
+            const { missing, invalid, packageDimensions, titleGender } = analyzeCauses(result.cause, categoryAttributes);
             const needsAmazon = missing.size > 0 || invalid.size > 0 || packageDimensions;
-            const repair = repairAttributes(payload.attributes, result.cause, {
-                title: payload.title ?? payload.family_name ?? '',
-                categoryAttributes,
-                amazonAttributes: needsAmazon ? await this.amazonAttributesFor(asinOf(payload)) : null,
-            });
+            const amazonAttributes = needsAmazon ? await this.amazonAttributesFor(asinOf(payload)) : null;
+            const title = payload.title ?? payload.family_name ?? '';
+            let repair = repairAttributes(payload.attributes, result.cause, { title, categoryAttributes, amazonAttributes });
+            // What neither the title nor Amazon's catalog fields give directly is
+            // asked of the AI, once per attribute: it reads the whole product the
+            // way a seller would. Tried on 25 of the products left for the seller
+            // to fill in by hand: it completed 20 from their Amazon bullet points
+            // and attributes, and answered null where the data doesn't say.
+            const toAsk = repair.unresolvedIds.filter(id => aiMayFill(id) && !askedAi.has(id));
+            if (toAsk.length > 0) {
+                toAsk.forEach(id => askedAi.add(id));
+                const current = new Map<string, string>((payload.attributes ?? []).map((a: any) => [a.id, a.value_name]));
+                const rejected = new Map<string, string>(
+                    [...invalid, ...(titleGender ? ['GENDER'] : [])].filter(id => current.get(id)).map(id => [id, current.get(id)!]));
+                const productInfo = amazonSummary(amazonAttributes);
+                const answers = await this.attributesFromAi(title, productInfo, toAsk, definitions, rejected);
+                repair = applyAiValues(repair, answers, definitions, `${title}\n${productInfo}`);
+            }
             unresolved = repair.unresolved;
             unresolvedIds = repair.unresolvedIds;
             if (!repair.changed) break;
@@ -1278,7 +1293,7 @@ class MeliService {
         if (repairedTitle) result.repairedTitle = repairedTitle;
         if (result.error && unresolved.length > 0 && hasRepairableCauses(result.cause)) {
             result.cause = [
-                { type: 'error', code: 'melidrop.attributes.unresolved', message: `Faltan datos que no están en Amazon ni en el título: ${unresolved.join(', ')}` },
+                { type: 'error', code: 'melidrop.attributes.unresolved', message: `Faltan datos que no están en Amazon ni en el título, y la IA no pudo deducir: ${unresolved.join(', ')}` },
                 ...(result.cause ?? []),
             ];
             // What the seller has to fill in by hand, with what the form needs
@@ -1295,6 +1310,18 @@ class MeliService {
         }
 
         return result;
+    }
+
+    // The AI's values for required attributes nothing else could fill (see
+    // ai-importer's fillAttributes), with what each attribute takes and any
+    // value ML already rejected; checked by applyAiValues before any is used.
+    private async attributesFromAi(title: string, productInfo: string, ids: string[], definitions: any[], rejected: Map<string, string>): Promise<Record<string, any>> {
+        const byId = new Map<string, any>(definitions.map((d: any) => [d.id, d]));
+        const attributes = ids.filter(id => byId.has(id)).map(id => {
+            const def = byId.get(id);
+            return { ...attributeFormDef(def, id), hint: def.hint ?? def.tooltip ?? undefined, rejected: rejected.get(id) };
+        });
+        return attributes.length > 0 ? aiImporterService.fillAttributes(title, productInfo, attributes) : {};
     }
 
     // Amazon catalog attributes for attributeRepair — null without an ASIN,

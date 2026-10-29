@@ -142,6 +142,7 @@ export interface RepairResult {
     changed: boolean;
     filled: string[];        // e.g. "Altura: 36 cm (Amazon)"
     dropped: string[];       // optional attributes removed because ML rejected their value
+    open: { name: string; ids: string[] }[]; // what's still missing, each with the attributes it takes
     unresolved: string[];    // required attributes still without a value, by name
     unresolvedIds: string[]; // the same, by attribute id (for the seller to fill in by hand)
 }
@@ -507,9 +508,8 @@ export function repairAttributes(attributes: any[] | undefined, causes: any[] | 
     const { missing, invalid, packageDimensions: needsPackage, productCode, titleGender, saleUnits } = analyzeCauses(causes, ctx.categoryAttributes);
     const filled: string[] = [];
     const dropped: string[] = [];
-    const unresolved: string[] = [];
-    const unresolvedIds: string[] = [];
-    const leaveOpen = (name: string, ...ids: string[]) => { unresolved.push(name); unresolvedIds.push(...ids); };
+    const open: { name: string; ids: string[] }[] = [];
+    const leaveOpen = (name: string, ...ids: string[]) => { open.push({ name, ids }); };
 
     const set = (id: string, value: { value_id?: string; value_name: string }, source: string) => {
         attrs.set(id, { id, ...value });
@@ -583,7 +583,108 @@ export function repairAttributes(attributes: any[] | undefined, causes: any[] | 
     return {
         attributes: Array.from(attrs.values()),
         changed: filled.length > 0 || dropped.length > 0,
-        filled, dropped, unresolved, unresolvedIds,
+        filled, dropped, open,
+        unresolved: open.map(o => o.name),
+        unresolvedIds: open.flatMap(o => o.ids),
+    };
+}
+
+// What the AI is never asked for: barcodes (only the real one will do), the
+// package's measures (Amazon's, the saved ones rounded, or the seller's) and
+// size charts (made on Mercado Libre).
+export const aiMayFill = (id: string): boolean =>
+    !CODE_ATTRS.includes(id) && !PACKAGE_ATTRS.includes(id) && id !== 'EMPTY_GTIN_REASON' && !/^SIZE_GRID/.test(id);
+
+// The product as the AI reads it: Amazon's bullet points, then its other
+// catalog attributes one line each (Amazon México's entry, without the
+// marketplace and language tags).
+export function amazonSummary(attrs: Record<string, any[]> | null | undefined, limit = 3500): string {
+    if (!attrs) return '';
+    const bullets = (Array.isArray(attrs.bullet_point) ? attrs.bullet_point : [])
+        .filter((e: any) => !e?.marketplace_id || e.marketplace_id === 'A1AM78C64UM0Y8')
+        .map((e: any) => e?.value)
+        .filter((v: any) => typeof v === 'string' && v.trim());
+    const rest = Object.keys(attrs)
+        .filter(key => key !== 'bullet_point')
+        .map(key => {
+            const entry = amazonEntry(attrs, key);
+            if (!entry || typeof entry !== 'object') return null;
+            const { marketplace_id, language_tag, ...value } = entry;
+            return `${key}: ${JSON.stringify(value).slice(0, 200)}`;
+        })
+        .filter(Boolean);
+    return [
+        bullets.length ? `Datos de Amazon:\n- ${bullets.join('\n- ')}` : '',
+        rest.length ? `Atributos de Amazon: ${rest.join('; ')}` : '',
+    ].filter(Boolean).join('\n').slice(0, limit);
+}
+
+// One AI answer (see ai-importer's fillAttributes) in the shape ML takes for
+// the attribute, or null: one of the category's own values, a number in one
+// of its units, a number, or text that isn't the attribute's own name (the
+// filler ML rejects). Nothing else is ever used.
+export function aiAttributeValue(def: any, proposed: any): { value_id?: string; value_name: string } | null {
+    if (!def || !proposed || typeof proposed !== 'object') return null;
+    const values: any[] = Array.isArray(def.values) ? def.values : [];
+    const valueType: string = def.value_type ?? '';
+    if (valueType === 'list' || valueType === 'boolean') {
+        const id = proposed.value_id != null ? String(proposed.value_id) : null;
+        const name = normalize(String(proposed.value_name ?? proposed.text ?? ''));
+        const match = values.find(v => (id && String(v.id) === id) || (name && normalize(String(v.name ?? '')) === name));
+        return match ? { value_id: String(match.id), value_name: String(match.name) } : null;
+    }
+    // Ages start at 0 ("0 meses"); a size or weight of 0 is rejected.
+    const n = Number(String(proposed.number ?? '').replace(',', '.'));
+    const valid = Number.isFinite(n) && (n > 0 || (n === 0 && /AGE/.test(String(def.id))));
+    if (valueType === 'number_unit') {
+        const unit = (def.allowed_units ?? []).find((u: any) =>
+            [u.id, u.name].some(x => x != null && String(x) === String(proposed.unit ?? '')));
+        return unit && valid ? { value_name: `${formatNumber(n)} ${unit.name ?? unit.id}` } : null;
+    }
+    if (valueType === 'number') return valid ? { value_name: formatNumber(n) } : null;
+    const text = String(proposed.text ?? proposed.value_name ?? '').trim();
+    if (!text || normalize(text) === normalize(String(def.name ?? ''))) return null;
+    const suggested = values.find(v => normalize(String(v.name ?? '')) === normalize(text));
+    return suggested ? { value_id: String(suggested.id), value_name: String(suggested.name) } : { value_name: text.slice(0, 255) };
+}
+
+// Attributes whose value is a fact only the product's own data can give: a
+// norm or certification, a model, part or kit number, a year, a character or
+// collection, what it's compatible with. Confirmed live that the AI still
+// wrote a safety norm ("ECE R44/04") for a child booster seat whose Amazon
+// data names none, so for these its answer is used only if that data has it.
+const FACT_TOKENS = new Set(['REGULATIONS', 'REGULATION', 'CERTIFICATIONS', 'CERTIFICATION', 'NORMS', 'STANDARD', 'STANDARDS', 'MODEL', 'YEAR', 'CHARACTER', 'COLLECTION', 'COMPATIBLE']);
+const isFactAttribute = (id: string): boolean =>
+    /(^|_)(PART|KIT)_NUMBER$/.test(id) || id.split('_').some(token => FACT_TOKENS.has(token));
+
+// The AI's answers applied to what repairAttributes left open: each checked
+// first (aiAttributeValue, and for facts, against the product data the AI
+// read), and an open item closed once all its attributes have a value.
+export function applyAiValues(repair: RepairResult, answers: Record<string, any>, categoryAttributes: any[], productData: string): RepairResult {
+    const defs = new Map<string, any>((Array.isArray(categoryAttributes) ? categoryAttributes : []).map((d: any) => [d.id, d]));
+    const attrs = new Map<string, any>(repair.attributes.filter(a => a?.id).map(a => [a.id, a]));
+    const data = normalize(productData);
+    const filled = [...repair.filled];
+    const answered = new Set<string>();
+    for (const id of repair.unresolvedIds) {
+        const value = aiAttributeValue(defs.get(id), answers?.[id]);
+        if (!value) continue;
+        if (isFactAttribute(id) && !data.includes(normalize(value.value_name))) continue;
+        attrs.set(id, { id, ...value });
+        filled.push(`${defs.get(id)?.name ?? id}: ${value.value_name} (IA)`);
+        answered.add(id);
+    }
+    if (answered.size === 0) return repair;
+    const open = repair.open
+        .map(o => ({ ...o, ids: o.ids.filter(id => !answered.has(id)) }))
+        .filter(o => o.ids.length > 0);
+    return {
+        ...repair,
+        attributes: Array.from(attrs.values()),
+        changed: true,
+        filled, open,
+        unresolved: open.map(o => o.name),
+        unresolvedIds: open.flatMap(o => o.ids),
     };
 }
 
@@ -632,7 +733,7 @@ export function replacePlaceholders(attributes: any[] | undefined, ids: string[]
         attrs.set(id, { id, ...inferred.value });
         filled.push(`${def.name ?? id}: ${inferred.value.value_name} (${inferred.source}, en lugar de "${def.name ?? id}")`);
     }
-    return { attributes: Array.from(attrs.values()), changed: filled.length > 0, filled, dropped: [], unresolved: [], unresolvedIds: [] };
+    return { attributes: Array.from(attrs.values()), changed: filled.length > 0, filled, dropped: [], open: [], unresolved: [], unresolvedIds: [] };
 }
 
 // A title (or family_name) cut after the last whole word that fits, with no
