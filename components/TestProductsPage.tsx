@@ -1,9 +1,10 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Product } from '../types';
 import { api } from '../services/api';
 import { meliService } from '../services/meliService';
 import { supabase } from '../services/supabase';
-import { sanitizePublishAttributes } from './AmazonImporter/useAmazonImporter';
+import { REIMPORT_ASINS_KEY, sanitizePublishAttributes } from './AmazonImporter/useAmazonImporter';
 import { amazonDomainForCurrency } from '../services/amazonService';
 
 interface TestProduct extends Product {
@@ -44,6 +45,15 @@ const isUnpublished = (p: TestProduct): boolean => !p.meliId;
 // not mode me1", "… ignored because it is not modifiable"), which never block
 // one — confirmed live they made up most of each error line, burying the reason.
 const blockingCauses = (cause: any): any[] => (Array.isArray(cause) ? cause : []).filter((c: any) => c?.type !== 'warning');
+
+// Selected products with no saved listing data can't be tested or published.
+// Confirmed live: 179 of the 471 "Sin publicar" — 176 whose original listing
+// no longer existed on Mercado Libre when the catalog was handed over, 3 the
+// importer left empty — were skipped without a word, so "Probar en Sandbox"
+// asked about 292. Said the same way wherever a bulk action skips them.
+const noDataNote = (n: number): string => n === 0 ? '' : n === 1
+    ? '\n\n1 de los seleccionados no tiene datos para publicar y se omite: usa "Reimportar desde Amazon" para rehacerlo.'
+    : `\n\n${n} de los seleccionados no tienen datos para publicar y se omiten: usa "Reimportar desde Amazon" para rehacerlos.`;
 
 // A bulk run stops at the account's daily limit (result.quotaReached): every
 // product after would get the same refusal. The untried ones stay selected.
@@ -411,6 +421,24 @@ export const TestProductsPage = () => {
     }, [testProducts]);
     const missingCount = useMemo(() => testProducts.filter(p => p.missingAttributes?.length).length, [testProducts]);
     const productById = useMemo(() => new Map(testProducts.map(p => [p.id, p])), [testProducts]);
+    // The selected products with no saved listing data (see noDataNote).
+    const selectedWithoutData = useMemo(() => {
+        const selected = new Set(selectedIds);
+        return testProducts.filter(p => selected.has(p.id) && !p.hasPayload);
+    }, [testProducts, selectedIds]);
+
+    // Their ASINs go to the Amazon Importer's step 2, which rebuilds the
+    // listing data from Amazon and saves it onto these same rows.
+    const navigate = useNavigate();
+    const reimportFromAmazon = () => {
+        const asins = [...new Set(selectedWithoutData.map(p => String(p.asin ?? '').trim().toUpperCase()).filter(a => /^[A-Z0-9]{10}$/.test(a)))];
+        if (asins.length === 0) {
+            alert('Ninguno de los seleccionados tiene un ASIN para volver a importar.');
+            return;
+        }
+        try { sessionStorage.setItem(REIMPORT_ASINS_KEY, asins.join('\n')); } catch { /* the importer just starts empty */ }
+        navigate('/importar');
+    };
 
     // Jumping back to page 1 on a new search/filter avoids landing on a page
     // that no longer has any rows once the filtered set shrinks.
@@ -766,7 +794,14 @@ export const TestProductsPage = () => {
 
     const handleBulkPublish = async () => {
         if (selectedIds.length === 0) return;
-        if (!confirm(`¿Publicar ${selectedIds.length} producto(s) en tu cuenta REAL de MercadoLibre?`)) return;
+        const pending = testProducts.filter(p => selectedIds.includes(p.id) && !p.isPublishedToReal);
+        const toPublish = pending.filter(p => p.hasPayload);
+        const note = noDataNote(pending.length - toPublish.length);
+        if (toPublish.length === 0) {
+            alert(pending.length > 0 ? `Ninguno de los seleccionados se puede publicar.${note}` : 'Los seleccionados ya están publicados en tu cuenta real.');
+            return;
+        }
+        if (!confirm(`¿Publicar ${toPublish.length} producto(s) en tu cuenta REAL de MercadoLibre?${note}`)) return;
 
         const realCreds = meliService.getCredentials();
         if (!realCreds?.token) {
@@ -774,7 +809,6 @@ export const TestProductsPage = () => {
             return;
         }
 
-        const toPublish = testProducts.filter(p => selectedIds.includes(p.id) && !p.isPublishedToReal);
         bulkPublishCancelRef.current = false;
         setBulkPublishRun({ total: toPublish.length, done: 0, successCount: 0, errors: [], finished: false, cancelled: false });
 
@@ -799,10 +833,6 @@ export const TestProductsPage = () => {
         let untried: string[] = [];
         for (const [index, product] of toPublish.entries()) {
             if (bulkPublishCancelRef.current) break;
-            if (!product.hasPayload) {
-                markDone({ success: false, id: product.id, title: product.title, message: 'sin payload (re-importar)' });
-                continue;
-            }
             try {
                 // Guard against publishing the same ASIN twice for real.
                 const dup = await meliService.checkDuplicate(product.asin);
@@ -883,12 +913,14 @@ export const TestProductsPage = () => {
     // and records the test listing's id, so the row then reads like any other
     // tested product and "Publicar Real" works as usual.
     const handleBulkSandboxTest = async () => {
-        const toTest = testProducts.filter(p => selectedIds.includes(p.id) && !p.isPublishedToReal && p.hasPayload);
+        const pending = testProducts.filter(p => selectedIds.includes(p.id) && !p.isPublishedToReal);
+        const toTest = pending.filter(p => p.hasPayload);
+        const note = noDataNote(pending.length - toTest.length);
         if (toTest.length === 0) {
-            alert('Ninguno de los seleccionados se puede probar: ya están publicados en tu cuenta real o no tienen sus datos guardados.');
+            alert(pending.length > 0 ? `Ninguno de los seleccionados se puede probar.${note}` : 'Los seleccionados ya están publicados en tu cuenta real.');
             return;
         }
-        if (!confirm(`¿Probar ${toTest.length} producto(s) en tu cuenta de PRUEBA de MercadoLibre? No se publica nada en tu cuenta real.`)) return;
+        if (!confirm(`¿Probar ${toTest.length} producto(s) en tu cuenta de PRUEBA de MercadoLibre? No se publica nada en tu cuenta real.${note}`)) return;
 
         let testToken: string | undefined;
         try { testToken = (await meliService.autoRefreshTestUserToken()) ?? undefined; } catch { testToken = undefined; }
@@ -1525,6 +1557,15 @@ export const TestProductsPage = () => {
                             >
                                 Probar en Sandbox
                             </button>
+                            {selectedWithoutData.length > 0 && (
+                                <button
+                                    onClick={reimportFromAmazon}
+                                    title="No tienen datos para publicar: el Importador los vuelve a armar desde Amazon con su ASIN"
+                                    className="text-xs font-bold px-4 py-2 rounded-lg transition-all border bg-sky-50 text-sky-700 border-sky-200 hover:bg-sky-100 dark:bg-sky-900/20 dark:text-sky-300 dark:border-sky-800"
+                                >
+                                    Reimportar desde Amazon ({selectedWithoutData.length})
+                                </button>
+                            )}
                             <button
                                 onClick={handleBulkPublish}
                                 disabled={selectedIds.length === 0}
