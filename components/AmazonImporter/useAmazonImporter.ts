@@ -200,6 +200,16 @@ function pickRelevantAttributes(attrs: any[], limit: number): any[] {
         .slice(0, limit);
 }
 
+// ASINs the Sandbox page hands over ("Reimportar desde Amazon") for step 2:
+// products with no saved listing data, which only this importer can rebuild.
+// It saves by ASIN (api.testProducts.create upserts), so they land on the
+// same rows.
+export const REIMPORT_ASINS_KEY = 'melidrop_reimport_asins';
+
+function readReimportAsins(): string {
+    try { return sessionStorage.getItem(REIMPORT_ASINS_KEY) ?? ''; } catch { return ''; }
+}
+
 export function useAmazonImporter() {
     // ── Step navigation ────────────────────────────────────────────────
     const [step, setStep] = useState<Step>(1);
@@ -211,7 +221,11 @@ export function useAmazonImporter() {
     const [cleanImages, setCleanImages] = useState(false);
 
     // ── Step 2: Load Products ──────────────────────────────────────────
-    const [asinInput, setAsinInput] = useState('');
+    const [asinInput, setAsinInput] = useState(readReimportAsins);
+    // Handed over once: a later visit to the importer starts empty.
+    useEffect(() => {
+        try { sessionStorage.removeItem(REIMPORT_ASINS_KEY); } catch { /* nothing was handed over */ }
+    }, []);
     const [loadedProducts, setLoadedProducts] = useState<LoadedProduct[]>([]);
     const [loadingAsins, setLoadingAsins] = useState(false);
     // ASINs the last load left out because they (or their brand) are on the
