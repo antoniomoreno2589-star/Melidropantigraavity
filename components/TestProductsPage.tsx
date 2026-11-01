@@ -275,6 +275,13 @@ export const TestProductsPage = () => {
     const [previewImage, setPreviewImage] = useState<{ url: string; title: string } | null>(null);
 
     const [testProducts, setTestProducts] = useState<TestProduct[]>([]);
+    // One product's row just changed in the database: show the change, and
+    // today as its "Actualización" date, as the database now stamps it
+    // (test_products_touch_updated_at), without waiting for a reload.
+    const patchProduct = (id: string, patch: Partial<TestProduct>) => {
+        const updatedDate = new Date().toISOString().split('T')[0];
+        setTestProducts(prev => prev.map(p => p.id === id ? { ...p, ...patch, updatedDate } : p));
+    };
     const [isLoading, setIsLoading] = useState(true);
     // A catalog can be tens of thousands of rows: show how far the load got,
     // and say when it failed — the table used to show "No se encontraron
@@ -632,9 +639,7 @@ export const TestProductsPage = () => {
     const applyOutcome = (product: TestProduct, outcome: { missingAttributes: any[] | null; title?: string }) => {
         const sameMissing = JSON.stringify(outcome.missingAttributes) === JSON.stringify(product.missingAttributes ?? null);
         if (sameMissing && !outcome.title) return;
-        setTestProducts(prev => prev.map(p => p.id === product.id
-            ? { ...p, missingAttributes: outcome.missingAttributes, ...(outcome.title ? { title: outcome.title } : {}) }
-            : p));
+        patchProduct(product.id, { missingAttributes: outcome.missingAttributes, ...(outcome.title ? { title: outcome.title } : {}) });
     };
 
     const handlePublishToReal = async (id: string) => {
@@ -661,7 +666,7 @@ export const TestProductsPage = () => {
             alert(`Ya existe en tu cuenta real de MercadoLibre (ID: ${dup.existingItem?.id}). No se volvió a publicar.`);
             const publishedNow = new Date().toISOString();
             await api.testProducts.update(id, { meli_id: dup.existingItem?.id, is_published_to_real: true, published_to_real_at: publishedNow });
-            setTestProducts(prev => prev.map(p => p.id === id ? { ...p, meliId: dup.existingItem?.id, isPublishedToReal: true, publishedToRealDate: publishedNow.split('T')[0] } : p));
+            patchProduct(id, { meliId: dup.existingItem?.id, isPublishedToReal: true, publishedToRealDate: publishedNow.split('T')[0] });
             return;
         }
 
@@ -722,9 +727,7 @@ export const TestProductsPage = () => {
             });
 
             // Update local state
-            setTestProducts(prev => prev.map(p =>
-                p.id === id ? { ...p, meliId: result.id, isPublishedToReal: true, publishedToRealDate: publishedNow.split('T')[0] } : p
-            ));
+            patchProduct(id, { meliId: result.id, isPublishedToReal: true, publishedToRealDate: publishedNow.split('T')[0] });
 
             await trackPublishedProduct(product, result, itemPayload, descriptionText);
 
@@ -848,9 +851,7 @@ export const TestProductsPage = () => {
                 if (dup.isDuplicate) {
                     const publishedNow = new Date().toISOString();
                     await api.testProducts.update(product.id, { meli_id: dup.existingItem?.id, is_published_to_real: true, published_to_real_at: publishedNow });
-                    setTestProducts(prev => prev.map(p =>
-                        p.id === product.id ? { ...p, meliId: dup.existingItem?.id, isPublishedToReal: true, publishedToRealDate: publishedNow.split('T')[0] } : p
-                    ));
+                    patchProduct(product.id, { meliId: dup.existingItem?.id, isPublishedToReal: true, publishedToRealDate: publishedNow.split('T')[0] });
                     markDone({ success: true });
                     continue;
                 }
@@ -895,9 +896,7 @@ export const TestProductsPage = () => {
                     is_published_to_real: true,
                     published_to_real_at: publishedNow
                 });
-                setTestProducts(prev => prev.map(p =>
-                    p.id === product.id ? { ...p, meliId: result.id, isPublishedToReal: true, publishedToRealDate: publishedNow.split('T')[0] } : p
-                ));
+                patchProduct(product.id, { meliId: result.id, isPublishedToReal: true, publishedToRealDate: publishedNow.split('T')[0] });
                 await trackPublishedProduct(product, result, itemPayload, descriptionText);
                 markDone({ success: true });
             } catch (err: any) {
@@ -990,7 +989,7 @@ export const TestProductsPage = () => {
                 }
                 const status = result.status ?? 'active';
                 await api.testProducts.update(product.id, { meli_id: result.id, status });
-                setTestProducts(prev => prev.map(p => p.id === product.id ? { ...p, meliId: result.id, status } : p));
+                patchProduct(product.id, { meliId: result.id, status });
                 markDone(true, product);
             } catch (err: any) {
                 markDone(false, product, err.message);
@@ -1744,8 +1743,7 @@ export const TestProductsPage = () => {
                     product={completing}
                     onClose={() => setCompleting(null)}
                     onSaved={remaining => {
-                        const id = completing.id;
-                        setTestProducts(prev => prev.map(p => p.id === id ? { ...p, missingAttributes: remaining } : p));
+                        patchProduct(completing.id, { missingAttributes: remaining });
                         setCompleting(null);
                     }}
                 />
