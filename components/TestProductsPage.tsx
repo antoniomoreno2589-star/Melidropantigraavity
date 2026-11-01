@@ -265,6 +265,10 @@ export const TestProductsPage = () => {
     // the 5th and the 12th" needed two bounds, not one day at a time.
     const [filterDateFrom, setFilterDateFrom] = useState<string>('');
     const [filterDateTo, setFilterDateTo] = useState<string>('');
+    // Sale price range in pesos (price_mxn, what the listing sells for), as
+    // typed; either bound can be left blank.
+    const [filterPriceMin, setFilterPriceMin] = useState('');
+    const [filterPriceMax, setFilterPriceMax] = useState('');
     const [showFilters, setShowFilters] = useState(false);
     const [currentPage, setCurrentPage] = useState(1);
     const PAGE_SIZE = 20;
@@ -401,9 +405,14 @@ export const TestProductsPage = () => {
                 : !dateValue ? false
                 : (!filterDateFrom || dateValue >= filterDateFrom) && (!filterDateTo || dateValue <= filterDateTo);
 
-            return matchesSearch && matchesStatus && matchesPublished && matchesDate;
+            // 5. Sale price range, in pesos.
+            const price = Number(p.priceMXN) || 0;
+            const matchesPrice = (filterPriceMin === '' || price >= Number(filterPriceMin))
+                && (filterPriceMax === '' || price <= Number(filterPriceMax));
+
+            return matchesSearch && matchesStatus && matchesPublished && matchesDate && matchesPrice;
         });
-    }, [testProducts, searchField, searchQuery, filterStatus, filterPublished, filterMissing, dateFilterType, filterDateFrom, filterDateTo]);
+    }, [testProducts, searchField, searchQuery, filterStatus, filterPublished, filterMissing, dateFilterType, filterDateFrom, filterDateTo, filterPriceMin, filterPriceMax]);
 
     // Counts for the status pill row — always over the full catalog, not the
     // currently filtered/searched subset, same as ML's own seller panel.
@@ -444,7 +453,7 @@ export const TestProductsPage = () => {
     // that no longer has any rows once the filtered set shrinks.
     useEffect(() => {
         setCurrentPage(1);
-    }, [searchField, searchQuery, filterStatus, filterPublished, filterMissing, dateFilterType, filterDateFrom, filterDateTo]);
+    }, [searchField, searchQuery, filterStatus, filterPublished, filterMissing, dateFilterType, filterDateFrom, filterDateTo, filterPriceMin, filterPriceMax]);
 
     const totalPages = Math.max(1, Math.ceil(filteredProducts.length / PAGE_SIZE));
 
@@ -1256,6 +1265,40 @@ export const TestProductsPage = () => {
                                         {(filterDateFrom || filterDateTo) && (
                                             <button
                                                 onClick={() => { setFilterDateFrom(''); setFilterDateTo(''); }}
+                                                className="text-slate-400 hover:text-red-500 pr-2"
+                                            >
+                                                <span className="material-symbols-outlined text-[16px]">close</span>
+                                            </button>
+                                        )}
+                                    </div>
+
+                                    {/* Sale price range: what the listing sells for, either bound optional */}
+                                    <div className="flex items-center bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg overflow-hidden">
+                                        <span className="text-xs font-bold text-slate-600 dark:text-slate-300 pl-3 pr-1 whitespace-nowrap">Precio $</span>
+                                        <input
+                                            type="number"
+                                            min={0}
+                                            inputMode="numeric"
+                                            value={filterPriceMin}
+                                            onChange={(e) => setFilterPriceMin(e.target.value)}
+                                            placeholder="Desde"
+                                            title="Precio de venta mínimo"
+                                            className="w-20 bg-transparent border-none text-xs font-bold text-slate-600 dark:text-slate-300 focus:ring-0 px-2 py-2"
+                                        />
+                                        <span className="text-slate-300 dark:text-slate-600 text-xs">—</span>
+                                        <input
+                                            type="number"
+                                            min={0}
+                                            inputMode="numeric"
+                                            value={filterPriceMax}
+                                            onChange={(e) => setFilterPriceMax(e.target.value)}
+                                            placeholder="Hasta"
+                                            title="Precio de venta máximo"
+                                            className="w-20 bg-transparent border-none text-xs font-bold text-slate-600 dark:text-slate-300 focus:ring-0 px-2 py-2"
+                                        />
+                                        {(filterPriceMin || filterPriceMax) && (
+                                            <button
+                                                onClick={() => { setFilterPriceMin(''); setFilterPriceMax(''); }}
                                                 className="text-slate-400 hover:text-red-500 pr-2"
                                             >
                                                 <span className="material-symbols-outlined text-[16px]">close</span>
