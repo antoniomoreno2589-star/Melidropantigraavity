@@ -94,8 +94,9 @@ async function paceAmazon() {
 }
 
 // 20 ASINs per call. An ASIN Amazon didn't answer for is left out
-// (undetermined); 404/400 means it has no offers on that marketplace.
-async function fetchOffers(endpoint: string, token: string, asins: string[], marketplaceId: string, amazonSellerId: string): Promise<Record<string, Offers>> {
+// (undetermined); 404/400 means it has no offers on that marketplace. Once
+// Amazon throttles a call, it and the rest go in `throttled` instead.
+async function fetchOffers(endpoint: string, token: string, asins: string[], marketplaceId: string, amazonSellerId: string, throttled: Set<string>): Promise<Record<string, Offers>> {
     const offers: Record<string, Offers> = {};
     for (let i = 0; i < asins.length; i += 20) {
         const chunk = asins.slice(i, i + 20);
@@ -112,6 +113,14 @@ async function fetchOffers(endpoint: string, token: string, asins: string[], mar
             };
             let res = await call();
             if (res.status === 429) res = await call();
+            if (res.status === 429) {
+                // The quota is shared with the app (every publish runs the
+                // Actualizador): confirmed live that a pass running during
+                // publishing got 429s. Those listings wait for a later run.
+                for (const asin of asins.slice(i)) throttled.add(`${marketplaceId}:${asin}`);
+                console.log(`[price-pass] Amazon ${marketplaceId} throttled; ${asins.length - i} wait for the next run`);
+                break;
+            }
             if (!res.ok) {
                 console.log(`[price-pass] Amazon ${marketplaceId} HTTP ${res.status}: ${(await res.text().catch(() => "")).slice(0, 200)}`);
                 continue;
@@ -260,10 +269,18 @@ async function runPricePass(supabase: any, userId: string): Promise<Record<strin
         const amazonToken = await getAmazonToken(conn.amazon_credentials);
         const usdAsins = products.filter(p => candidates(p).includes("USD")).map(p => p.sku);
         const mxnAsins = products.filter(p => candidates(p).includes("MXN")).map(p => p.sku);
+        const throttled = new Set<string>();
         const [usdOffers, mxnOffers] = await Promise.all([
-            fetchOffers(endpoint, amazonToken, usdAsins, MARKETPLACE_USA, AMAZON_SELLER_USA),
-            fetchOffers(endpoint, amazonToken, mxnAsins, MARKETPLACE_MXN, AMAZON_SELLER_MXN),
+            fetchOffers(endpoint, amazonToken, usdAsins, MARKETPLACE_USA, AMAZON_SELLER_USA, throttled),
+            fetchOffers(endpoint, amazonToken, mxnAsins, MARKETPLACE_MXN, AMAZON_SELLER_MXN, throttled),
         ]);
+        // From the first listing Amazon throttled on, the rest waits for the next run.
+        const cut = products.findIndex(p => candidates(p).some(c => throttled.has(`${c === "USD" ? MARKETPLACE_USA : MARKETPLACE_MXN}:${p.sku}`)));
+        if (cut === 0) {
+            await release({});
+            return { skipped: true, reason: "Amazon throttled; retrying on the next run" };
+        }
+        if (cut > 0) products.splice(cut);
         const livePrices = await fetchMeliPrices(products.map(p => p.meli_id), mlToken);
 
         let raised = 0, kept = 0, noAmazon = 0, unanswered = 0, originFixed = 0, errors = 0;
