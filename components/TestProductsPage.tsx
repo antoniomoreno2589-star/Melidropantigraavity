@@ -616,7 +616,11 @@ export const TestProductsPage = () => {
                 stock_meli:       itemPayload.available_quantity,
                 status:           'active',
                 image_url:        product.imageUrl ?? null,
-                currency:         itemPayload.currency_id === 'USD' ? 'USD' : 'MXN',
+                // Which Amazon the product is bought from — the Actualizador
+                // prices it from that marketplace. Confirmed live: this used
+                // ML's currency_id, always MXN on Mercado Libre México, so
+                // 1,086 Amazon USA products were priced from Amazon México.
+                currency:         product.currency === 'USD' ? 'USD' : 'MXN',
                 description_text: descriptionText ?? null,
                 last_updated:     new Date().toISOString(),
                 in_updater:       true,

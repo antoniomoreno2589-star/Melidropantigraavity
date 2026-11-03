@@ -184,12 +184,22 @@ class AmazonService {
             console.log(`amazonService.getProduct: asin=${asin}, title="${title}", images=${uniqueImages.length}`);
             console.log(`[Melidrop] ${asin}: Amazon returned ${uniqueImages.length} deduplicated images`);
 
+            // What it costs to buy there: the offer's price plus its shipping
+            // (LowestPrices entries carry the sum as LandedPrice). Confirmed
+            // live: 29 of 93 sampled listings had Amazon shipping, up to $424
+            // MXN, that the margin rules never counted.
+            const offerCost = (o: any): number | null => {
+                if (typeof o?.LandedPrice?.Amount === 'number') return o.LandedPrice.Amount;
+                const amount = o?.ListingPrice?.Amount;
+                return typeof amount === 'number' ? amount + (o?.Shipping?.Amount ?? 0) : null;
+            };
+
             return {
                 asin,
                 title,
                 description,
                 bulletPoints,
-                price: winningOffer?.ListingPrice?.Amount ?? pricing?.Summary?.LowestPrices?.[0]?.ListingPrice?.Amount ?? 0,
+                price: offerCost(winningOffer) ?? offerCost(pricing?.Summary?.LowestPrices?.[0]) ?? 0,
                 // The product's origin is the marketplace it was looked up on —
                 // Amazon México unless a marketplace is passed (amazon-proxy's
                 // default) — whether or not an offer came back this time.
