@@ -102,6 +102,17 @@ function pickWinningOffer(offers: any[]): any | null {
     return candidates[0];
 }
 
+// What the product costs to buy from an offer: its price plus the offer's
+// shipping (Summary.LowestPrices entries carry the sum as LandedPrice).
+// Confirmed live: 29 of 93 sampled listings had Amazon shipping, up to $424
+// MXN, that the margin rules never counted.
+function offerCost(o: any): number | null {
+    const landed = o?.LandedPrice?.Amount ?? o?.BuyingPrice?.LandedPrice?.Amount;
+    if (typeof landed === 'number') return landed;
+    const price = o?.ListingPrice?.Amount ?? o?.BuyingPrice?.ListingPrice?.Amount;
+    return typeof price === 'number' ? price + (o?.Shipping?.Amount ?? o?.BuyingPrice?.Shipping?.Amount ?? 0) : null;
+}
+
 // Fixed business rule (owner-defined, confirmed against real Offers data —
 // Amazon's own ShippingTime.maximumHours is unreliable: real offers can
 // report 0 hours, a data gap, not "ships instantly"). ShipsFrom.Country is
@@ -1055,10 +1066,7 @@ async function fetchAmazonOffers(
             || allOffers.length;
 
         // LowestPrices can be empty when Amazon is the sole seller — fall back to the offer's own price
-        const price = lowestNew?.ListingPrice?.Amount
-            ?? amazonOffer?.ListingPrice?.Amount
-            ?? amazonOffer?.BuyingPrice?.ListingPrice?.Amount
-            ?? null;
+        const price = offerCost(lowestNew) ?? offerCost(amazonOffer);
         // Real currency of whichever offer `price` came from — the marketplace
         // fallback (main handler) can end up using an offer from a different
         // marketplace than the product's stored currency implies.
@@ -1070,7 +1078,7 @@ async function fetchAmazonOffers(
         // "Valores Fijos" mode: same winning offer as the importer uses, so price
         // and shipping origin always agree on which offer is "the" one.
         const winningOffer = pickWinningOffer(allOffers);
-        const winningOfferPrice = winningOffer?.ListingPrice?.Amount ?? null;
+        const winningOfferPrice = offerCost(winningOffer);
         const shipsFromCountry = winningOffer?.ShipsFrom?.Country ?? null;
 
         // ShippingTime.maximumHours: 0 means FBA Prime (ships immediately from warehouse),
@@ -1245,10 +1253,7 @@ async function fetchOffersBatch(
                 const amazonStock  = amazonOff?.QuantityOnHand ?? null;
                 const sellerCount  = (summary?.NumberOfOffers ?? [])
                     .reduce((sum: number, o: any) => sum + (o.offerCount ?? 0), 0) || allOffs.length;
-                const price        = lowestNew?.ListingPrice?.Amount
-                    ?? amazonOff?.ListingPrice?.Amount
-                    ?? amazonOff?.BuyingPrice?.ListingPrice?.Amount
-                    ?? null;
+                const price        = offerCost(lowestNew) ?? offerCost(amazonOff);
                 // Real currency of whichever offer `price` came from — the marketplace
                 // fallback (main handler) can end up using an offer from a different
                 // marketplace than the product's stored currency implies.
@@ -1259,7 +1264,7 @@ async function fetchOffersBatch(
                 // "Valores Fijos" mode: same winning offer as the importer uses, so price
                 // and shipping origin always agree on which offer is "the" one.
                 const winningOff      = pickWinningOffer(allOffs);
-                const winningOffPrice = winningOff?.ListingPrice?.Amount ?? null;
+                const winningOffPrice = offerCost(winningOff);
                 const shipsFromCountry = winningOff?.ShipsFrom?.Country ?? null;
                 const shippingOff  = amazonOff ?? allOffs[0] ?? null;
                 const maxHours     = shippingOff?.ShippingTime?.maximumHours;
@@ -1472,6 +1477,52 @@ async function updateMeliDescription(
         body:    JSON.stringify({ plain_text: plainText }),
     });
     return res.ok;
+}
+
+// Each listing's current price on Mercado Libre, 20 per request. Confirmed
+// live that prices changed there (by hand or by another tool) never reached
+// price_mxn: a listing read 7157 here and was 3269 on ML, so the price
+// check, which compared against 7157, never raised it back.
+async function fetchMeliPrices(meliIds: string[], token: string): Promise<Map<string, number>> {
+    const prices = new Map<string, number>();
+    for (let i = 0; i < meliIds.length; i += 20) {
+        const chunk = meliIds.slice(i, i + 20);
+        try {
+            const res = await fetch(`${MELI_API}/items?ids=${chunk.join(",")}&attributes=id,price`, {
+                headers: { Authorization: `Bearer ${token}` },
+            });
+            if (!res.ok) continue;
+            for (const r of await res.json()) {
+                if (r?.code === 200 && typeof r.body?.price === "number") prices.set(r.body.id, r.body.price);
+            }
+        } catch (e) {
+            console.error("[fetchMeliPrices] chunk error:", e);
+        }
+    }
+    return prices;
+}
+
+// The seller's own (standard) price of a listing. The price above is what
+// buyers pay right now, so during a promotion it's the promotional one — and
+// for user-product listings nothing in /items says so (original_price stays
+// empty). "Raising" from it to the rule could lower the real price; this is
+// what a raise is compared against. null when ML doesn't answer.
+async function fetchMeliStandardPrice(meliId: string, token: string): Promise<number | null> {
+    try {
+        const res = await fetch(`${MELI_API}/items/${meliId}/prices`, {
+            headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!res.ok) return null;
+        const standard = ((await res.json())?.prices ?? []).filter((p: any) => p?.type === "standard");
+        const restrictions = (p: any): string[] => p?.conditions?.context_restrictions ?? [];
+        const pick = standard.find((p: any) => restrictions(p).length === 0)
+            ?? standard.find((p: any) => restrictions(p).includes("channel_marketplace"))
+            ?? standard[0];
+        return typeof pick?.amount === "number" ? pick.amount : null;
+    } catch (e) {
+        console.error(`[fetchMeliStandardPrice] ${meliId}:`, e);
+        return null;
+    }
 }
 
 function calculateMxnPrice(
@@ -1871,6 +1922,9 @@ Deno.serve(async (req) => {
 
             let updated = 0, errors = 0, firstError: string | undefined;
             const debugItems: any[] = [];
+            const livePrices = syncParams.price
+                ? await fetchMeliPrices((products as any[]).map(p => p.meli_id), mlToken)
+                : new Map<string, number>();
             // Scrape.do only (residential IP) — ~30 s each → 5 × 30 s = 150 s within edge function limit.
             const MAX_SCRAPES_PER_RUN = 5;
             // Delivery time is stable — re-scrape domestic MXN products every 7 days.
@@ -1929,6 +1983,7 @@ Deno.serve(async (req) => {
                 const productId = (product as any).id;
                 const updatePayload: Record<string, unknown> = {};
                 const debug: any = { sku, meliId, currency, updateMode };
+                let standardMxn: number | null = null;
 
                 const offers       = asinOffers[sku];
                 const sellerCount   = offers?.sellerCount ?? null;
@@ -2049,10 +2104,20 @@ Deno.serve(async (req) => {
                         // versa) would badly misprice the item.
                         const priceCurrency = offers?.currency ?? currency;
                         const newMxn     = calculateMxnPrice(amazonPrice, priceCurrency, exchangeRate, usaRules, mxRules);
-                        const currentMxn = (product as any).price_mxn ?? 0;
+                        let currentMxn   = livePrices.get(meliId) ?? Number((product as any).price_mxn ?? 0);
+                        // A raise is checked against the seller's own price: the
+                        // one above is the promotional price while a promotion runs.
+                        let standardUnknown = false;
+                        if (newMxn > currentMxn) {
+                            standardMxn = await fetchMeliStandardPrice(meliId, mlToken);
+                            if (standardMxn === null) standardUnknown = true;
+                            else currentMxn = standardMxn;
+                        }
                         debug.newMxn     = newMxn;
                         debug.currentMxn = currentMxn;
-                        if (newMxn !== currentMxn && (allowDecrease || newMxn > currentMxn)) {
+                        if (standardUnknown) {
+                            debug.priceBlocked = "ml_price_unknown";
+                        } else if (newMxn !== currentMxn && (allowDecrease || newMxn > currentMxn)) {
                             updatePayload.price = newMxn;
                         } else {
                             debug.priceBlocked = newMxn < currentMxn ? "decrease_blocked" : "same_value";
@@ -2143,6 +2208,12 @@ Deno.serve(async (req) => {
                 }
                 debugItems.push(debug);
 
+                // The price on ML, when this run didn't set one itself — the
+                // seller's own one when it was looked up above.
+                const livePrice = standardMxn ?? livePrices.get(meliId);
+                if (livePrice !== undefined && livePrice !== null && !updatePayload.price && livePrice !== Number((product as any).price_mxn)) {
+                    metaUpdate.price_mxn = livePrice;
+                }
                 if (sellerCount !== null)          metaUpdate.amazon_seller_count = sellerCount;
                 if (soldByAmazon !== null)         metaUpdate.sold_by_amazon      = soldByAmazon;
                 if (pauseReasonToWrite !== undefined) metaUpdate.pause_reason     = pauseReasonToWrite;
