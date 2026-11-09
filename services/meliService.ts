@@ -575,6 +575,72 @@ class MeliService {
 
     // Paginated order fetch with optional date range (ISO strings with timezone).
     // ML Orders API filter params: order.date_created.from / order.date_created.to
+    // An order's shipment as Mercado Libre has it now: status/substatus, the
+    // latest time to dispatch it and, when ML holds the label back (buffered),
+    // when it releases it. The deadline comes from /sla: ML deprecated
+    // lead_time.estimated_handling_limit in May 2025 and calls it only an
+    // estimate. null when ML doesn't answer.
+    async getShipmentInfo(shipmentId: string): Promise<{
+        status: string | null;
+        substatus: string | null;
+        deadline: string | null;
+        labelAvailableAt: string | null;
+    } | null> {
+        try {
+            const res = await this.fetchWithAuth(`/shipments/${shipmentId}`, { headers: { 'x-format-new': 'true' } });
+            if (!res.ok) return null;
+            const s = await res.json();
+            let deadline: string | null = null;
+            try {
+                const sla = await this.fetchWithAuth(`/shipments/${shipmentId}/sla`, { headers: { 'x-format-new': 'true' } });
+                if (sla.ok) deadline = (await sla.json())?.expected_date ?? null;
+            } catch { /* falls back to the shipment's own estimate */ }
+            return {
+                status: s?.status ?? null,
+                substatus: s?.substatus ?? null,
+                deadline: deadline ?? s?.lead_time?.estimated_handling_limit?.date ?? null,
+                labelAvailableAt: s?.lead_time?.buffering?.date ?? null,
+            };
+        } catch (e) {
+            console.error(`[Melidrop] shipment ${shipmentId}:`, e);
+            return null;
+        }
+    }
+
+    // "Ya tengo el producto": ends the listing's stock-availability time
+    // (MANUFACTURING_TIME) for this shipment, so ML releases its label now
+    // instead of when that time runs out.
+    async markShipmentReady(shipmentId: string): Promise<{ ok: boolean; error?: string }> {
+        try {
+            const res = await this.fetchWithAuth(`/shipments/${shipmentId}/process/ready_to_ship`, { method: 'POST' });
+            if (res.ok) return { ok: true };
+            const body = await res.text().catch(() => '');
+            let message = body;
+            try { const j = JSON.parse(body); message = j?.message ?? j?.error ?? body; } catch { /* not JSON */ }
+            return { ok: false, error: `Mercado Libre respondió ${res.status}: ${String(message).slice(0, 200)}` };
+        } catch (e: any) {
+            return { ok: false, error: e?.message ?? String(e) };
+        }
+    }
+
+    // Shipping labels as one PDF (ML's México size, 20 × 10 cm), up to 50
+    // shipments per call. ML only gives them for ready_to_ship shipments whose
+    // substatus is ready_to_print or printed.
+    async getShipmentLabelsPdf(shipmentIds: string[]): Promise<Blob> {
+        const res = await this.fetchWithAuth(
+            `/shipment_labels?shipment_ids=${shipmentIds.join(',')}&response_type=pdf`,
+            { headers: { Accept: 'application/pdf' } }
+        );
+        const type = res.headers.get('content-type') ?? '';
+        if (!res.ok || /json|text/i.test(type)) {
+            const body = await res.text().catch(() => '');
+            let message = body;
+            try { const j = JSON.parse(body); message = j?.message ?? j?.error ?? body; } catch { /* not JSON */ }
+            throw new Error(`Mercado Libre no entregó la etiqueta (${res.status}): ${String(message).slice(0, 200)}`);
+        }
+        return res.blob();
+    }
+
     async getOrdersFiltered(dateFrom?: string, dateTo?: string): Promise<any[]> {
         const creds = this.getCredentials();
         if (!creds) return [];

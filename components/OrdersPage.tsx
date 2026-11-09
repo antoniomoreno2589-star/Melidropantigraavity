@@ -15,6 +15,41 @@ function addDays(dateStr: string, days: number): string {
     return d.toISOString().split('T')[0];
 }
 
+// A date (YYYY-MM-DD) in Mexico City, where the seller and Mercado Libre
+// México's deadlines are. toISOString() is UTC: a day ahead every evening.
+function mexicoDate(d: Date | string): string {
+    return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Mexico_City' }).format(new Date(d));
+}
+
+type ShipmentInfo = { status: string | null; substatus: string | null; deadline: string | null; labelAvailableAt: string | null };
+
+// The orders columns kept from an order's ML shipment (meliService.getShipmentInfo).
+function shipmentFields(info: ShipmentInfo, manufacturingEndsAt: string | null): Record<string, unknown> {
+    const deadline = info.deadline ?? manufacturingEndsAt;
+    const fields: Record<string, unknown> = {
+        shipment_status: info.status,
+        shipment_substatus: info.substatus,
+        shipping_deadline_at: deadline,
+        shipping_deadline: deadline ? mexicoDate(deadline) : null,
+        label_available_at: info.labelAvailableAt,
+        manufacturing_ends_at: manufacturingEndsAt,
+    };
+    // The order's own payload no longer says it shipped (its shipping node is
+    // just an id): the shipment does.
+    if (info.status === 'shipped') fields.status = 'shipped';
+    if (info.status === 'delivered') fields.status = 'delivered';
+    return fields;
+}
+
+const SUBSTATUS_LABELS: Record<string, string> = {
+    manufacturing: 'En preparación',
+    buffered: 'Etiqueta en espera',
+    ready_to_print: 'Etiqueta lista',
+    printed: 'Etiqueta impresa',
+    waiting_for_label_generation: 'Generando etiqueta',
+    invoice_pending: 'Falta factura',
+};
+
 function getPresetRange(preset: DatePreset, customFrom: string, customTo: string, today: string): { from: string; to: string } {
     if (preset === 'today')  return { from: today, to: today };
     if (preset === 'custom') return { from: customFrom, to: customTo };
@@ -34,7 +69,7 @@ function mapMlStatus(o: any): Order['status'] {
 // ── component ──────────────────────────────────────────────────────────────
 
 export const OrdersPage = () => {
-    const todayStr = new Date().toISOString().split('T')[0];
+    const todayStr = mexicoDate(new Date());
     const exchangeRate = parseFloat(localStorage.getItem('melidrop_exchange_rate') ?? '18.5');
 
     // ── state ──────────────────────────────────────────────────────────
@@ -42,6 +77,9 @@ export const OrdersPage = () => {
     const [currencyMap, setCurrencyMap] = useState<Record<string, 'USD' | 'MXN'>>({});
     const [loading, setLoading] = useState(true);
     const [syncing, setSyncing] = useState(false);
+    const [shipBusy, setShipBusy] = useState<string | null>(null); // order id being marked ready
+    const [labelBusy, setLabelBusy] = useState(false);
+    const [actionMsg, setActionMsg] = useState<{ ok: boolean; text: string } | null>(null);
     const [syncError, setSyncError] = useState<string | null>(null);
 
     const [preset, setPreset] = useState<DatePreset>('7d');
@@ -198,7 +236,6 @@ export const OrdersPage = () => {
                         quantity,
                         status: mapMlStatus(o),
                         date: dateCreated,
-                        shipping_deadline: o.pack_deadline?.split('T')[0] ?? addDays(dateCreated, 3),
                         amazon_asin: asin,
                         amazon_marketplace: currencyMap[asin] === 'USD' ? 'US' : 'MX',
                     };
@@ -228,6 +265,27 @@ export const OrdersPage = () => {
                     .filter((o: any) => o._shippingKnownValue != null)
                     .map((o: any) => ({ id: o.id.toString(), shipping: o._shippingKnownValue as number }));
                 if (shippingUpdates.length) await api.orders.setShippingInfo(shippingUpdates);
+
+                // Each paid order's shipment as ML has it now: the real dispatch
+                // deadline (it counts the listing's stock-availability days — the
+                // old order date + 3 days showed those orders due days early),
+                // whether it's still in preparation time, and whether its label
+                // can be printed.
+                const toShip = raw.filter((o: any) => o.shipping?.id && o.status === 'paid');
+                const shipmentUpdates: { id: string; fields: Record<string, unknown> }[] = [];
+                for (let i = 0; i < toShip.length; i += 6) {
+                    const chunk = toShip.slice(i, i + 6);
+                    const infos = await Promise.all(chunk.map((o: any) => meliService.getShipmentInfo(String(o.shipping.id))));
+                    chunk.forEach((o: any, k: number) => {
+                        const info = infos[k];
+                        if (!info) return;
+                        shipmentUpdates.push({
+                            id: o.id.toString(),
+                            fields: { shipment_id: String(o.shipping.id), ...shipmentFields(info, o.manufacturing_ending_date ?? null) },
+                        });
+                    });
+                }
+                if (shipmentUpdates.length) await api.orders.setShipmentInfo(shipmentUpdates);
             }
             await loadOrders();
         } catch (e: any) {
@@ -236,6 +294,62 @@ export const OrdersPage = () => {
             setSyncError(msg || 'Error al sincronizar');
         } finally {
             setSyncing(false);
+        }
+    };
+
+    // "Ya tengo el producto": ML ends the order's preparation time and releases its label.
+    const handleMarkReady = async (order: Order) => {
+        if (!order.shipmentId) return;
+        setShipBusy(order.id);
+        setActionMsg(null);
+        const result = await meliService.markShipmentReady(order.shipmentId);
+        if (!result.ok) {
+            setActionMsg({ ok: false, text: `No se pudo avisar a Mercado Libre: ${result.error}` });
+        } else {
+            const info = await meliService.getShipmentInfo(order.shipmentId);
+            if (info) await api.orders.setShipmentInfo([{ id: order.id, fields: shipmentFields(info, order.manufacturingEndsAt ?? null) }]);
+            setActionMsg({
+                ok: true,
+                text: info?.substatus === 'ready_to_print'
+                    ? 'Listo: Mercado Libre ya liberó la etiqueta. Ya la puedes imprimir.'
+                    : `Mercado Libre recibió el aviso${info?.substatus ? ` (ahora: ${SUBSTATUS_LABELS[info.substatus] ?? info.substatus})` : ''}.`,
+            });
+            await loadOrders();
+        }
+        setShipBusy(null);
+    };
+
+    // ML's label PDF (up to 50 per click), opened in a new tab to print. The tab
+    // opens on the click itself so the browser doesn't block it as a pop-up.
+    const printLabels = async (shipmentIds: string[]) => {
+        const ids = shipmentIds.slice(0, 50);
+        if (ids.length === 0) return;
+        const tab = window.open('', '_blank');
+        tab?.document.write('<p style="font-family:sans-serif">Obteniendo etiqueta de Mercado Libre…</p>');
+        setLabelBusy(true);
+        setActionMsg(null);
+        try {
+            const url = URL.createObjectURL(await meliService.getShipmentLabelsPdf(ids));
+            if (tab) {
+                tab.location.href = url;
+            } else {
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `etiquetas-${todayStr}.pdf`;
+                a.click();
+            }
+            setTimeout(() => URL.revokeObjectURL(url), 5 * 60_000);
+            // ML counts them as printed now; the next sync confirms it.
+            setOrders(prev => prev.map(o => o.shipmentId && ids.includes(o.shipmentId) && o.shipmentSubstatus === 'ready_to_print'
+                ? { ...o, shipmentSubstatus: 'printed' } : o));
+            if (shipmentIds.length > ids.length) {
+                setActionMsg({ ok: true, text: `Se abrieron 50 etiquetas; da clic otra vez para las ${shipmentIds.length - ids.length} restantes.` });
+            }
+        } catch (e: any) {
+            tab?.close();
+            setActionMsg({ ok: false, text: e?.message ?? 'No se pudo obtener la etiqueta' });
+        } finally {
+            setLabelBusy(false);
         }
     };
 
@@ -346,6 +460,11 @@ export const OrdersPage = () => {
         return { shipToday, pendingBuy, totalNet, projectedProfit: totalNet - totalCost, purchased };
     }, [filteredOrders, todayStr, exchangeRate, currencyMap]);
 
+    // Shipments whose label ML has released and that haven't been printed yet.
+    const printableShipmentIds = useMemo(() => filteredOrders
+        .filter(o => o.shipmentId && o.shipmentSubstatus === 'ready_to_print' && !['shipped', 'delivered', 'cancelled'].includes(o.status))
+        .map(o => o.shipmentId as string), [filteredOrders]);
+
     // ── select all ─────────────────────────────────────────────────────
     const handleSelectAll = (e: React.ChangeEvent<HTMLInputElement>) =>
         setSelectedIds(e.target.checked ? filteredOrders.map(o => o.id) : []);
@@ -402,15 +521,30 @@ export const OrdersPage = () => {
                         <p className="text-slate-500 dark:text-slate-400 mt-1 font-medium">Panel operativo de compras en Amazon y envíos Mercado Libre.</p>
                     </div>
                     <div className="flex flex-col items-end gap-1">
-                        <button
-                            onClick={handleSync}
-                            disabled={syncing}
-                            className="bg-primary hover:bg-primary-dark disabled:opacity-60 text-white px-5 py-2.5 rounded-xl text-sm font-bold flex items-center gap-2 transition-all shadow-lg shadow-primary/20"
-                        >
-                            <span className={`material-symbols-outlined text-[20px] ${syncing ? 'animate-spin' : ''}`}>sync</span>
-                            {syncing ? 'Sincronizando...' : 'Sincronizar Ventas'}
-                        </button>
+                        <div className="flex flex-wrap justify-end gap-2">
+                            {printableShipmentIds.length > 0 && (
+                                <button
+                                    onClick={() => printLabels(printableShipmentIds)}
+                                    disabled={labelBusy}
+                                    className="bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white px-5 py-2.5 rounded-xl text-sm font-bold flex items-center gap-2 transition-all shadow-lg shadow-emerald-600/20"
+                                >
+                                    <span className="material-symbols-outlined text-[20px]">print</span>
+                                    {labelBusy ? 'Obteniendo etiquetas...' : `Imprimir etiquetas (${printableShipmentIds.length})`}
+                                </button>
+                            )}
+                            <button
+                                onClick={handleSync}
+                                disabled={syncing}
+                                className="bg-primary hover:bg-primary-dark disabled:opacity-60 text-white px-5 py-2.5 rounded-xl text-sm font-bold flex items-center gap-2 transition-all shadow-lg shadow-primary/20"
+                            >
+                                <span className={`material-symbols-outlined text-[20px] ${syncing ? 'animate-spin' : ''}`}>sync</span>
+                                {syncing ? 'Sincronizando...' : 'Sincronizar Ventas'}
+                            </button>
+                        </div>
                         {syncError && <p className="text-xs text-red-500 font-bold">{syncError}</p>}
+                        {actionMsg && (
+                            <p className={`text-xs font-bold max-w-md text-right ${actionMsg.ok ? 'text-emerald-600' : 'text-red-500'}`}>{actionMsg.text}</p>
+                        )}
                     </div>
                 </div>
 
@@ -632,6 +766,12 @@ export const OrdersPage = () => {
                                         : isActive && days === 1 ? { label: 'Mañana',   cls: 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400' }
                                         : isActive && days <= 3  ? { label: `En ${days}d`, cls: 'bg-blue-50 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400' }
                                         : null;
+                                    // The hour too, when ML gives one that isn't just "end of day"
+                                    // (a pickup's scheduled time, for instance).
+                                    const deadlineHour = order.shippingDeadlineAt
+                                        ? new Intl.DateTimeFormat('es-MX', { timeZone: 'America/Mexico_City', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(order.shippingDeadlineAt))
+                                        : null;
+                                    const deadlineTime = deadlineHour && deadlineHour !== '23:59' ? deadlineHour : null;
                                     const fmtDate = (d: string) => {
                                         const [, m, day] = d.split('-');
                                         return `${parseInt(day)} ${['','Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'][parseInt(m)]}`;
@@ -697,22 +837,59 @@ export const OrdersPage = () => {
                                                 <span className={`inline-block mt-1 ml-1 text-[9px] font-black px-1.5 py-0.5 rounded ${sb.cls}`}>{sb.label}</span>
                                             </td>
 
-                                            {/* Shipping deadline */}
+                                            {/* Shipping deadline, preparation time and label */}
                                             <td className="px-4 py-3.5 text-center">
-                                                {order.shippingDeadline ? (
-                                                    <div className="flex flex-col items-center gap-0.5">
-                                                        {deadlineBadge && (
-                                                            <span className={`text-[10px] font-black px-2 py-0.5 rounded-full whitespace-nowrap ${deadlineBadge.cls}`}>
-                                                                {deadlineBadge.label}
+                                                <div className="flex flex-col items-center gap-0.5">
+                                                    {order.shippingDeadline ? (
+                                                        <>
+                                                            {deadlineBadge && (
+                                                                <span className={`text-[10px] font-black px-2 py-0.5 rounded-full whitespace-nowrap ${deadlineBadge.cls}`}>
+                                                                    {deadlineBadge.label}
+                                                                </span>
+                                                            )}
+                                                            <span className="text-[11px] text-slate-500 dark:text-slate-400 font-medium whitespace-nowrap">
+                                                                {fmtDate(order.shippingDeadline)}{deadlineTime ? ` · ${deadlineTime}` : ''}
                                                             </span>
-                                                        )}
-                                                        <span className="text-[11px] text-slate-500 dark:text-slate-400 font-medium">
-                                                            {fmtDate(order.shippingDeadline)}
+                                                        </>
+                                                    ) : (
+                                                        <span className="text-slate-300 dark:text-slate-600">—</span>
+                                                    )}
+                                                    {isActive && order.shipmentSubstatus === 'manufacturing' && (
+                                                        <>
+                                                            <span className="mt-1 text-[9px] font-black px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400 whitespace-nowrap">
+                                                                En preparación{order.manufacturingEndsAt ? ` hasta ${fmtDate(mexicoDate(order.manufacturingEndsAt))}` : ''}
+                                                            </span>
+                                                            <button
+                                                                onClick={() => handleMarkReady(order)}
+                                                                disabled={shipBusy === order.id}
+                                                                title="Avisa a Mercado Libre que ya tienes el producto: libera la etiqueta sin esperar el tiempo de preparación"
+                                                                className="mt-0.5 text-[10px] font-bold px-2 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white whitespace-nowrap"
+                                                            >
+                                                                {shipBusy === order.id ? 'Avisando...' : 'Ya tengo el producto'}
+                                                            </button>
+                                                        </>
+                                                    )}
+                                                    {isActive && order.shipmentSubstatus === 'buffered' && (
+                                                        <span className="mt-1 text-[9px] font-bold text-slate-500 dark:text-slate-400 whitespace-nowrap">
+                                                            {order.labelAvailableAt ? `Etiqueta disponible el ${fmtDate(mexicoDate(order.labelAvailableAt))}` : 'Etiqueta en espera'}
                                                         </span>
-                                                    </div>
-                                                ) : (
-                                                    <span className="text-slate-300 dark:text-slate-600">—</span>
-                                                )}
+                                                    )}
+                                                    {isActive && order.shipmentId && (order.shipmentSubstatus === 'ready_to_print' || order.shipmentSubstatus === 'printed') && (
+                                                        <button
+                                                            onClick={() => printLabels([order.shipmentId!])}
+                                                            disabled={labelBusy}
+                                                            className="mt-1 text-[10px] font-bold px-2 py-1 rounded-lg bg-primary hover:bg-primary-dark disabled:opacity-60 text-white whitespace-nowrap flex items-center gap-1"
+                                                        >
+                                                            <span className="material-symbols-outlined text-[14px]">print</span>
+                                                            {order.shipmentSubstatus === 'printed' ? 'Reimprimir etiqueta' : 'Imprimir etiqueta'}
+                                                        </button>
+                                                    )}
+                                                    {isActive && order.shipmentSubstatus && !['manufacturing', 'buffered', 'ready_to_print', 'printed'].includes(order.shipmentSubstatus) && SUBSTATUS_LABELS[order.shipmentSubstatus] && (
+                                                        <span className="mt-1 text-[9px] font-bold text-slate-500 dark:text-slate-400 whitespace-nowrap">
+                                                            {SUBSTATUS_LABELS[order.shipmentSubstatus]}
+                                                        </span>
+                                                    )}
+                                                </div>
                                             </td>
 
                                             {/* Gross sale */}
