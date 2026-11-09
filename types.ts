@@ -47,6 +47,13 @@ export interface Order {
   returnShippingCost: number;   // Return shipping ML charged the seller (subtracts from profit)
   refundAmount: number;         // Amount ML refunded back to the buyer (payments[].transaction_amount_refunded)
   taxAmount: number;            // ISR/IVA withholding ML deducts (manual entry — not exposed by the Orders API)
+  // The order's ML shipment, as of the last sync (see OrdersPage handleSync).
+  shipmentId?: string | null;
+  shipmentStatus?: string | null;      // pending, handling, ready_to_ship, shipped, delivered, ...
+  shipmentSubstatus?: string | null;   // manufacturing, buffered, ready_to_print, printed, ...
+  shippingDeadlineAt?: string | null;  // latest time to dispatch, per ML
+  labelAvailableAt?: string | null;    // when ML releases a label it holds back (buffered)
+  manufacturingEndsAt?: string | null; // end of the listing's stock-availability time
 }
 
 export interface User {

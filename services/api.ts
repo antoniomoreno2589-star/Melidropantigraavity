@@ -324,6 +324,12 @@ export const api = {
                 returnShippingCost: o.return_shipping_cost ?? 0,
                 refundAmount: o.refund_amount ?? 0,
                 taxAmount: o.tax_amount ?? 0,
+                shipmentId: o.shipment_id ?? null,
+                shipmentStatus: o.shipment_status ?? null,
+                shipmentSubstatus: o.shipment_substatus ?? null,
+                shippingDeadlineAt: o.shipping_deadline_at ?? null,
+                labelAvailableAt: o.label_available_at ?? null,
+                manufacturingEndsAt: o.manufacturing_ends_at ?? null,
             }));
         },
 
@@ -358,6 +364,12 @@ export const api = {
                 returnShippingCost: o.return_shipping_cost ?? 0,
                 refundAmount: o.refund_amount ?? 0,
                 taxAmount: o.tax_amount ?? 0,
+                shipmentId: o.shipment_id ?? null,
+                shipmentStatus: o.shipment_status ?? null,
+                shipmentSubstatus: o.shipment_substatus ?? null,
+                shippingDeadlineAt: o.shipping_deadline_at ?? null,
+                labelAvailableAt: o.label_available_at ?? null,
+                manufacturingEndsAt: o.manufacturing_ends_at ?? null,
             }));
         },
 
@@ -400,6 +412,15 @@ export const api = {
         // Auto-detected shipping cost (from /shipments/{id}/costs). Applied outside
         // bulkUpsert so a transient lookup failure on one order never overwrites a
         // previously-known cost with a false $0.
+        // The shipment state the Ventas sync reads from Mercado Libre — per order,
+        // and only for orders whose shipment was read this time, so a failed
+        // lookup never wipes what was known.
+        async setShipmentInfo(updates: { id: string; fields: Record<string, unknown> }[]): Promise<void> {
+            await Promise.all(updates.map(u =>
+                supabase.from('orders').update(u.fields).eq('id', u.id)
+            ));
+        },
+
         async setShippingInfo(updates: { id: string; shipping: number }[]): Promise<void> {
             await Promise.all(updates.map(u =>
                 supabase.from('orders')
